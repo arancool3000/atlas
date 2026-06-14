@@ -1,0 +1,273 @@
+"""Classifies tool calls into risk levels for confirmation prompts."""
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+DANGEROUS_PATTERNS = [
+    r"\brm\s+-rf?\b",
+    r"\bdel\s+/[sq]\b",
+    r"\bformat\s+[a-z]:",
+    r"\bdiskpart\b",
+    r"\bbcdedit\b",
+    r"\bregedit\b",
+    r"\breg\s+(delete|add)\b",
+    r"\bnet\s+user\s+\w+\s+/delete\b",
+    r"\bshutdown\s+/[srgp]\b",
+    r"\bSet-ExecutionPolicy\s+Unrestricted\b",
+    r"\bRemove-Item\s+.*-Recurse\b",
+    r"\bRemove-ItemProperty\b",
+    r"\bStop-Computer\b",
+    r"\bRestart-Computer\b",
+    r"\bClear-EventLog\b",
+    r"\bsfc\s+/scannow\b",
+    r"\bdism\b",
+    r"\bcipher\s+/w\b",
+    r"\bcacls\b|\bicacls\b.*\b/grant\b",
+    r"\battrib\s+.*[+-]r\s+.*\\Windows\\",
+    r"\btake[ -]?own\b",
+    r"powercfg\b.*-h\b",
+    r"\bnetsh\s+(?:winsock\s+reset|int\s+ip\s+reset)\b",
+    r"Invoke-WebRequest.*\|.*iex",
+    r"curl.*\|.*sh",
+    r"Add-MpPreference.*ExclusionPath",
+    r"Set-MpPreference.*Disable",
+    # --- macOS / Unix destructive commands (this is the mac build; run_shell is zsh) ---
+    r"\brm\s+-[rf]",                       # rm -rf / rm -f / rm -r
+    r"\bdd\b.*\bof=/dev/",                 # dd writing to a raw device
+    r"\bmkfs\b",                           # format a filesystem
+    r":\s*\(\)\s*\{.*\|.*&\s*\}",          # bash fork bomb :(){ :|:& };:
+    r"\bsudo\b",                           # privilege escalation
+    r">\s*/dev/(disk|rdisk|sd)",           # clobber a disk device
+    r"\bchmod\s+-R\b",                     # recursive permission change
+    r"\bchown\s+-R\b",                     # recursive ownership change
+    r"\bkillall\b",                        # kill processes by name
+    r"\b(shutdown|halt|reboot)\b",         # power state
+    r"\bdiskutil\s+(erase|reformat|partition|secureerase)",
+    r"\blaunchctl\s+(bootout|unload|remove)\b",
+    r"\bcurl\b.*\|\s*(ba|z)?sh",           # curl … | sh / bash / zsh
+    r"\bwget\b.*\|\s*(ba|z)?sh",
+    r"\bdefaults\s+delete\b",
+    r"\bnvram\b.*-c",                       # clear NVRAM
+    r"\bspctl\s+--master-disable\b",        # disable Gatekeeper
+    r"\bcsrutil\s+disable\b",               # disable SIP
+]
+
+SENSITIVE_PATHS = [
+    # NOTE: matched against a path normalized to lowercase forward slashes.
+    # macOS
+    r"/system/",
+    r"/etc/",
+    r"/private/etc",
+    r"/usr/bin", r"/usr/sbin", r"/usr/lib",
+    r"/library/launchdaemons", r"/library/launchagents",
+    r"/library/keychains", r"/keychains/",
+    r"/.ssh", r"/.aws", r"/.gnupg",
+    # Windows
+    r"c:/windows/system32",
+    r"c:/windows/syswow64",
+    r"c:/program files",
+    r"c:/programdata",
+    r"/boot/",
+    r"hkey_local_machine",
+    r"hklm:",
+    r"hkcu:/software/microsoft/windows/currentversion/run",
+]
+
+# Tools that send local data out over the network or e-mail — real exfiltration
+# vectors for an autonomous computer-use agent, so always confirm.
+EXFIL_TOOLS = {"send_email", "http_post"}
+
+# macOS key chords that are destructive or disruptive enough to confirm.
+MAC_DANGEROUS_CHORDS = {
+    "cmd+q": ("medium", "quits the frontmost app"),
+    "cmd+w": ("medium", "closes the frontmost window"),
+    "cmd+shift+q": ("high", "logs out of macOS"),
+    "cmd+option+esc": ("medium", "opens Force Quit"),
+    "ctrl+cmd+q": ("medium", "locks the screen"),
+    "cmd+ctrl+q": ("medium", "locks the screen"),
+}
+
+
+FILE_OPS_MEDIUM = {"organize_folder", "bulk_rename", "move_matching_files", "unzip_archive",
+                    "zip_files", "trash_file"}
+
+SAFE_READONLY = {
+    "take_screenshot", "capture_window", "list_directory", "read_file", "search_files",
+    "get_event_logs", "get_reliability_events", "get_minidumps", "get_system_info",
+    "get_installed_drivers", "get_running_processes", "get_performance", "get_windows_updates",
+    "get_screen_size", "mouse_position", "find_ui_elements", "list_windows",
+    "wait", "wait_for_screen_change", "move_mouse", "zoom_screenshot",
+    "ask_claude", "recall", "list_quick_fixes",
+    "browser_get_page", "browser_check_captcha", "browser_screenshot", "browser_current",
+    "browser_list_tabs", "pause_for_human",
+    "get_folder_size", "folder_tree", "find_duplicate_files", "find_large_files",
+    "list_monitors", "grep_files", "diff_files", "count_lines",
+    "speed_test", "define_word", "currency_convert", "stock_quote", "github_search_repos",
+    "random_number", "random_choice", "dice_roll", "flip_coin",
+    "ocr_image", "ocr_screen", "browser_wait_for_element", "browser_get_text",
+    "calculate_text_stats",
+    "watch_folder_start", "watch_folder_events", "watch_folder_stop",
+    "record_audio",
+    "list_desktop_items", "desktop_overview",
+    # more_tools - read-only
+    "http_get", "public_ip", "dns_lookup", "network_ping", "web_search",
+    "wikipedia_summary", "weather_lookup", "translate_text",
+    "pdf_extract_text", "excel_read", "csv_read", "json_query",
+    "calculator", "generate_password", "generate_uuid",
+    "hash_text", "hash_file", "base64_encode", "base64_decode",
+    "url_encode", "url_decode", "now",
+    "get_battery", "get_volume", "env_get", "env_list",
+    "color_at", "clipboard_get", "clipboard_history_get", "clipboard_history_snapshot",
+    "git_status", "git_log", "git_diff",
+}
+
+SAFE_INTERACTION = {
+    "click", "click_element_by_text", "drag", "type_text", "paste_text",
+    "press_key", "scroll", "open_url", "open_app", "open_path", "focus_window",
+    "remember", "forget",
+    "browser_open", "browser_navigate", "browser_click_text", "browser_click_selector",
+    "browser_fill", "browser_scroll", "browser_back", "browser_forward", "browser_reload",
+    "browser_dismiss_cookies", "browser_new_tab", "browser_switch_tab", "browser_close_tab",
+    "clipboard_set", "set_volume", "toggle_mute",
+    "image_resize", "image_crop", "image_convert", "qr_generate", "create_calendar_event",
+    "excel_write", "http_post", "download_file", "send_email",
+    "right_click_element_by_text",
+    "snap_window", "move_window", "minimize_all_other_windows", "show_desktop",
+    "switch_window", "media_keys", "show_notification", "say_text",
+}
+
+QUICK_FIX_RISK = {
+    # low / read-only-ish
+    "show_startup": "low", "show_services": "low",
+    # medium / reversible
+    "flush_dns": "medium", "release_renew_ip": "medium", "clear_temp": "medium",
+    "restart_explorer": "medium", "check_disk": "medium",
+    # high / heavy or system-touching
+    "reset_network": "high", "sfc_scan": "high", "dism_restore": "high",
+}
+
+
+def _norm_path(path: str) -> str:
+    """Lowercase + forward-slash a path so SENSITIVE_PATHS (mac + win) match uniformly.
+    The old code did .replace('/', '\\\\'), which mangled every macOS path."""
+    return (path or "").lower().replace("\\", "/")
+
+
+_CHORD_ALIAS = {
+    "command": "cmd", "⌘": "cmd", "control": "ctrl", "⌃": "ctrl",
+    "opt": "option", "alt": "option", "⌥": "option",
+    "escape": "esc", "⎋": "esc", "return": "enter", "delete": "del", "windows": "win",
+}
+
+
+def _normalize_chord(keys: str) -> str:
+    """Normalize a key-combo string token-by-token (split on '+') so aliases collapse
+    without substring corruption (e.g. a naive 'opt'->'option' would mangle 'option')."""
+    parts = [_CHORD_ALIAS.get(tok, tok)
+             for tok in (keys or "").lower().replace(" ", "").split("+") if tok]
+    return "+".join(parts)
+
+
+def classify(tool_name: str, args: dict) -> tuple[str, str]:
+    """Return (risk_level, reason). risk_level in {'low','medium','high'}."""
+    a = {k: (v if isinstance(v, str) else str(v)) for k, v in args.items()}
+
+    if tool_name in SAFE_READONLY:
+        return "low", "read-only / safe"
+
+    if tool_name in EXFIL_TOOLS:
+        return "high", "sends data over the network / e-mail"
+
+    if tool_name in SAFE_INTERACTION:
+        if tool_name in ("type_text", "paste_text"):
+            text = a.get("text", "")
+            if any(s in text.lower() for s in ["password", "credit card", "ssn", "social security"]):
+                return "high", "typing sensitive-looking text"
+        if tool_name == "press_key":
+            raw = (a.get("keys", "") or "").lower().replace(" ", "")
+            if raw in {"ctrl+alt+del", "win+l"}:
+                return "high", "system-level chord"
+            chord = _normalize_chord(a.get("keys", ""))
+            if chord in MAC_DANGEROUS_CHORDS:
+                return MAC_DANGEROUS_CHORDS[chord]
+        if tool_name == "open_path":
+            path = _norm_path(a.get("path", ""))
+            for sensitive in SENSITIVE_PATHS:
+                if sensitive in path:
+                    return "medium", f"opens sensitive path"
+        return "low", "screen interaction"
+
+    if tool_name == "do_sequence":
+        worst = "low"
+        actions = []
+        try:
+            import json as _json
+            raw = args.get("actions")
+            if isinstance(raw, str):
+                actions = _json.loads(raw)
+            elif isinstance(raw, list):
+                actions = raw
+        except Exception:
+            actions = []
+        for act in actions if isinstance(actions, list) else []:
+            if not isinstance(act, dict):
+                continue
+            sub_risk, _ = classify(act.get("tool", ""), act.get("args", {}) or {})
+            order = {"low": 0, "medium": 1, "high": 2}
+            if order.get(sub_risk, 0) > order.get(worst, 0):
+                worst = sub_risk
+        return worst, f"sequence (worst step risk: {worst})"
+
+    if tool_name == "quick_fix":
+        name = a.get("name", "")
+        risk = QUICK_FIX_RISK.get(name, "high")
+        return risk, f"quick_fix:{name}"
+
+    if tool_name in {"run_shell", "run_powershell", "run_cmd"}:
+        cmd = a.get("command", "")
+        for pat in DANGEROUS_PATTERNS:
+            if re.search(pat, cmd, re.IGNORECASE):
+                return "high", f"matches dangerous pattern: {pat}"
+        if re.search(r"\b(install|uninstall|update)\b", cmd, re.IGNORECASE):
+            return "high", "install/uninstall/update operation"
+        if re.search(r"\b(Set-|New-|Remove-|Stop-|Start-Service)\b", cmd):
+            return "high", "system modification cmdlet"
+        return "medium", "shell command"
+
+    if tool_name == "browser_evaluate":
+        return "medium", "arbitrary JS in browser"
+
+    if tool_name == "kill_process":
+        return "high", "terminating a process"
+
+    if tool_name == "service_action":
+        action = a.get("action", "status")
+        return ("low" if action == "status" else "high"), f"service: {action}"
+
+    if tool_name == "power_action":
+        action = a.get("action", "")
+        if action in ("lock", "logoff", "sleep", "hibernate"):
+            return "medium", f"power: {action}"
+        if action in ("restart", "shutdown"):
+            return "high", f"power: {action} (closes everything)"
+        return "high", "unknown power action"
+
+    if tool_name in FILE_OPS_MEDIUM:
+        if str(args.get("dry_run", "")).lower() == "true" or args.get("dry_run") is True:
+            return "low", "file op (dry run)"
+        return "medium", "file move/rename/extract"
+
+    if tool_name == "write_file":
+        path = _norm_path(a.get("path", ""))
+        for sensitive in SENSITIVE_PATHS:
+            if sensitive in path:
+                return "high", f"writing to sensitive path: {sensitive}"
+        return "medium", "file write"
+
+    return "medium", "unclassified tool"
+
+
+def needs_confirmation(risk: str) -> bool:
+    """User said: only confirm very risky items."""
+    return risk == "high"

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Download — Atlas</title>
+<meta name="description" content="Download Atlas free for macOS and Windows. Install in a couple of steps; it auto-updates after that.">
+<link rel="icon" href="atlas-logo.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="nav"><div class="wrap">
+  <a class="brand" href="index.html"><img src="atlas-logo.svg" alt=""> Atlas</a>
+  <nav class="navlinks">
+    <a data-page="index.html" href="index.html">Home</a>
+    <a data-page="features.html" href="features.html">Features</a>
+    <a data-page="download.html" href="download.html">Download</a>
+    <a data-page="docs.html" href="docs.html">Docs</a>
+    <a class="ghi" data-gh href="#" target="_blank" rel="noopener" aria-label="GitHub"><svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.6 7.6 0 018 4.5c.68 0 1.36.09 2 .27 1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+    <a class="btn btn-sm" data-dl="primary" href="#"><span data-dl-text>Download</span></a>
+  </nav>
+</div></header>
+
+<main class="wrap">
+  <section class="hero first" style="padding-bottom:6px">
+    <img class="glyph" src="atlas-logo.svg" alt="Atlas" style="width:78px;height:78px">
+    <h1 style="margin-top:14px">Download <span class="g">Atlas</span></h1>
+    <p class="lead">Free and open-source. We detected <b data-os-label>your OS</b> — your platform is highlighted below.
+      Latest <b data-ver>—</b> · <span data-pubdate>—</span>.</p>
+  </section>
+
+  <section class="first" style="border-top:0;padding-top:8px">
+    <div class="dlgrid">
+      <div class="osc" data-oscard="macos">
+        <span class="badge">Detected</span>
+        <h3><svg viewBox="0 0 24 24"><path d="M16.36 12.9c.02 2.5 2.2 3.33 2.22 3.34-.02.06-.35 1.2-1.15 2.37-.69 1.02-1.41 2.03-2.55 2.05-1.11.02-1.47-.66-2.74-.66-1.27 0-1.67.64-2.72.68-1.1.04-1.93-1.1-2.63-2.11-1.42-2.07-2.51-5.86-1.05-8.42.72-1.27 2.02-2.08 3.42-2.1 1.07-.02 2.09.72 2.74.72.66 0 1.89-.89 3.19-.76.54.02 2.07.22 3.05 1.65-.08.05-1.82 1.06-1.8 3.15M14.28 4.93c.58-.7.97-1.68.86-2.65-.83.03-1.84.55-2.44 1.25-.54.62-1.01 1.62-.88 2.57.93.07 1.88-.47 2.46-1.17"/></svg> macOS</h3>
+        <p class="req">macOS 12 (Monterey) or later · Apple Silicon &amp; Intel</p>
+        <a class="btn" data-dl="macos" href="#">
+          <svg viewBox="0 0 24 24"><path d="M12 3v10.6l3.3-3.3 1.4 1.4L12 17 7.3 11.7l1.4-1.4L12 13.6V3zM5 19h14v2H5z"/></svg>
+          Download for macOS
+        </a>
+        <ul>
+          <li>Unzip and drag <b>Atlas.app</b> to Applications.</li>
+          <li>First launch: right-click → Open (open-source app, not notarized).</li>
+          <li>Grant Screen Recording + Accessibility, then reopen.</li>
+        </ul>
+      </div>
+
+      <div class="osc" data-oscard="windows">
+        <span class="badge">Detected</span>
+        <h3><svg viewBox="0 0 24 24"><path d="M3 5.5 10.4 4.4v7.1H3V5.5zm0 13L10.4 19.6v-7H3v6zM11.3 4.27 21 3v8.5h-9.7V4.27zm0 15.46L21 21v-8.5h-9.7v7.23z"/></svg> Windows</h3>
+        <p class="req">Windows 10 or 11 · 64-bit</p>
+        <a class="btn" data-dl="windows" href="#">
+          <svg viewBox="0 0 24 24"><path d="M12 3v10.6l3.3-3.3 1.4 1.4L12 17 7.3 11.7l1.4-1.4L12 13.6V3zM5 19h14v2H5z"/></svg>
+          Download for Windows
+        </a>
+        <ul>
+          <li>Unzip and run <b>Atlas.exe</b> (or drop the folder anywhere).</li>
+          <li>SmartScreen may warn for a new app — choose <b>More info → Run anyway</b>.</li>
+          <li>That's it — Atlas updates itself from then on.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What's new in <span data-ver>—</span></h2>
+    <div class="note" data-notes>Loading release notes…</div>
+    <p class="muted" style="margin-top:14px;font-size:13.5px">After install, Atlas checks for new releases on launch and updates itself in the background — verified by checksum, with a rollback backup. You can turn that off in Settings → Performance.</p>
+  </section>
+</main>
+
+<footer><div class="wrap">
+  <a class="brand" href="index.html"><img src="atlas-logo.svg" alt="" style="width:22px;height:22px;border-radius:6px"> Atlas</a>
+  <div class="muted">Open-source AI agent for macOS &amp; Windows · auto-updates in the background</div>
+  <div><a data-gh href="#" target="_blank" rel="noopener">GitHub</a> · <a href="docs.html">Docs</a> · <a href="features.html">Features</a></div>
+</div></footer>
+<script src="app.js"></script>
+</body>
+</html>
