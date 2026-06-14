@@ -5,11 +5,11 @@
   "min_windows": "10",
   "downloads": {
     "macos": {
-      "url": "https://github.com/YOUR_GITHUB_USERNAME/atlas/releases/latest/download/Atlas-macOS.zip",
+      "url": "https://github.com/arancool3000/atlas/releases/latest/download/Atlas-macOS.zip",
       "sha256": ""
     },
     "windows": {
-      "url": "https://github.com/YOUR_GITHUB_USERNAME/atlas/releases/latest/download/Atlas-Windows.zip",
+      "url": "https://github.com/arancool3000/atlas/releases/latest/download/Atlas-Windows.zip",
       "sha256": ""
     }
   },
