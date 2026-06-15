@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import threading
 import time
 import traceback
 from pathlib import Path
+
+# Set EMBER_SAFE_MODE=1 to skip native / permission-sensitive startup extras
+# (desktop-blur, global hotkey, accessibility auto-prompt, phone-remote autostart).
+# Useful for isolating launch crashes: if Ember starts in safe mode but not
+# normally, one of those native integrations is the culprit.
+_SAFE_MODE = os.environ.get("EMBER_SAFE_MODE", "").strip().lower() not in ("", "0", "false", "no")
 
 from PyQt6.QtCore import (
     Qt, QPoint, QRect, QSize, pyqtSignal, QObject, QTimer,
@@ -1986,7 +1993,8 @@ class EmberWindow(QWidget):
         self._bridge.update_available.connect(self._on_update_available)
         self._pending_update: dict | None = None
         # macOS never auto-prompts for Accessibility — explicitly request it shortly after launch.
-        QTimer.singleShot(900, self._check_accessibility)
+        if not _SAFE_MODE:
+            QTimer.singleShot(900, self._check_accessibility)
         self._listening = False
         self._voice_chat_enabled = False
         self._voice_waiting_for_reply = False
@@ -1994,7 +2002,8 @@ class EmberWindow(QWidget):
         self._title_jobs: set[str] = set()
         self._build_ui()
         self._restore_position()
-        self._install_hotkey()
+        if not _SAFE_MODE:
+            self._install_hotkey()
         self._overlay_timer = QTimer(self)
         self._overlay_timer.timeout.connect(self._keep_overlay_on_top)
         self._overlay_timer.start(2500)
@@ -2003,7 +2012,7 @@ class EmberWindow(QWidget):
         self._automation.enabled = bool(self.settings.get("automation_enabled", True))
         self._automation.auto_confirm_popups = bool(self.settings.get("auto_confirm_popups", False))
         self._automation.start()
-        if self.settings.get("remote_autostart", True):
+        if self.settings.get("remote_autostart", True) and not _SAFE_MODE:
             # Bring Ember Link (phone control) up as soon as the app opens — deferred a beat
             # so the window paints first. Starts silently; no modal on launch.
             QTimer.singleShot(1200, self._autostart_remote_control)
@@ -2414,7 +2423,8 @@ class EmberWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(1040, 760)
         # Apply liquid-glass acrylic backdrop if enabled
-        QTimer.singleShot(100, self._apply_glass_effect)
+        if not _SAFE_MODE:
+            QTimer.singleShot(100, self._apply_glass_effect)
         # Set window icon so the taskbar shows the globe instead of the generic python icon
         try:
             icon_path = _base_dir() / "icon.ico"
@@ -3744,6 +3754,9 @@ class EmberWindow(QWidget):
 
 
 def main(instance_listener=None):
+    if _SAFE_MODE:
+        print("[Ember] EMBER_SAFE_MODE on — native blur, global hotkey, accessibility "
+              "prompt, and phone-remote autostart are disabled.")
     app = QApplication(sys.argv)
     app.setApplicationName("Ember")
     app.setQuitOnLastWindowClosed(True)

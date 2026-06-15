@@ -56,13 +56,21 @@ def set_blur(qwidget, enabled: bool, level: int = 60, radius: float = 26.0) -> b
     blur is now active (so the caller can thin its stylesheet veil to let it show)."""
     if not _AVAILABLE:
         return False
-    # Always start from a clean slate so a prior/broken effect self-heals.
+    if not enabled:
+        # Only touch native APIs if we actually mounted an effect before. Otherwise do
+        # nothing — this avoids bridging Qt's NSWindow into PyObjC on every normal
+        # startup (a fragile cross-framework call that can hard-crash the process).
+        if getattr(qwidget, "_ns_effect", None) is not None:
+            try:
+                _teardown(qwidget)
+            except Exception:
+                pass
+        return False
+    # Enabling: start from a clean slate so a prior/broken effect self-heals.
     try:
         _teardown(qwidget)
     except Exception:
         pass
-    if not enabled:
-        return False
     try:
         import objc
         NSVisualEffectView = objc.lookUpClass("NSVisualEffectView")
