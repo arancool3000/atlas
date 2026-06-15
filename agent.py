@@ -22,6 +22,7 @@ import web_policy
 import audit
 import plan
 import vpn
+import utilities
 import file_ops
 import more_tools
 import extra_tools
@@ -89,6 +90,9 @@ keyboard Enter before giving up. Use zoom_screenshot/read_screen_text for small 
 - Batch deterministic steps with do_sequence (one API request). Include waits and a final assertion inside
   the same do_sequence whenever the next action is obvious. Don't screenshot between every action -
   screenshot/assert_text_visible once at the END to verify.
+- Understand the screen in ONE pass: an auto-attached screenshot also carries an [On-screen text (OCR)]
+  map - read it and reason fully BEFORE acting. Don't take a second screenshot just to re-read the same
+  screen; only re-capture after the screen actually changes. Think first, then act once.
 - A batch of read-only tools (read_screen_text, list_*, get_*, http_get, ...) runs concurrently - issue them
   together when gathering info.
 - paste_text beats type_text for anything over a few words.
@@ -1468,6 +1472,20 @@ TOOL_DECLARATIONS = [
     {"name": "vpn_disconnect",
      "description": "Disconnect the VPN (a specific location, or all active tunnels).",
      "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": []}},
+    # ---- Multitool utilities ----
+    {"name": "disk_usage",
+     "description": "Show the biggest files/folders under a path (a quick 'du'). Read-only.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "path": {"type": "STRING"}, "top": {"type": "INTEGER"}}, "required": []}},
+    {"name": "list_open_ports",
+     "description": "List listening network ports on this machine and the owning process.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "password_strength",
+     "description": "Estimate a password's strength (entropy + rough crack time). Local only.",
+     "parameters": {"type": "OBJECT", "properties": {"password": {"type": "STRING"}}, "required": ["password"]}},
+    {"name": "system_health",
+     "description": "Quick system health: uptime, CPU, memory, and disk usage.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
 ]
 
 
@@ -1587,6 +1605,11 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "remove_vpn_location": vpn.remove_location,
     "vpn_connect": vpn.connect,
     "vpn_disconnect": vpn.disconnect,
+    # multitool utilities
+    "disk_usage": utilities.disk_usage,
+    "list_open_ports": utilities.list_open_ports,
+    "password_strength": utilities.password_strength,
+    "system_health": utilities.system_health,
     "public_ip": more_tools.public_ip,
     "dns_lookup": more_tools.dns_lookup,
     "network_ping": more_tools.network_ping,
@@ -1839,13 +1862,20 @@ class Agent:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             temperature=0.15,
             top_p=0.9,
-            max_output_tokens=3600,
+            max_output_tokens=8000,
         )
+        # Let the model THINK before answering, so it reads the screen right the first time
+        # and retries less. Fewer round-trips = fewer API requests (the free tier counts
+        # requests/day, not tokens). Dynamic budget; guarded for models/SDKs without it.
+        try:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=-1)
+        except Exception:
+            pass
         try:
             config = types.GenerateContentConfig(**config_kwargs)
         except TypeError:
             # Older SDK without some fields - drop the optional ones.
-            for k in ("temperature", "top_p", "max_output_tokens"):
+            for k in ("temperature", "top_p", "max_output_tokens", "thinking_config"):
                 config_kwargs.pop(k, None)
             config = types.GenerateContentConfig(**config_kwargs)
         self._chat = self._client.chats.create(model=self.active_model, config=config)
@@ -2130,6 +2160,15 @@ class Agent:
                 shot = tools.take_screenshot(grid=False, show_cursor=False)
                 actual = tools.get_screen_size()
                 note = (f"\n[Screenshot: {shot['width']}x{shot['height']} of {actual['width']}x{actual['height']}]")
+                # Bundle an OCR text-map in the SAME message so the model understands the
+                # screen in one pass instead of taking a second screenshot to re-read it.
+                try:
+                    ocr = screen_vision.read_screen_text()
+                    txt = (ocr.get("full_text") or "").strip() if ocr.get("ok") else ""
+                    if txt:
+                        note += f"\n[On-screen text (OCR): {txt[:1500]}]"
+                except Exception:
+                    pass
                 parts = [user_text + note, self._image_part(
                     base64.b64decode(shot["image_b64"]),
                     mime_type=shot.get("mime_type", "image/jpeg"),

@@ -187,6 +187,7 @@ free** — no paywall, no license, no payment, no Apple Developer account needed
 - Sandbox for running unknown programs safely
 - **VPN** — connect through your own WireGuard locations (below)
 - Live URL reputation, capability modes, tamper-evident audit log
+- Multitool utilities — disk usage, open-port check, password strength, system health
 - Priority models + the full Pro UI
 
 `get_plan` shows what's unlocked; `set_plan free|pro` toggles locally (default **pro**).
@@ -258,5 +259,6 @@ tunnel up — and it never claims to be connected when it isn't.
 | `audit.py` | tamper-evident action audit log |
 | `plan.py` | Free/Pro plans (everyone is Pro right now) |
 | `vpn.py` | VPN location manager (bring-your-own WireGuard) |
+| `utilities.py` | multitool helpers: disk usage, open ports, password strength, health |
 | `voice.py` | speech input + text-to-speech for Voice Chat |
 | `make_logo.py` | regenerate the app icon |

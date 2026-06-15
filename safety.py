@@ -124,6 +124,7 @@ SAFE_READONLY = {
     "check_url", "list_web_policy", "web_status",
     "get_audit_log", "verify_audit_log", "get_security_mode",
     "get_plan", "list_pro_features", "vpn_status", "list_vpn_locations",
+    "disk_usage", "list_open_ports", "password_strength", "system_health",
 }
 
 SAFE_INTERACTION = {
@@ -304,6 +305,7 @@ _READ_ONLY_EXTRA = {
     "check_url", "list_web_policy", "web_status",
     "get_audit_log", "verify_audit_log", "get_security_mode",
     "get_plan", "list_pro_features", "vpn_status", "list_vpn_locations",
+    "disk_usage", "list_open_ports", "password_strength", "system_health",
 }
 
 
