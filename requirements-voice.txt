@@ -1,0 +1,12 @@
+# Optional: voice / microphone INPUT for Ember.
+#
+# pyaudio has no prebuilt wheel on macOS/Linux, so it compiles against the
+# portaudio C library, which you must install first:
+#   macOS:    brew install portaudio
+#   Debian/Ubuntu: sudo apt install portaudio19-dev
+#   Windows:  nothing extra (a prebuilt wheel is used)
+#
+# Then:  uv pip install -r requirements-voice.txt   (or pip install -r ...)
+#
+# Voice OUTPUT (text-to-speech) and everything else in Ember work WITHOUT this.
+pyaudio>=0.2.14

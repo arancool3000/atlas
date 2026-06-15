@@ -1,6 +1,11 @@
 #!/bin/bash
 # Double-click this file to run Ember on macOS.
-# First run installs dependencies automatically; later runs just launch.
+# First run installs everything automatically; later runs just launch.
+#
+# No Homebrew and no pre-installed Python required: this uses uv
+# (https://docs.astral.sh/uv/), which fetches its own Python 3.12. That also
+# means pip pulls a prebuilt wheel for pyaudio instead of trying to compile it,
+# so microphone/voice support works without portaudio.
 cd "$(dirname "$0")"
 
 # macOS Gatekeeper: once this file runs, clear the "quarantine" flag from the
@@ -8,18 +13,27 @@ cd "$(dirname "$0")"
 # verify" prompt. (The very first launch still needs right-click -> Open.)
 xattr -dr com.apple.quarantine "$(pwd)" 2>/dev/null || true
 
-echo "Starting Ember…"
-if ! python3 -c "import PyQt6, google.genai" >/dev/null 2>&1; then
-    echo "First-time setup: installing Ember dependencies (this takes a few minutes)…"
-    python3 -m pip install --upgrade pip >/dev/null 2>&1
-    if ! python3 -m pip install -r requirements.txt; then
-        echo ""
-        echo "Dependency install failed. Make sure Python 3.10+ is installed:"
-        echo "  brew install python@3.12"
-        echo "Press Enter to close."
-        read _
-        exit 1
-    fi
+die() { echo ""; echo "$1"; echo "Press Enter to close."; read -r _; exit 1; }
+
+# --- 1. Make sure uv is available (install it if not) -----------------------
+export PATH="$HOME/.local/bin:$PATH"
+if ! command -v uv >/dev/null 2>&1; then
+    echo "First-time setup: installing uv (Python toolchain, no admin needed)…"
+    curl -LsSf https://astral.sh/uv/install.sh | sh \
+        || die "Could not install uv. Install Python 3.12 from https://www.python.org/downloads/ and try again."
+    export PATH="$HOME/.local/bin:$PATH"
 fi
 
-exec python3 main.py
+# --- 2. Create the environment (uv downloads Python 3.12 if needed) ---------
+[ -d ".venv" ] || uv venv --python 3.12 || die "Could not create the Python environment."
+
+# --- 3. Install dependencies on first run (fast/no-op afterwards) -----------
+if ! uv run python -c "import PyQt6, google.genai" >/dev/null 2>&1; then
+    echo "First-time setup: installing Ember dependencies (this takes a few minutes)…"
+    # pyaudio (voice INPUT) is intentionally NOT in requirements.txt - it has no
+    # macOS wheel and needs portaudio. See requirements-voice.txt to add mic input.
+    uv pip install -r requirements.txt || die "Dependency install failed."
+fi
+
+echo "Starting Ember…"
+exec uv run python main.py

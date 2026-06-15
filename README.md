@@ -35,9 +35,14 @@ commands, manages files, and can be controlled from your phone. macOS + Windows.
 > Ember.
 
 The first launch installs everything automatically (a few minutes); after that it just opens.
-You need **Python 3.10+** installed first:
-- macOS: `brew install python@3.12`  (or grab it from python.org)
-- Windows: install from [python.org](https://www.python.org/downloads/) and check **“Add Python to PATH.”**
+- **macOS:** nothing to install first — double-clicking `Ember.command` fetches `uv`
+  (which brings its own Python 3.12), so you need **neither Homebrew nor a system Python**.
+- **Windows:** install Python from [python.org](https://www.python.org/downloads/) and check **“Add Python to PATH.”**
+
+> Voice/microphone **input** (`pyaudio`) is optional and installed separately — it has
+> no macOS/Linux wheel and needs the `portaudio` C library. To enable it:
+> `brew install portaudio && uv pip install -r requirements-voice.txt`. Everything
+> else, including voice **output**, works out of the box.
 
 On first run, paste a free **Gemini API key** (get one at https://aistudio.google.com/apikey)
 into Settings (⚙). For Claude models, add an Anthropic API key too.
@@ -260,5 +265,9 @@ tunnel up — and it never claims to be connected when it isn't.
 | `plan.py` | Free/Pro plans (everyone is Pro right now) |
 | `vpn.py` | VPN location manager (bring-your-own WireGuard) |
 | `utilities.py` | multitool helpers: disk usage, open ports, password strength, health |
+| `cleanup.py` | system cleanup: temp/cache reclaim, startup items |
+| `nettools.py` | network toolkit: port scan, LAN devices, Wi-Fi info |
+| `mediatools.py` | file info + media conversion (ffmpeg) |
+| `privacy.py` | keychain secrets, file encryption, breached-password check |
 | `voice.py` | speech input + text-to-speech for Voice Chat |
 | `make_logo.py` | regenerate the app icon |
