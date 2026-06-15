@@ -756,6 +756,14 @@ def search_files(query, root="~", max_results=30, include_overlooked=True):
 
 
 def open_url(url):
+    try:
+        import web_policy
+        g = web_policy.gate_navigation(url)
+        if not g.get("allowed", True):
+            return {"ok": False, "blocked": True, "verdict": g.get("verdict"),
+                    "error": g.get("reason"), "url": url}
+    except Exception:
+        pass
     try: subprocess.Popen(["open", url]); return {"ok": True, "url": url}
     except Exception as e: return {"ok": False, "error": str(e)}
 
@@ -766,8 +774,18 @@ def open_app(name):
 
 
 def open_path(path):
+    target = os.path.expanduser(os.path.expandvars(path))
+    # Scan before opening; refuse malicious/suspicious files until they are cleared.
     try:
-        subprocess.Popen(["open", os.path.expanduser(os.path.expandvars(path))])
+        import antivirus
+        gate = antivirus.gate_open(target)
+        if gate.get("scanned") and not gate.get("allowed", True):
+            return {"ok": False, "blocked": True, "verdict": gate.get("verdict"),
+                    "reasons": gate.get("reasons"), "error": gate.get("message")}
+    except Exception:
+        pass
+    try:
+        subprocess.Popen(["open", target])
         return {"ok": True, "opened": path}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -949,6 +967,15 @@ def list_quick_fixes():
 # ---------- Browser tools (cross-platform CDP - same browser.py) ----------
 def _br(): return _browser_mod.get_browser()
 def browser_open(url="about:blank"):
+    if url and url != "about:blank":
+        try:
+            import web_policy
+            g = web_policy.gate_navigation(url)
+            if not g.get("allowed", True):
+                return {"ok": False, "blocked": True, "verdict": g.get("verdict"),
+                        "error": g.get("reason")}
+        except Exception:
+            pass
     br = _br(); a = br.attach()
     if not a.get("ok"): return a
     if url and url != "about:blank":
@@ -962,6 +989,14 @@ def browser_click_text(text, mode="left"): return _br().click_by_text(text, mode
 def browser_click_selector(selector, mode="left"): return _br().click_selector(selector, mode=mode)
 def browser_fill(selector, value): return _br().fill(selector, value)
 def browser_navigate(url, wait=True):
+    try:
+        import web_policy
+        g = web_policy.gate_navigation(url)
+        if not g.get("allowed", True):
+            return {"ok": False, "blocked": True, "verdict": g.get("verdict"),
+                    "error": g.get("reason")}
+    except Exception:
+        pass
     br = _br(); r = br.navigate(url)
     if wait: br.wait_for_load(timeout=10)
     return {**r, "url": br.get_url(), "title": br.get_title()}

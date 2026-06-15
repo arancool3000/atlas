@@ -17,6 +17,12 @@ from google.genai import types
 import tools
 import memory
 import safety
+import antivirus
+import web_policy
+import audit
+import plan
+import vpn
+import utilities
 import file_ops
 import more_tools
 import extra_tools
@@ -84,6 +90,9 @@ keyboard Enter before giving up. Use zoom_screenshot/read_screen_text for small 
 - Batch deterministic steps with do_sequence (one API request). Include waits and a final assertion inside
   the same do_sequence whenever the next action is obvious. Don't screenshot between every action -
   screenshot/assert_text_visible once at the END to verify.
+- Understand the screen in ONE pass: an auto-attached screenshot also carries an [On-screen text (OCR)]
+  map - read it and reason fully BEFORE acting. Don't take a second screenshot just to re-read the same
+  screen; only re-capture after the screen actually changes. Think first, then act once.
 - A batch of read-only tools (read_screen_text, list_*, get_*, http_get, ...) runs concurrently - issue them
   together when gathering info.
 - paste_text beats type_text for anything over a few words.
@@ -1363,6 +1372,120 @@ TOOL_DECLARATIONS = [
             "required": ["situation", "gemini_summary", "specific_question"],
         },
     },
+    # ---- Security / antivirus ----
+    {"name": "scan_file",
+     "description": "Scan a file for malware (local heuristics + platform AV + VirusTotal). "
+                    "Returns a verdict: clean | suspicious | malicious, with the reasons.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "path": {"type": "STRING"}, "deep": {"type": "BOOLEAN"}}, "required": ["path"]}},
+    {"name": "run_in_sandbox",
+     "description": "Run an unknown/suspicious program in an isolated sandbox (Docker if "
+                    "available, else OS-native confinement) to observe it safely. Refuses to "
+                    "run files already known to be malicious.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "path": {"type": "STRING"}, "args": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "timeout": {"type": "INTEGER"}}, "required": ["path"]}},
+    {"name": "list_quarantine",
+     "description": "List files Ember has quarantined as malicious, and when each auto-deletes.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "restore_quarantined",
+     "description": "Restore a quarantined file (by id) to its original location. DANGEROUS: "
+                    "this re-arms a file flagged as malicious — confirm with the user first.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "id": {"type": "STRING"}, "destination": {"type": "STRING"}}, "required": ["id"]}},
+    {"name": "delete_quarantined",
+     "description": "Permanently delete a single quarantined file by id.",
+     "parameters": {"type": "OBJECT", "properties": {"id": {"type": "STRING"}}, "required": ["id"]}},
+    {"name": "security_status",
+     "description": "Report Ember's malware-protection status: engines available, settings, "
+                    "sandbox type, and quarantine count.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    # ---- Web protection ----
+    {"name": "check_url",
+     "description": "Check a URL/website against block & allow lists, malware/phishing "
+                    "reputation, and typosquat detection. Verdict: clean | suspicious | blocked.",
+     "parameters": {"type": "OBJECT", "properties": {"url": {"type": "STRING"}}, "required": ["url"]}},
+    {"name": "add_web_block",
+     "description": "Add a host/domain to the website block list (future navigation is refused).",
+     "parameters": {"type": "OBJECT", "properties": {"host": {"type": "STRING"}}, "required": ["host"]}},
+    {"name": "remove_web_block",
+     "description": "Remove a host/domain from the website block list.",
+     "parameters": {"type": "OBJECT", "properties": {"host": {"type": "STRING"}}, "required": ["host"]}},
+    {"name": "add_web_allow",
+     "description": "Add a host/domain to the always-allow list (overrides block & reputation).",
+     "parameters": {"type": "OBJECT", "properties": {"host": {"type": "STRING"}}, "required": ["host"]}},
+    {"name": "list_web_policy",
+     "description": "List the website block list, allow list, and built-in blocked domains.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "web_status",
+     "description": "Report web-protection status: enabled, reputation backends, list sizes.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    # ---- Audit log & capability modes ----
+    {"name": "get_audit_log",
+     "description": "Return the most recent N entries of Ember's tamper-evident action log.",
+     "parameters": {"type": "OBJECT", "properties": {"n": {"type": "INTEGER"}}, "required": []}},
+    {"name": "verify_audit_log",
+     "description": "Verify the audit log's hash chain is intact (detects tampering).",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "get_security_mode",
+     "description": "Report Ember's current capability mode: full | restricted | read_only.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "set_agent_mode",
+     "description": "Set Ember's capability mode: full (all tools), restricted (no high-risk "
+                    "actions), or read_only (only safe read-only tools). DANGEROUS to relax.",
+     "parameters": {"type": "OBJECT", "properties": {"mode": {"type": "STRING"}}, "required": ["mode"]}},
+    # ---- Plan / Pro ----
+    {"name": "get_plan",
+     "description": "Show the current plan (free/pro) and which features are unlocked. "
+                    "Note: every user currently has the full Pro feature set for free.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "list_pro_features",
+     "description": "List the Ember Pro features and benefits.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "set_plan",
+     "description": "Set the local plan to 'free' or 'pro' (no payment; everyone is Pro by default).",
+     "parameters": {"type": "OBJECT", "properties": {"plan": {"type": "STRING"}}, "required": ["plan"]}},
+    # ---- Advanced antivirus ----
+    {"name": "scan_directory",
+     "description": "Recursively scan a folder for malware; quarantines confirmed threats. "
+                    "deep=true also consults VirusTotal (Pro).",
+     "parameters": {"type": "OBJECT", "properties": {
+        "path": {"type": "STRING"}, "deep": {"type": "BOOLEAN"}, "max_files": {"type": "INTEGER"}},
+        "required": ["path"]}},
+    # ---- VPN (bring-your-own WireGuard) ----
+    {"name": "vpn_status",
+     "description": "Report VPN status: whether a WireGuard tunnel is up and the current public IP.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "list_vpn_locations",
+     "description": "List saved VPN locations (your WireGuard configs) and suggested locations.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "add_vpn_location",
+     "description": "Add a WireGuard .conf under a location name (from Mullvad/ProtonVPN/your server).",
+     "parameters": {"type": "OBJECT", "properties": {
+        "name": {"type": "STRING"}, "config_path": {"type": "STRING"}}, "required": ["name", "config_path"]}},
+    {"name": "remove_vpn_location",
+     "description": "Remove a saved VPN location.",
+     "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
+    {"name": "vpn_connect",
+     "description": "Connect the VPN through a saved location (needs WireGuard + admin rights).",
+     "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
+    {"name": "vpn_disconnect",
+     "description": "Disconnect the VPN (a specific location, or all active tunnels).",
+     "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": []}},
+    # ---- Multitool utilities ----
+    {"name": "disk_usage",
+     "description": "Show the biggest files/folders under a path (a quick 'du'). Read-only.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "path": {"type": "STRING"}, "top": {"type": "INTEGER"}}, "required": []}},
+    {"name": "list_open_ports",
+     "description": "List listening network ports on this machine and the owning process.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "password_strength",
+     "description": "Estimate a password's strength (entropy + rough crack time). Local only.",
+     "parameters": {"type": "OBJECT", "properties": {"password": {"type": "STRING"}}, "required": ["password"]}},
+    {"name": "system_health",
+     "description": "Quick system health: uptime, CPU, memory, and disk usage.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
 ]
 
 
@@ -1450,6 +1573,43 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "http_get": more_tools.http_get,
     "http_post": more_tools.http_post,
     "download_file": more_tools.download_file,
+    # security / antivirus
+    "scan_file": antivirus.scan_file,
+    "run_in_sandbox": antivirus.run_in_sandbox,
+    "list_quarantine": antivirus.list_quarantine,
+    "restore_quarantined": antivirus.restore_quarantined,
+    "delete_quarantined": antivirus.delete_quarantined,
+    "security_status": antivirus.security_status,
+    # web protection
+    "check_url": web_policy.check_url,
+    "add_web_block": web_policy.add_block,
+    "remove_web_block": web_policy.remove_block,
+    "add_web_allow": web_policy.add_allow,
+    "list_web_policy": web_policy.list_web_policy,
+    "web_status": web_policy.web_status,
+    # audit log & capability modes
+    "get_audit_log": audit.tail,
+    "verify_audit_log": audit.verify,
+    "get_security_mode": safety.get_mode,
+    "set_agent_mode": safety.set_mode,
+    # plan / Pro
+    "get_plan": plan.get_plan,
+    "list_pro_features": plan.list_pro_features,
+    "set_plan": plan.set_plan,
+    # advanced antivirus
+    "scan_directory": antivirus.scan_directory,
+    # vpn
+    "vpn_status": vpn.status,
+    "list_vpn_locations": vpn.list_locations,
+    "add_vpn_location": vpn.add_location,
+    "remove_vpn_location": vpn.remove_location,
+    "vpn_connect": vpn.connect,
+    "vpn_disconnect": vpn.disconnect,
+    # multitool utilities
+    "disk_usage": utilities.disk_usage,
+    "list_open_ports": utilities.list_open_ports,
+    "password_strength": utilities.password_strength,
+    "system_health": utilities.system_health,
     "public_ip": more_tools.public_ip,
     "dns_lookup": more_tools.dns_lookup,
     "network_ping": more_tools.network_ping,
@@ -1702,13 +1862,20 @@ class Agent:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             temperature=0.15,
             top_p=0.9,
-            max_output_tokens=3600,
+            max_output_tokens=8000,
         )
+        # Let the model THINK before answering, so it reads the screen right the first time
+        # and retries less. Fewer round-trips = fewer API requests (the free tier counts
+        # requests/day, not tokens). Dynamic budget; guarded for models/SDKs without it.
+        try:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=-1)
+        except Exception:
+            pass
         try:
             config = types.GenerateContentConfig(**config_kwargs)
         except TypeError:
             # Older SDK without some fields - drop the optional ones.
-            for k in ("temperature", "top_p", "max_output_tokens"):
+            for k in ("temperature", "top_p", "max_output_tokens", "thinking_config"):
                 config_kwargs.pop(k, None)
             config = types.GenerateContentConfig(**config_kwargs)
         self._chat = self._client.chats.create(model=self.active_model, config=config)
@@ -1993,6 +2160,15 @@ class Agent:
                 shot = tools.take_screenshot(grid=False, show_cursor=False)
                 actual = tools.get_screen_size()
                 note = (f"\n[Screenshot: {shot['width']}x{shot['height']} of {actual['width']}x{actual['height']}]")
+                # Bundle an OCR text-map in the SAME message so the model understands the
+                # screen in one pass instead of taking a second screenshot to re-read it.
+                try:
+                    ocr = screen_vision.read_screen_text()
+                    txt = (ocr.get("full_text") or "").strip() if ocr.get("ok") else ""
+                    if txt:
+                        note += f"\n[On-screen text (OCR): {txt[:1500]}]"
+                except Exception:
+                    pass
                 parts = [user_text + note, self._image_part(
                     base64.b64decode(shot["image_b64"]),
                     mime_type=shot.get("mime_type", "image/jpeg"),
@@ -2028,6 +2204,16 @@ class Agent:
         self._emit(AgentEvent("tool_call", {"name": name, "args": args}))
 
         risk, reason = safety.classify(name, args)
+        allowed_by_mode, mode_reason = safety.mode_allows(name, risk)
+        if not allowed_by_mode:
+            result = {"ok": False, "error": mode_reason, "blocked_by_mode": safety.current_mode()}
+            self._emit(AgentEvent("tool_result", {"name": name, "result": result}))
+            memory.log_action(name, args, mode_reason)
+            try:
+                audit.record(name, args, risk, mode_reason)
+            except Exception:
+                pass
+            return (name, result)
         if safety.needs_confirmation(risk):
             pending = PendingConfirmation(name, args, reason)
             self._emit(AgentEvent("confirm", pending))
@@ -2058,6 +2244,10 @@ class Agent:
         summary_brief = str(result.get("error") or result.get("action") or
                             {k: result[k] for k in list(result)[:3] if k != "image_b64"})[:200]
         memory.log_action(name, args, summary_brief)
+        try:
+            audit.record(name, args, risk, summary_brief)
+        except Exception:
+            pass
 
         # Failure tracking: if a tool keeps failing, nudge the model toward another approach.
         if not result.get("ok", True):

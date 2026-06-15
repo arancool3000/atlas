@@ -17,7 +17,7 @@ commands, manages files, and can be controlled from your phone. macOS + Windows.
 > (it deletes the file); click **Done**, then clear the block once with any one of
 > these:
 >
-> **Easiest — run the one-time unblock in Terminal:**
+> **Easiest — one Terminal command that unblocks *and* launches Ember:**
 > ```bash
 > bash /path/to/the/Ember/folder/unblock-mac.sh
 > # tip: type "bash " then drag unblock-mac.sh from Finder into Terminal, press Return
@@ -42,12 +42,37 @@ You need **Python 3.10+** installed first:
 On first run, paste a free **Gemini API key** (get one at https://aistudio.google.com/apikey)
 into Settings (⚙). For Claude models, add an Anthropic API key too.
 
-### Run from a terminal instead
+### Run from source in Terminal (no build, no Homebrew)
+
+The quickest way to run Ember without building an app. It uses
+**[uv](https://docs.astral.sh/uv/)**, which installs its *own* Python — so you do
+**not** need Homebrew or any pre-installed Python, and it avoids the slow
+dependency-resolution stalls you can hit with the old system Python.
+
+**1. Install uv** (one line — no Homebrew):
 ```bash
-cd EmberMac
-./install.sh        # one-time (macOS).  Windows: pip install -r requirements.txt
-./run.sh            # or:  python3 main.py
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"
 ```
+
+**2. Go into this folder.** In Terminal type `cd ` (with a trailing space), then
+drag the Ember folder from Finder onto the window and press Return. Confirm you're
+in the right place — this must list both files:
+```bash
+ls main.py requirements.txt
+```
+
+**3. Install dependencies and launch:**
+```bash
+uv venv --python 3.12
+uv pip install -r requirements.txt
+uv run python main.py
+```
+
+> ⚠️ When copying commands, **never paste lines that start with `#`** — your shell
+> tries to run them and errors. Copy only the actual commands.
+
+Prefer your own Python? `python3 -m pip install -r requirements.txt --prefer-binary && python3 main.py` (needs Python 3.10+).
 
 ---
 
@@ -55,14 +80,24 @@ cd EmberMac
 
 Turn Ember into a double-clickable app that needs **no Python and no terminal** to run:
 
-- **macOS:** double-click **`BUILD_DESKTOP_APP.command`** → produces **`dist/Ember.app`**.
-  Drag it to Applications. (Uses PyInstaller — completely free.)
+- **macOS:** double-click **`BUILD_DESKTOP_APP.command`** → produces **`dist/Ember.app`**
+  *and* **`dist/Ember.dmg`**. (Uses PyInstaller — completely free.)
+- **macOS drag-to-Applications:** open **`dist/Ember.dmg`** and drag Ember into the
+  Applications folder — the same experience as a normal Mac app download. (You can
+  rebuild just the dmg any time with `bash make_dmg.sh`.)
 - **Windows:** run `python -m PyInstaller --noconfirm Ember.spec` → produces `dist/Ember/Ember.exe`.
 
 The build is unsigned, so Gatekeeper gates the first launch. On **macOS** double-click
 `Ember.app`, then open System Settings → Privacy & Security → **Open Anyway** (on macOS
 versions before Sequoia, right-click → **Open** also works). On **Windows** choose
 “More info → Run anyway.” That’s normal for free, self-built apps.
+
+> **“Why isn’t this just drag-and-drop like the Claude app?”** It can be — that’s
+> what `dist/Ember.dmg` gives you (open it, drag Ember into Applications). The one
+> remaining difference: apps like Claude are **notarized** by Apple (a paid Developer
+> ID), so macOS shows no warning at all. Ember is free and unsigned, so the very
+> first launch still needs the one-time **Open Anyway** step above. Add Apple
+> notarization and even that disappears.
 
 ---
 
@@ -107,6 +142,84 @@ It’s LAN-only and PIN-gated; stop it when done.
 
 ---
 
+## 🛡️ Built-in malware defense
+
+Ember scans what it downloads and what you ask it to open, isolates anything it
+can't vouch for, and quarantines confirmed threats.
+
+- **Scan on download / before open** — every downloaded file (and any file Ember
+  is about to open) is scanned with local heuristics (executable-disguised-as-a-
+  document, double extensions like `invoice.pdf.exe`, macro-laden Office files,
+  known-bad hashes), the platform antivirus (**Windows Defender** / **ClamAV** if
+  installed), and **VirusTotal** (hash lookup, plus uploading unknown files when a
+  key is set). Suspicious or malicious files are **not opened until the scan finishes**.
+- **Quarantine + auto-delete** — confirmed-malicious files are moved to a locked,
+  non-executable vault and automatically deleted after 7 days. Nothing is deleted
+  on a mere hunch — only a definitive detection quarantines a file, so a false
+  positive can't destroy your data. Manage it with the `list_quarantine`,
+  `restore_quarantined`, and `delete_quarantined` tools.
+- **Sandbox unknown programs** — `run_in_sandbox` runs a file in the strongest
+  isolation available (Docker with no network → macOS `sandbox-exec` / Windows
+  restricted token → otherwise refuse) so its behaviour can be observed without
+  risking your machine. If no isolation is available, Ember refuses to run it
+  rather than running it unprotected.
+
+**Optional, stronger protection** (all auto-detected — none required):
+- **VirusTotal:** set a `VIRUSTOTAL_API_KEY` (free at virustotal.com) for cloud
+  multi-engine scanning. Only file hashes are sent unless upload is enabled.
+- **ClamAV** (`brew install clamav` / `apt install clamav`) for an on-device engine.
+- **Docker** for the strongest sandbox.
+
+Settings live in `~/Library/Application Support/Ember/security.json` (macOS) /
+`%LOCALAPPDATA%\Ember\security.json` (Windows); the `security_status` tool reports
+what protection is currently active.
+
+---
+
+## 💎 Plans — Free & Pro (everyone gets Pro right now)
+
+Ember has two tiers, but **every user currently gets the full Pro feature set for
+free** — no paywall, no license, no payment, no Apple Developer account needed.
+`plan.py` keeps the structure so Pro *could* be sold later by flipping one default.
+
+**Pro features (all unlocked today):**
+- Advanced antivirus — `scan_directory` deep folder scans + quarantine
+- Sandbox for running unknown programs safely
+- **VPN** — connect through your own WireGuard locations (below)
+- Live URL reputation, capability modes, tamper-evident audit log
+- Multitool utilities — disk usage, open-port check, password strength, system health
+- Priority models + the full Pro UI
+
+`get_plan` shows what's unlocked; `set_plan free|pro` toggles locally (default **pro**).
+
+### VPN (bring-your-own WireGuard)
+Ember isn't a VPN provider — it manages WireGuard configs **you** add (Mullvad,
+ProtonVPN, your own server) and connects via `wg-quick`. Add one `.conf` per location
+with `add_vpn_location`, then `vpn_connect` / `vpn_disconnect` / `vpn_status` /
+`list_vpn_locations`. Needs `wireguard-tools` installed and admin rights to bring a
+tunnel up — and it never claims to be connected when it isn't.
+
+---
+
+## 🧱 More security layers
+
+- **Web protection** — every navigation (`open_url`, `browser_open`,
+  `browser_navigate`) is checked against block/allow lists, known malware/phishing
+  domains, live reputation (URLhaus free; VirusTotal / Google Safe Browsing with a
+  key), and look-alike / typosquat detection. Blocked sites don't load; look-alikes
+  are flagged. Manage with `add_web_block` / `add_web_allow` / `list_web_policy`.
+- **Secret redaction** — API keys, passwords, tokens, private keys and PII are
+  stripped from the action log and audit trail (and from screenshots via
+  `redaction.redact_image`) so they don't leak to disk or the cloud LLM.
+- **Tamper-evident audit log** — every action Ember takes is appended to a
+  hash-chained log; `verify_audit_log` proves nothing was altered and
+  `get_audit_log` shows recent activity.
+- **Capability modes** — cap Ember's blast radius with `set_agent_mode`: `full`,
+  `restricted` (no high-risk actions), or `read_only` (safe read-only tools only).
+  Ember can tighten its own mode but can't loosen it out of read-only without you.
+
+---
+
 ## 🧠 What makes Ember accurate
 
 - **`smart_click("Sign in")`** — finds the real on-screen target via the macOS/Windows
@@ -131,13 +244,21 @@ It’s LAN-only and PIN-gated; stop it when done.
 | File | Purpose |
 |---|---|
 | `Ember.command` / `Ember.bat` | one-click run |
-| `unblock-mac.sh` | one-time macOS Gatekeeper unblock (`bash unblock-mac.sh`) |
-| `BUILD_DESKTOP_APP.command` | build standalone `Ember.app` |
+| `unblock-mac.sh` | macOS: clear Gatekeeper quarantine + launch, in one `bash unblock-mac.sh` |
+| `BUILD_DESKTOP_APP.command` | build standalone `Ember.app` (+ `Ember.dmg`) |
+| `make_dmg.sh` | package `Ember.app` into a drag-to-Applications `.dmg` |
 | `main.py` | entry point |
 | `ui.py` | the desktop UI |
 | `agent.py` | the AI agent loop + tool declarations |
 | `tools.py`, `more_tools.py`, `extra_tools.py` | the tool set |
 | `screen_vision.py` | exact clicking + on-screen OCR |
 | `remote_server.py` | Ember Link phone control |
+| `antivirus.py` | malware scan, quarantine vault & sandbox |
+| `web_policy.py` | website blocking + URL reputation |
+| `redaction.py` | strip secrets/PII from logs, audit & screenshots |
+| `audit.py` | tamper-evident action audit log |
+| `plan.py` | Free/Pro plans (everyone is Pro right now) |
+| `vpn.py` | VPN location manager (bring-your-own WireGuard) |
+| `utilities.py` | multitool helpers: disk usage, open ports, password strength, health |
 | `voice.py` | speech input + text-to-speech for Voice Chat |
 | `make_logo.py` | regenerate the app icon |

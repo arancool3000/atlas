@@ -160,6 +160,18 @@ class ClaudeAgent:
                         args = {}
                     self._emit(AgentEvent("tool_call", {"name": name, "args": args}))
                     risk, reason = safety.classify(name, args)
+                    allowed_by_mode, mode_reason = safety.mode_allows(name, risk)
+                    if not allowed_by_mode:
+                        result = {"ok": False, "error": mode_reason,
+                                  "blocked_by_mode": safety.current_mode()}
+                        self._emit(AgentEvent("tool_result", {"name": name, "result": result}))
+                        try:
+                            import audit
+                            audit.record(name, args, risk, mode_reason)
+                        except Exception:
+                            pass
+                        tool_results.append((tu.id, result, name))
+                        continue
                     if safety.needs_confirmation(risk):
                         pending = PendingConfirmation(name, args, reason)
                         self._emit(AgentEvent("confirm", pending))
@@ -184,7 +196,13 @@ class ClaudeAgent:
                             except Exception as e:
                                 result = {"ok": False, "error": str(e)}
                     self._emit(AgentEvent("tool_result", {"name": name, "result": result}))
-                    memory.log_action(name, args, str(result.get("error") or result.get("action") or "")[:200])
+                    _brief = str(result.get("error") or result.get("action") or "")[:200]
+                    memory.log_action(name, args, _brief)
+                    try:
+                        import audit
+                        audit.record(name, args, risk, _brief)
+                    except Exception:
+                        pass
                     tool_results.append((tu.id, result, name))
 
                 content = []

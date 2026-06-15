@@ -25,7 +25,8 @@ import tools
 pyautogui.FAILSAFE = False  # phone control can legitimately reach screen corners
 pyautogui.PAUSE = 0          # remove the 50ms post-call stall so rapid moves/keys stay snappy
 
-_STATE = {"server": None, "thread": None, "pin": None, "port": None, "ip": None}
+_STATE = {"server": None, "thread": None, "pin": None, "port": None, "ip": None,
+          "last_active": 0.0, "idle_timeout": 1800.0}
 _SCT = None                  # reused mss grabber (re-creating it per frame is slow)
 _SCT_LOCK = threading.Lock()
 _CHAT_HANDLER = None
@@ -41,9 +42,9 @@ _INPUT_LOCK = threading.Lock()
 # failed auth per client IP (small delay each failure + lockout after a burst).
 _AUTH_FAILS: dict[str, dict] = {}
 _AUTH_LOCK = threading.Lock()
-_AUTH_MAX_FAILS = 10        # failures within the window before lockout
+_AUTH_MAX_FAILS = 5         # failures within the window before lockout
 _AUTH_WINDOW_S = 60.0       # rolling window for counting failures
-_AUTH_LOCKOUT_S = 30.0      # cooldown once locked out
+_AUTH_LOCKOUT_S = 120.0     # cooldown once locked out
 
 
 def _auth_locked(ip: str) -> bool:
@@ -375,7 +376,9 @@ class _Handler(BaseHTTPRequestHandler):
             time.sleep(1.0)  # slow even the rejection while locked out
             return False
         ok = bool(_STATE["pin"]) and secrets.compare_digest(str(pin or ""), str(_STATE["pin"]))
-        if not ok:
+        if ok:
+            _STATE["last_active"] = time.time()  # refresh the idle-timeout watchdog
+        else:
             time.sleep(0.3)  # cap brute-force throughput
         _auth_record(ip, ok)
         return ok
@@ -532,11 +535,13 @@ def stable_pin() -> str:
     try:
         if f.exists():
             p = f.read_text().strip()
-            if p.isdigit() and len(p) == 4:
+            if p.isdigit() and 4 <= len(p) <= 8:
                 return p
     except OSError:
         pass
-    p = f"{secrets.randbelow(9000) + 1000}"
+    # 6 digits (1,000,000 combos). Combined with the per-IP lockout below, that is
+    # brute-force-resistant on a LAN; old 4-digit pins keep working until deleted.
+    p = f"{secrets.randbelow(900000) + 100000}"
     try:
         f.write_text(p)
     except OSError:
@@ -544,9 +549,21 @@ def stable_pin() -> str:
     return p
 
 
-def start(port: int = 8765, pin: str | None = None) -> dict:
+def _idle_watchdog(srv) -> None:
+    """Auto-stop Ember Link after a stretch with no successful auth, to shrink the
+    exposure window if the user forgets to stop it. Exits when the server changes."""
+    while _STATE.get("server") is srv:
+        timeout = _STATE.get("idle_timeout") or 0
+        if timeout and time.time() - _STATE.get("last_active", 0) > timeout:
+            stop()
+            return
+        time.sleep(15)
+
+
+def start(port: int = 8765, pin: str | None = None, idle_timeout: float = 1800.0) -> dict:
     """Start Ember Link. Returns the phone URL + PIN to display in the UI.
-    Uses a stable PIN by default so it's the same every session/boot."""
+    Uses a stable PIN by default so it's the same every session/boot.
+    Auto-stops after `idle_timeout` seconds with no successful auth (0 disables)."""
     if _STATE["server"]:
         return {"ok": True, "url": _STATE["url"], "pin": _STATE["pin"], "already_running": True}
     pin = pin or stable_pin()
@@ -558,7 +575,10 @@ def start(port: int = 8765, pin: str | None = None) -> dict:
     th = threading.Thread(target=srv.serve_forever, daemon=True)
     th.start()
     _STATE.update(server=srv, thread=th, pin=pin, port=port, ip=ip,
-                  url=f"http://{ip}:{port}")
+                  url=f"http://{ip}:{port}", last_active=time.time(),
+                  idle_timeout=idle_timeout)
+    if idle_timeout and idle_timeout > 0:
+        threading.Thread(target=_idle_watchdog, args=(srv,), daemon=True).start()
     return {"ok": True, "url": _STATE["url"], "pin": pin,
             "hint": f"On your phone (same Wi-Fi) open {_STATE['url']} and enter PIN {pin}"}
 

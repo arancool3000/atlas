@@ -120,6 +120,11 @@ SAFE_READONLY = {
     "get_battery", "get_volume", "env_get", "env_list",
     "color_at", "clipboard_get", "clipboard_history_get", "clipboard_history_snapshot",
     "git_status", "git_log", "git_diff",
+    "scan_file", "list_quarantine", "security_status",
+    "check_url", "list_web_policy", "web_status",
+    "get_audit_log", "verify_audit_log", "get_security_mode",
+    "get_plan", "list_pro_features", "vpn_status", "list_vpn_locations",
+    "disk_usage", "list_open_ports", "password_strength", "system_health",
 }
 
 SAFE_INTERACTION = {
@@ -265,9 +270,80 @@ def classify(tool_name: str, args: dict) -> tuple[str, str]:
                 return "high", f"writing to sensitive path: {sensitive}"
         return "medium", "file write"
 
+    if tool_name == "run_in_sandbox":
+        return "medium", "runs a program inside an isolated sandbox"
+    if tool_name == "restore_quarantined":
+        return "high", "restores a quarantined (malicious) file"
+    if tool_name == "delete_quarantined":
+        return "medium", "permanently deletes a quarantined file"
+    if tool_name in {"add_web_block", "add_web_allow", "remove_web_block"}:
+        return "medium", "changes the website block/allow policy"
+    if tool_name == "set_agent_mode":
+        return "high", "changes Ember's capability mode"
+    if tool_name == "vpn_connect":
+        return "high", "changes your network routing (VPN connect)"
+    if tool_name in {"vpn_disconnect", "add_vpn_location", "remove_vpn_location", "set_plan"}:
+        return "medium", "VPN / plan configuration change"
+    if tool_name == "scan_directory":
+        return "medium", "scans a folder and may quarantine malware"
+
     return "medium", "unclassified tool"
 
 
 def needs_confirmation(risk: str) -> bool:
     """User said: only confirm very risky items."""
     return risk == "high"
+
+
+# --- Agent capability modes -------------------------------------------------
+# A blast-radius cap the user can set. Enforced in the agent dispatch loop.
+VALID_MODES = ("full", "restricted", "read_only")
+
+# Non-mutating tools allowed even in read-only mode (in addition to SAFE_READONLY).
+_READ_ONLY_EXTRA = {
+    "scan_file", "list_quarantine", "security_status",
+    "check_url", "list_web_policy", "web_status",
+    "get_audit_log", "verify_audit_log", "get_security_mode",
+    "get_plan", "list_pro_features", "vpn_status", "list_vpn_locations",
+    "disk_usage", "list_open_ports", "password_strength", "system_health",
+}
+
+
+def current_mode() -> str:
+    try:
+        import antivirus
+        m = antivirus.get_config().get("agent_mode", "full")
+        return m if m in VALID_MODES else "full"
+    except Exception:
+        return "full"
+
+
+def get_mode() -> dict:
+    return {"ok": True, "mode": current_mode()}
+
+
+def set_mode(mode: str) -> dict:
+    if mode not in VALID_MODES:
+        return {"ok": False, "error": f"mode must be one of {VALID_MODES}"}
+    try:
+        import antivirus
+        antivirus.set_config(agent_mode=mode)
+        return {"ok": True, "mode": mode}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def mode_allows(tool_name: str, risk: str) -> tuple[bool, str]:
+    """Whether the current capability mode permits a tool. Returns (allowed, reason)."""
+    mode = current_mode()
+    if mode == "full":
+        return True, ""
+    if mode == "read_only":
+        if tool_name in SAFE_READONLY or tool_name in _READ_ONLY_EXTRA:
+            return True, ""
+        return False, "blocked: Ember is in read-only mode (only safe, read-only tools allowed)"
+    if mode == "restricted":
+        if risk == "high":
+            return False, "blocked: Ember is in restricted mode (high-risk actions are disabled)"
+        return True, ""
+    return True, ""
