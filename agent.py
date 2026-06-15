@@ -18,6 +18,8 @@ import tools
 import memory
 import safety
 import antivirus
+import web_policy
+import audit
 import file_ops
 import more_tools
 import extra_tools
@@ -1392,6 +1394,40 @@ TOOL_DECLARATIONS = [
      "description": "Report Ember's malware-protection status: engines available, settings, "
                     "sandbox type, and quarantine count.",
      "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    # ---- Web protection ----
+    {"name": "check_url",
+     "description": "Check a URL/website against block & allow lists, malware/phishing "
+                    "reputation, and typosquat detection. Verdict: clean | suspicious | blocked.",
+     "parameters": {"type": "OBJECT", "properties": {"url": {"type": "STRING"}}, "required": ["url"]}},
+    {"name": "add_web_block",
+     "description": "Add a host/domain to the website block list (future navigation is refused).",
+     "parameters": {"type": "OBJECT", "properties": {"host": {"type": "STRING"}}, "required": ["host"]}},
+    {"name": "remove_web_block",
+     "description": "Remove a host/domain from the website block list.",
+     "parameters": {"type": "OBJECT", "properties": {"host": {"type": "STRING"}}, "required": ["host"]}},
+    {"name": "add_web_allow",
+     "description": "Add a host/domain to the always-allow list (overrides block & reputation).",
+     "parameters": {"type": "OBJECT", "properties": {"host": {"type": "STRING"}}, "required": ["host"]}},
+    {"name": "list_web_policy",
+     "description": "List the website block list, allow list, and built-in blocked domains.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "web_status",
+     "description": "Report web-protection status: enabled, reputation backends, list sizes.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    # ---- Audit log & capability modes ----
+    {"name": "get_audit_log",
+     "description": "Return the most recent N entries of Ember's tamper-evident action log.",
+     "parameters": {"type": "OBJECT", "properties": {"n": {"type": "INTEGER"}}, "required": []}},
+    {"name": "verify_audit_log",
+     "description": "Verify the audit log's hash chain is intact (detects tampering).",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "get_security_mode",
+     "description": "Report Ember's current capability mode: full | restricted | read_only.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "set_agent_mode",
+     "description": "Set Ember's capability mode: full (all tools), restricted (no high-risk "
+                    "actions), or read_only (only safe read-only tools). DANGEROUS to relax.",
+     "parameters": {"type": "OBJECT", "properties": {"mode": {"type": "STRING"}}, "required": ["mode"]}},
 ]
 
 
@@ -1486,6 +1522,18 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "restore_quarantined": antivirus.restore_quarantined,
     "delete_quarantined": antivirus.delete_quarantined,
     "security_status": antivirus.security_status,
+    # web protection
+    "check_url": web_policy.check_url,
+    "add_web_block": web_policy.add_block,
+    "remove_web_block": web_policy.remove_block,
+    "add_web_allow": web_policy.add_allow,
+    "list_web_policy": web_policy.list_web_policy,
+    "web_status": web_policy.web_status,
+    # audit log & capability modes
+    "get_audit_log": audit.tail,
+    "verify_audit_log": audit.verify,
+    "get_security_mode": safety.get_mode,
+    "set_agent_mode": safety.set_mode,
     "public_ip": more_tools.public_ip,
     "dns_lookup": more_tools.dns_lookup,
     "network_ping": more_tools.network_ping,
@@ -2064,6 +2112,16 @@ class Agent:
         self._emit(AgentEvent("tool_call", {"name": name, "args": args}))
 
         risk, reason = safety.classify(name, args)
+        allowed_by_mode, mode_reason = safety.mode_allows(name, risk)
+        if not allowed_by_mode:
+            result = {"ok": False, "error": mode_reason, "blocked_by_mode": safety.current_mode()}
+            self._emit(AgentEvent("tool_result", {"name": name, "result": result}))
+            memory.log_action(name, args, mode_reason)
+            try:
+                audit.record(name, args, risk, mode_reason)
+            except Exception:
+                pass
+            return (name, result)
         if safety.needs_confirmation(risk):
             pending = PendingConfirmation(name, args, reason)
             self._emit(AgentEvent("confirm", pending))
@@ -2094,6 +2152,10 @@ class Agent:
         summary_brief = str(result.get("error") or result.get("action") or
                             {k: result[k] for k in list(result)[:3] if k != "image_b64"})[:200]
         memory.log_action(name, args, summary_brief)
+        try:
+            audit.record(name, args, risk, summary_brief)
+        except Exception:
+            pass
 
         # Failure tracking: if a tool keeps failing, nudge the model toward another approach.
         if not result.get("ok", True):

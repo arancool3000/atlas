@@ -121,6 +121,8 @@ SAFE_READONLY = {
     "color_at", "clipboard_get", "clipboard_history_get", "clipboard_history_snapshot",
     "git_status", "git_log", "git_diff",
     "scan_file", "list_quarantine", "security_status",
+    "check_url", "list_web_policy", "web_status",
+    "get_audit_log", "verify_audit_log", "get_security_mode",
 }
 
 SAFE_INTERACTION = {
@@ -272,6 +274,10 @@ def classify(tool_name: str, args: dict) -> tuple[str, str]:
         return "high", "restores a quarantined (malicious) file"
     if tool_name == "delete_quarantined":
         return "medium", "permanently deletes a quarantined file"
+    if tool_name in {"add_web_block", "add_web_allow", "remove_web_block"}:
+        return "medium", "changes the website block/allow policy"
+    if tool_name == "set_agent_mode":
+        return "high", "changes Ember's capability mode"
 
     return "medium", "unclassified tool"
 
@@ -279,3 +285,55 @@ def classify(tool_name: str, args: dict) -> tuple[str, str]:
 def needs_confirmation(risk: str) -> bool:
     """User said: only confirm very risky items."""
     return risk == "high"
+
+
+# --- Agent capability modes -------------------------------------------------
+# A blast-radius cap the user can set. Enforced in the agent dispatch loop.
+VALID_MODES = ("full", "restricted", "read_only")
+
+# Non-mutating tools allowed even in read-only mode (in addition to SAFE_READONLY).
+_READ_ONLY_EXTRA = {
+    "scan_file", "list_quarantine", "security_status",
+    "check_url", "list_web_policy", "web_status",
+    "get_audit_log", "verify_audit_log", "get_security_mode",
+}
+
+
+def current_mode() -> str:
+    try:
+        import antivirus
+        m = antivirus.get_config().get("agent_mode", "full")
+        return m if m in VALID_MODES else "full"
+    except Exception:
+        return "full"
+
+
+def get_mode() -> dict:
+    return {"ok": True, "mode": current_mode()}
+
+
+def set_mode(mode: str) -> dict:
+    if mode not in VALID_MODES:
+        return {"ok": False, "error": f"mode must be one of {VALID_MODES}"}
+    try:
+        import antivirus
+        antivirus.set_config(agent_mode=mode)
+        return {"ok": True, "mode": mode}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def mode_allows(tool_name: str, risk: str) -> tuple[bool, str]:
+    """Whether the current capability mode permits a tool. Returns (allowed, reason)."""
+    mode = current_mode()
+    if mode == "full":
+        return True, ""
+    if mode == "read_only":
+        if tool_name in SAFE_READONLY or tool_name in _READ_ONLY_EXTRA:
+            return True, ""
+        return False, "blocked: Ember is in read-only mode (only safe, read-only tools allowed)"
+    if mode == "restricted":
+        if risk == "high":
+            return False, "blocked: Ember is in restricted mode (high-risk actions are disabled)"
+        return True, ""
+    return True, ""

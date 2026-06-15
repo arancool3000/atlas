@@ -136,6 +136,13 @@ def get_facts_summary(max_facts: int = 30) -> str:
 
 def log_action(name: str, args: dict, result_summary: str):
     """Append a brief action record so the AI can recall what it just did."""
+    # Strip any secrets (API keys, passwords, tokens, PII) before they hit disk.
+    try:
+        import redaction
+        args = redaction.scrub_obj(args or {})
+        result_summary = redaction.scrub_text(result_summary)[0]
+    except Exception:
+        pass
     with _LOCK:
         data = _load()
         log = data.setdefault("actions_log", [])

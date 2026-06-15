@@ -141,6 +141,25 @@ what protection is currently active.
 
 ---
 
+## 🧱 More security layers
+
+- **Web protection** — every navigation (`open_url`, `browser_open`,
+  `browser_navigate`) is checked against block/allow lists, known malware/phishing
+  domains, live reputation (URLhaus free; VirusTotal / Google Safe Browsing with a
+  key), and look-alike / typosquat detection. Blocked sites don't load; look-alikes
+  are flagged. Manage with `add_web_block` / `add_web_allow` / `list_web_policy`.
+- **Secret redaction** — API keys, passwords, tokens, private keys and PII are
+  stripped from the action log and audit trail (and from screenshots via
+  `redaction.redact_image`) so they don't leak to disk or the cloud LLM.
+- **Tamper-evident audit log** — every action Ember takes is appended to a
+  hash-chained log; `verify_audit_log` proves nothing was altered and
+  `get_audit_log` shows recent activity.
+- **Capability modes** — cap Ember's blast radius with `set_agent_mode`: `full`,
+  `restricted` (no high-risk actions), or `read_only` (safe read-only tools only).
+  Ember can tighten its own mode but can't loosen it out of read-only without you.
+
+---
+
 ## 🧠 What makes Ember accurate
 
 - **`smart_click("Sign in")`** — finds the real on-screen target via the macOS/Windows
@@ -174,5 +193,8 @@ what protection is currently active.
 | `screen_vision.py` | exact clicking + on-screen OCR |
 | `remote_server.py` | Ember Link phone control |
 | `antivirus.py` | malware scan, quarantine vault & sandbox |
+| `web_policy.py` | website blocking + URL reputation |
+| `redaction.py` | strip secrets/PII from logs, audit & screenshots |
+| `audit.py` | tamper-evident action audit log |
 | `voice.py` | speech input + text-to-speech for Voice Chat |
 | `make_logo.py` | regenerate the app icon |

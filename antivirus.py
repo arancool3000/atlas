@@ -88,6 +88,7 @@ DEFAULT_CONFIG: dict = {
     "max_scan_bytes": 64 * 1024 * 1024,      # files larger than this: hash + heuristics only
     "vt_upload_max_bytes": 32 * 1024 * 1024, # VirusTotal's free upload ceiling
     "vt_malicious_threshold": 3,   # >= this many AV engines flag it -> malicious
+    "agent_mode": "full",          # full | restricted | read_only (agent capability cap)
 }
 
 
