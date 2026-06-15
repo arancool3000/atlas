@@ -465,6 +465,43 @@ def scan_file(path: str, deep: bool = True) -> dict:
         return {"ok": False, "error": f"scan failed: {e}", "verdict": "unknown"}
 
 
+def scan_directory(path: str, deep: bool = False, max_files: int = 2000) -> dict:
+    """Recursively scan a folder (Pro 'deep scan'). Confirmed-malicious files are
+    quarantined; suspicious files are reported. deep=True also consults VirusTotal."""
+    try:
+        import plan
+        if deep and plan.require("deep_directory_scan"):
+            deep = False  # not entitled -> fall back to local scan (everyone is Pro now)
+    except Exception:
+        pass
+    try:
+        root = Path(path).expanduser()
+        if not root.exists() or not root.is_dir():
+            return {"ok": False, "error": f"not a directory: {path}"}
+        scanned = 0
+        flagged = []
+        for p in root.rglob("*"):
+            if scanned >= max_files:
+                break
+            try:
+                if p.is_symlink() or not p.is_file():
+                    continue
+            except OSError:
+                continue
+            scanned += 1
+            r = scan_file(str(p), deep=deep)
+            if r.get("verdict") in ("suspicious", "malicious"):
+                item = {"path": str(p), "verdict": r["verdict"], "reasons": r.get("reasons")}
+                if r["verdict"] == "malicious":
+                    item["handled"] = _handle_malicious(str(p), r)
+                flagged.append(item)
+        return {"ok": True, "root": str(root), "scanned": scanned,
+                "flagged_count": len(flagged), "flagged": flagged[:200],
+                "reached_limit": scanned >= max_files}
+    except Exception as e:
+        return {"ok": False, "error": f"directory scan failed: {e}"}
+
+
 # ---------------------------------------------------------------------------
 # Quarantine vault
 # ---------------------------------------------------------------------------

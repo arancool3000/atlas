@@ -176,6 +176,30 @@ what protection is currently active.
 
 ---
 
+## 💎 Plans — Free & Pro (everyone gets Pro right now)
+
+Ember has two tiers, but **every user currently gets the full Pro feature set for
+free** — no paywall, no license, no payment, no Apple Developer account needed.
+`plan.py` keeps the structure so Pro *could* be sold later by flipping one default.
+
+**Pro features (all unlocked today):**
+- Advanced antivirus — `scan_directory` deep folder scans + quarantine
+- Sandbox for running unknown programs safely
+- **VPN** — connect through your own WireGuard locations (below)
+- Live URL reputation, capability modes, tamper-evident audit log
+- Priority models + the full Pro UI
+
+`get_plan` shows what's unlocked; `set_plan free|pro` toggles locally (default **pro**).
+
+### VPN (bring-your-own WireGuard)
+Ember isn't a VPN provider — it manages WireGuard configs **you** add (Mullvad,
+ProtonVPN, your own server) and connects via `wg-quick`. Add one `.conf` per location
+with `add_vpn_location`, then `vpn_connect` / `vpn_disconnect` / `vpn_status` /
+`list_vpn_locations`. Needs `wireguard-tools` installed and admin rights to bring a
+tunnel up — and it never claims to be connected when it isn't.
+
+---
+
 ## 🧱 More security layers
 
 - **Web protection** — every navigation (`open_url`, `browser_open`,
@@ -232,5 +256,7 @@ what protection is currently active.
 | `web_policy.py` | website blocking + URL reputation |
 | `redaction.py` | strip secrets/PII from logs, audit & screenshots |
 | `audit.py` | tamper-evident action audit log |
+| `plan.py` | Free/Pro plans (everyone is Pro right now) |
+| `vpn.py` | VPN location manager (bring-your-own WireGuard) |
 | `voice.py` | speech input + text-to-speech for Voice Chat |
 | `make_logo.py` | regenerate the app icon |

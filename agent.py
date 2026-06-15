@@ -20,6 +20,8 @@ import safety
 import antivirus
 import web_policy
 import audit
+import plan
+import vpn
 import file_ops
 import more_tools
 import extra_tools
@@ -1428,6 +1430,44 @@ TOOL_DECLARATIONS = [
      "description": "Set Ember's capability mode: full (all tools), restricted (no high-risk "
                     "actions), or read_only (only safe read-only tools). DANGEROUS to relax.",
      "parameters": {"type": "OBJECT", "properties": {"mode": {"type": "STRING"}}, "required": ["mode"]}},
+    # ---- Plan / Pro ----
+    {"name": "get_plan",
+     "description": "Show the current plan (free/pro) and which features are unlocked. "
+                    "Note: every user currently has the full Pro feature set for free.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "list_pro_features",
+     "description": "List the Ember Pro features and benefits.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "set_plan",
+     "description": "Set the local plan to 'free' or 'pro' (no payment; everyone is Pro by default).",
+     "parameters": {"type": "OBJECT", "properties": {"plan": {"type": "STRING"}}, "required": ["plan"]}},
+    # ---- Advanced antivirus ----
+    {"name": "scan_directory",
+     "description": "Recursively scan a folder for malware; quarantines confirmed threats. "
+                    "deep=true also consults VirusTotal (Pro).",
+     "parameters": {"type": "OBJECT", "properties": {
+        "path": {"type": "STRING"}, "deep": {"type": "BOOLEAN"}, "max_files": {"type": "INTEGER"}},
+        "required": ["path"]}},
+    # ---- VPN (bring-your-own WireGuard) ----
+    {"name": "vpn_status",
+     "description": "Report VPN status: whether a WireGuard tunnel is up and the current public IP.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "list_vpn_locations",
+     "description": "List saved VPN locations (your WireGuard configs) and suggested locations.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "add_vpn_location",
+     "description": "Add a WireGuard .conf under a location name (from Mullvad/ProtonVPN/your server).",
+     "parameters": {"type": "OBJECT", "properties": {
+        "name": {"type": "STRING"}, "config_path": {"type": "STRING"}}, "required": ["name", "config_path"]}},
+    {"name": "remove_vpn_location",
+     "description": "Remove a saved VPN location.",
+     "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
+    {"name": "vpn_connect",
+     "description": "Connect the VPN through a saved location (needs WireGuard + admin rights).",
+     "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
+    {"name": "vpn_disconnect",
+     "description": "Disconnect the VPN (a specific location, or all active tunnels).",
+     "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": []}},
 ]
 
 
@@ -1534,6 +1574,19 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "verify_audit_log": audit.verify,
     "get_security_mode": safety.get_mode,
     "set_agent_mode": safety.set_mode,
+    # plan / Pro
+    "get_plan": plan.get_plan,
+    "list_pro_features": plan.list_pro_features,
+    "set_plan": plan.set_plan,
+    # advanced antivirus
+    "scan_directory": antivirus.scan_directory,
+    # vpn
+    "vpn_status": vpn.status,
+    "list_vpn_locations": vpn.list_locations,
+    "add_vpn_location": vpn.add_location,
+    "remove_vpn_location": vpn.remove_location,
+    "vpn_connect": vpn.connect,
+    "vpn_disconnect": vpn.disconnect,
     "public_ip": more_tools.public_ip,
     "dns_lookup": more_tools.dns_lookup,
     "network_ping": more_tools.network_ping,

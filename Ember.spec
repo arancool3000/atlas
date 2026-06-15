@@ -33,6 +33,7 @@ hiddenimports += collect_submodules("google")
 hiddenimports += ["single_instance", "automation", "manual_mode", "more_tools",
                   "extra_tools", "screen_vision", "tools", "browser", "file_ops",
                   "memory", "safety", "antivirus", "web_policy", "audit", "redaction",
+                  "plan", "vpn",
                   "models", "voice", "scheduled_tasks",
                   "claude_bridge", "claude_agent",
                   "mac_permissions",

@@ -123,6 +123,7 @@ SAFE_READONLY = {
     "scan_file", "list_quarantine", "security_status",
     "check_url", "list_web_policy", "web_status",
     "get_audit_log", "verify_audit_log", "get_security_mode",
+    "get_plan", "list_pro_features", "vpn_status", "list_vpn_locations",
 }
 
 SAFE_INTERACTION = {
@@ -278,6 +279,12 @@ def classify(tool_name: str, args: dict) -> tuple[str, str]:
         return "medium", "changes the website block/allow policy"
     if tool_name == "set_agent_mode":
         return "high", "changes Ember's capability mode"
+    if tool_name == "vpn_connect":
+        return "high", "changes your network routing (VPN connect)"
+    if tool_name in {"vpn_disconnect", "add_vpn_location", "remove_vpn_location", "set_plan"}:
+        return "medium", "VPN / plan configuration change"
+    if tool_name == "scan_directory":
+        return "medium", "scans a folder and may quarantine malware"
 
     return "medium", "unclassified tool"
 
@@ -296,6 +303,7 @@ _READ_ONLY_EXTRA = {
     "scan_file", "list_quarantine", "security_status",
     "check_url", "list_web_policy", "web_status",
     "get_audit_log", "verify_audit_log", "get_security_mode",
+    "get_plan", "list_pro_features", "vpn_status", "list_vpn_locations",
 }
 
 
