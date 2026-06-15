@@ -30,14 +30,9 @@ fi
 # --- 3. Install dependencies on first run (fast/no-op afterwards) -----------
 if ! uv run python -c "import PyQt6, google.genai" >/dev/null 2>&1; then
     echo "First-time setup: installing Ember dependencies (this takes a few minutes)…"
-    if ! uv pip install -r requirements.txt; then
-        # pyaudio (voice input) is the only package that may fail to build on
-        # some setups. It's optional, so retry without it rather than dead-end.
-        echo "Retrying without optional voice input (pyaudio)…"
-        grep -v '^pyaudio' requirements.txt > .requirements.core.txt
-        uv pip install -r .requirements.core.txt || { rm -f .requirements.core.txt; die "Dependency install failed."; }
-        rm -f .requirements.core.txt
-    fi
+    # pyaudio (voice INPUT) is intentionally NOT in requirements.txt - it has no
+    # macOS wheel and needs portaudio. See requirements-voice.txt to add mic input.
+    uv pip install -r requirements.txt || die "Dependency install failed."
 fi
 
 echo "Starting Ember…"

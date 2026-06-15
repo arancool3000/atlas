@@ -39,9 +39,10 @@ The first launch installs everything automatically (a few minutes); after that i
   (which brings its own Python 3.12), so you need **neither Homebrew nor a system Python**.
 - **Windows:** install Python from [python.org](https://www.python.org/downloads/) and check **“Add Python to PATH.”**
 
-> Voice/microphone **input** (`pyaudio`) is optional. On the uv path it installs as a
-> prebuilt wheel; if it ever can't be installed, the launchers skip it and everything
-> else (including voice output) still works.
+> Voice/microphone **input** (`pyaudio`) is optional and installed separately — it has
+> no macOS/Linux wheel and needs the `portaudio` C library. To enable it:
+> `brew install portaudio && uv pip install -r requirements-voice.txt`. Everything
+> else, including voice **output**, works out of the box.
 
 On first run, paste a free **Gemini API key** (get one at https://aistudio.google.com/apikey)
 into Settings (⚙). For Claude models, add an Anthropic API key too.

@@ -22,16 +22,12 @@ fi
 echo "Creating Python 3.12 environment…"
 [ -d ".venv" ] || uv venv --python 3.12
 
-echo "Installing dependencies (PyQt6, Gemini SDK, Anthropic SDK, voice...)"
-if ! uv pip install -r requirements.txt; then
-    # pyaudio (microphone input) is optional and the only package that may need
-    # to compile from source. Don't let it block the whole install.
-    echo "NOTE: pyaudio (voice input) couldn't be installed; continuing without it."
-    echo "      Voice output and everything else still work."
-    grep -v '^pyaudio' requirements.txt > .requirements.core.txt
-    uv pip install -r .requirements.core.txt
-    rm -f .requirements.core.txt
-fi
+echo "Installing dependencies (PyQt6, Gemini SDK, Anthropic SDK, voice output...)"
+uv pip install -r requirements.txt
+
+# Microphone / voice INPUT (pyaudio) is optional and needs the portaudio C
+# library, so it's not installed by default. To enable it:
+#   brew install portaudio && uv pip install -r requirements-voice.txt
 
 echo ""
 echo "==========================================="
