@@ -23,6 +23,10 @@ import audit
 import plan
 import vpn
 import utilities
+import cleanup
+import nettools
+import mediatools
+import privacy
 import file_ops
 import more_tools
 import extra_tools
@@ -1486,6 +1490,56 @@ TOOL_DECLARATIONS = [
     {"name": "system_health",
      "description": "Quick system health: uptime, CPU, memory, and disk usage.",
      "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    # ---- System cleanup ----
+    {"name": "clean_temp",
+     "description": "Reclaim space from temp/cache dirs. dry_run=true (default) only reports; "
+                    "dry_run=false deletes eligible files. Skips files touched in the last hour.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "dry_run": {"type": "BOOLEAN"}, "max_age_days": {"type": "INTEGER"}}, "required": []}},
+    {"name": "list_startup_items",
+     "description": "List apps/agents that launch at login/startup (read-only).",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    # ---- Network toolkit ----
+    {"name": "scan_host_ports",
+     "description": "TCP port-scan a host (default common ports) for open services. Diagnostic.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "host": {"type": "STRING"}, "ports": {"type": "STRING"}}, "required": []}},
+    {"name": "network_devices",
+     "description": "List devices on the local network (from the ARP table).",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "wifi_info",
+     "description": "Current Wi-Fi network name and signal.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    # ---- File & media ----
+    {"name": "file_info",
+     "description": "Inspect a file: type, size, SHA-256, and image dimensions.",
+     "parameters": {"type": "OBJECT", "properties": {"path": {"type": "STRING"}}, "required": ["path"]}},
+    {"name": "media_convert",
+     "description": "Convert audio/video/images between formats with ffmpeg (src -> dst).",
+     "parameters": {"type": "OBJECT", "properties": {
+        "src": {"type": "STRING"}, "dst": {"type": "STRING"}}, "required": ["src", "dst"]}},
+    # ---- Privacy & security ----
+    {"name": "password_pwned_check",
+     "description": "Check if a password is in known breaches (Have I Been Pwned, k-anonymity — "
+                    "only a partial hash is sent; the password never leaves the machine).",
+     "parameters": {"type": "OBJECT", "properties": {"password": {"type": "STRING"}}, "required": ["password"]}},
+    {"name": "keychain_store",
+     "description": "Store a secret in the OS keychain (instead of a plaintext file).",
+     "parameters": {"type": "OBJECT", "properties": {
+        "name": {"type": "STRING"}, "secret": {"type": "STRING"}}, "required": ["name", "secret"]}},
+    {"name": "keychain_get",
+     "description": "Retrieve a secret previously stored with keychain_store.",
+     "parameters": {"type": "OBJECT", "properties": {"name": {"type": "STRING"}}, "required": ["name"]}},
+    {"name": "encrypt_file",
+     "description": "Encrypt a file with AES-256 (openssl). Output defaults to <path>.enc.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "path": {"type": "STRING"}, "passphrase": {"type": "STRING"}, "output": {"type": "STRING"}},
+        "required": ["path", "passphrase"]}},
+    {"name": "decrypt_file",
+     "description": "Decrypt a file produced by encrypt_file.",
+     "parameters": {"type": "OBJECT", "properties": {
+        "path": {"type": "STRING"}, "passphrase": {"type": "STRING"}, "output": {"type": "STRING"}},
+        "required": ["path", "passphrase"]}},
 ]
 
 
@@ -1610,6 +1664,22 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "list_open_ports": utilities.list_open_ports,
     "password_strength": utilities.password_strength,
     "system_health": utilities.system_health,
+    # system cleanup
+    "clean_temp": cleanup.clean_temp,
+    "list_startup_items": cleanup.list_startup_items,
+    # network toolkit
+    "scan_host_ports": nettools.scan_host_ports,
+    "network_devices": nettools.network_devices,
+    "wifi_info": nettools.wifi_info,
+    # file & media
+    "file_info": mediatools.file_info,
+    "media_convert": mediatools.media_convert,
+    # privacy & security
+    "password_pwned_check": privacy.password_pwned_check,
+    "keychain_store": privacy.keychain_store,
+    "keychain_get": privacy.keychain_get,
+    "encrypt_file": privacy.encrypt_file,
+    "decrypt_file": privacy.decrypt_file,
     "public_ip": more_tools.public_ip,
     "dns_lookup": more_tools.dns_lookup,
     "network_ping": more_tools.network_ping,

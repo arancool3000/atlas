@@ -260,5 +260,9 @@ tunnel up — and it never claims to be connected when it isn't.
 | `plan.py` | Free/Pro plans (everyone is Pro right now) |
 | `vpn.py` | VPN location manager (bring-your-own WireGuard) |
 | `utilities.py` | multitool helpers: disk usage, open ports, password strength, health |
+| `cleanup.py` | system cleanup: temp/cache reclaim, startup items |
+| `nettools.py` | network toolkit: port scan, LAN devices, Wi-Fi info |
+| `mediatools.py` | file info + media conversion (ffmpeg) |
+| `privacy.py` | keychain secrets, file encryption, breached-password check |
 | `voice.py` | speech input + text-to-speech for Voice Chat |
 | `make_logo.py` | regenerate the app icon |
