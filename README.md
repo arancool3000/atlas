@@ -17,7 +17,7 @@ commands, manages files, and can be controlled from your phone. macOS + Windows.
 > (it deletes the file); click **Done**, then clear the block once with any one of
 > these:
 >
-> **Easiest — run the one-time unblock in Terminal:**
+> **Easiest — one Terminal command that unblocks *and* launches Ember:**
 > ```bash
 > bash /path/to/the/Ember/folder/unblock-mac.sh
 > # tip: type "bash " then drag unblock-mac.sh from Finder into Terminal, press Return
@@ -131,7 +131,7 @@ It’s LAN-only and PIN-gated; stop it when done.
 | File | Purpose |
 |---|---|
 | `Ember.command` / `Ember.bat` | one-click run |
-| `unblock-mac.sh` | one-time macOS Gatekeeper unblock (`bash unblock-mac.sh`) |
+| `unblock-mac.sh` | macOS: clear Gatekeeper quarantine + launch, in one `bash unblock-mac.sh` |
 | `BUILD_DESKTOP_APP.command` | build standalone `Ember.app` |
 | `main.py` | entry point |
 | `ui.py` | the desktop UI |
