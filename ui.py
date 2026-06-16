@@ -2058,8 +2058,77 @@ class EmberWindow(QWidget):
             except Exception:
                 pass
             self._pynput_listener = None
+        for attr in ("_ns_hotkey_global", "_ns_hotkey_local"):
+            m = getattr(self, attr, None)
+            if m is not None:
+                try:
+                    from AppKit import NSEvent
+                    NSEvent.removeMonitor_(m)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
         self._hotkey_combo = None
         self._hotkey_status = "off"
+
+    def _install_hotkey_mac(self, combo: str) -> bool:
+        """macOS global hotkey via NSEvent monitors, which fire on the main run loop. This
+        replaces pynput on macOS: pynput's background Quartz event tap builds NSEvents off the
+        main thread, and macOS input-source/TSM calls (e.g. on CapsLock) then assert and crash
+        the process (SIGTRAP). NSEvent monitors avoid that entirely."""
+        try:
+            from AppKit import NSEvent
+        except Exception as e:
+            print(f"[hotkey] AppKit unavailable: {e}")
+            return False
+        SHIFT, CTRL, OPT, CMD = 1 << 17, 1 << 18, 1 << 19, 1 << 20
+        MODMASK = SHIFT | CTRL | OPT | CMD
+        mods, keychar, keycode = 0, None, None
+        for part in combo.split("+"):
+            part = part.strip()
+            if part in ("ctrl", "control"):
+                mods |= CTRL
+            elif part == "shift":
+                mods |= SHIFT
+            elif part in ("alt", "option", "opt"):
+                mods |= OPT
+            elif part in ("cmd", "command", "super", "win", "meta"):
+                mods |= CMD
+            elif part == "space":
+                keycode = 49
+            elif part:
+                keychar = part
+
+        def _matches(ev) -> bool:
+            try:
+                if (int(ev.modifierFlags()) & MODMASK) != mods:
+                    return False
+                if keycode is not None:
+                    return ev.keyCode() == keycode
+                if keychar is not None:
+                    return (ev.charactersIgnoringModifiers() or "").lower() == keychar
+            except Exception:
+                pass
+            return False
+
+        def _on_global(ev):
+            if _matches(ev):
+                self._bridge.summon.emit()
+
+        def _on_local(ev):
+            if _matches(ev):
+                self._bridge.summon.emit()
+            return ev
+
+        KEYDOWN = 1 << 10  # NSEventMaskKeyDown
+        try:
+            self._ns_hotkey_global = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(KEYDOWN, _on_global)
+            self._ns_hotkey_local = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(KEYDOWN, _on_local)
+        except Exception as e:
+            print(f"[hotkey] NSEvent monitor failed: {e}")
+            return False
+        self._hotkey_combo = combo
+        self._hotkey_status = f"on ({combo})"
+        return True
 
     def _install_hotkey(self):
         """Register the global summon hotkey. Tries pynput first (more reliable on Windows
@@ -2068,10 +2137,8 @@ class EmberWindow(QWidget):
         combo = (self.settings.get("hotkey") or "ctrl+shift+space").lower().strip()
         errors = []
 
-        # On macOS, a global key listener is a Quartz CGEventTap. Creating one while the
-        # process is NOT trusted for Accessibility prints "This process is not trusted!"
-        # and can hard-crash the app (segfault) under Python 3.12. So only start it once
-        # access is actually granted; _check_accessibility re-calls this after a grant.
+        # macOS needs Accessibility for any global key monitoring. Don't even try until it's
+        # granted (it's re-called by _check_accessibility after the user grants it).
         if sys.platform == "darwin":
             try:
                 import mac_permissions
@@ -2082,6 +2149,12 @@ class EmberWindow(QWidget):
                     return
             except Exception:
                 pass
+            # Use a main-thread NSEvent monitor, NEVER pynput, on macOS (see _install_hotkey_mac:
+            # pynput's background event tap crashes on input-source/CapsLock events).
+            if not self._install_hotkey_mac(combo):
+                self._hotkey_combo = None
+                self._hotkey_status = "off (hotkey unavailable)"
+            return
 
         # Attempt 1: pynput (works reliably without admin on most Windows installs).
         try:
