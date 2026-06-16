@@ -170,15 +170,17 @@ def _active_interfaces() -> list[str]:
         return []
 
 
-def status() -> dict:
-    """Report whether a WireGuard tunnel is up and the current public IP."""
+def status(quick: bool = False) -> dict:
+    """Report whether a WireGuard tunnel is up and the current public IP.
+    quick=True skips the public-IP network lookup (use it from UI so panels open instantly)."""
     ifaces = _active_interfaces()
     pub = None
-    try:
-        import requests
-        pub = requests.get("https://api.ipify.org", timeout=6).text.strip()
-    except Exception:
-        pub = None
+    if not quick:
+        try:
+            import requests
+            pub = requests.get("https://api.ipify.org", timeout=6).text.strip()
+        except Exception:
+            pub = None
     return {
         "ok": True,
         "connected": bool(ifaces),

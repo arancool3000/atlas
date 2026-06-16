@@ -1827,7 +1827,7 @@ class SettingsDialog(QDialog):
         # --- VPN ---
         _section("VPN (bring-your-own WireGuard)")
         try:
-            vs = vpn.status()
+            vs = vpn.status(quick=True)   # no blocking public-IP lookup on the UI thread
             vl = vpn.list_locations()
             locs = vl.get("locations", [])
             vtxt = ("Connected ✓" if vs.get("connected") else "Not connected")
@@ -1868,7 +1868,7 @@ class SettingsDialog(QDialog):
     def _refresh_vpn_status(self):
         try:
             import vpn
-            vs = vpn.status()
+            vs = vpn.status(quick=True)
             vl = vpn.list_locations()
             if getattr(self, "_vpn_status_lbl", None) is not None:
                 t = ("Connected ✓" if vs.get("connected") else "Not connected")
@@ -3279,10 +3279,15 @@ class EmberWindow(QWidget):
             pass
 
     def resizeEvent(self, e):
-        """When the window resizes, update every bubble's max width so they stay contained."""
+        """Reposition the grip immediately; debounce the (heavier) bubble re-clamp so it runs
+        once after a drag-resize settles instead of on every intermediate event."""
         super().resizeEvent(e)
-        self._clamp_bubble_widths()
         self._position_size_grip()
+        if not hasattr(self, "_clamp_timer"):
+            self._clamp_timer = QTimer(self)
+            self._clamp_timer.setSingleShot(True)
+            self._clamp_timer.timeout.connect(self._clamp_bubble_widths)
+        self._clamp_timer.start(60)
 
     def _position_size_grip(self):
         """A bottom-right grip makes the frameless window resizable (drag to resize)."""
