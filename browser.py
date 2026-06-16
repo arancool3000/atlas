@@ -449,12 +449,28 @@ class BrowserController:
     def fill(self, selector: str, value: str) -> dict:
         try:
             expr = (
-                f"(function(){{const el=document.querySelector({json.dumps(selector)});"
-                f"if(!el) return {{ok:false,error:'no element'}};"
-                f"el.focus(); el.value={json.dumps(value)};"
-                f"el.dispatchEvent(new Event('input',{{bubbles:true}}));"
-                f"el.dispatchEvent(new Event('change',{{bubbles:true}}));"
-                f"return {{ok:true,len:el.value.length}};}})()"
+                "(function(){"
+                f"const el=document.querySelector({json.dumps(selector)});"
+                "if(!el) return {ok:false,error:'no element'};"
+                "el.focus();"
+                f"const v={json.dumps(value)};"
+                # contenteditable editors (Slate, ProseMirror, Notion-likes, etc.)
+                "if(el.isContentEditable){el.textContent=v;"
+                "el.dispatchEvent(new InputEvent('input',{bubbles:true}));"
+                "el.dispatchEvent(new Event('change',{bubbles:true}));"
+                "return {ok:true,len:v.length,mode:'contenteditable'};}"
+                # Use the NATIVE value setter so React/Vue controlled inputs actually register the
+                # change — a plain `el.value=v` is ignored by their value trackers.
+                "const proto=el.tagName==='TEXTAREA'?window.HTMLTextAreaElement.prototype:window.HTMLInputElement.prototype;"
+                "const d=Object.getOwnPropertyDescriptor(proto,'value');"
+                "if(d&&d.set){d.set.call(el,v);}else{el.value=v;}"
+                "el.dispatchEvent(new Event('input',{bubbles:true}));"
+                "el.dispatchEvent(new Event('change',{bubbles:true}));"
+                "el.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true}));"
+                "el.dispatchEvent(new KeyboardEvent('keyup',{bubbles:true}));"
+                "el.dispatchEvent(new Event('blur',{bubbles:true}));"
+                "return {ok:true,len:(el.value!=null?String(el.value).length:v.length)};"
+                "})()"
             )
             return self.evaluate(expr)
         except Exception as e:
