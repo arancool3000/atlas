@@ -349,9 +349,15 @@ def _glass_style(alpha: int = 180, accent: str = "#ffffff", see_through: int = 7
     native NSVisualEffectView blur is mounted behind (blurred=True) the veil is thinned so
     the real blur shows through.
     """
-    win_a = max(12, int((100 - see_through) * 0.9))   # higher glass_opacity => clearer glass
     if blurred:
-        win_a = int(win_a * 0.5)                       # let the real blur do the obscuring
+        # A real desktop blur sits behind the window — keep the veil light so it shows through.
+        win_a = max(12, int((100 - see_through) * 0.45))
+    else:
+        # No native blur (the default): the window must stay essentially opaque, or the
+        # desktop shows through and the UI becomes unreadable. The glass look then comes from
+        # the gradient, the bright specular rim, and the frosted side panels — not from
+        # see-through. glass_opacity still nudges it within a safe, readable band.
+        win_a = max(232, min(250, 252 - int(see_through * 0.2)))
     top_a = max(8, win_a - 8)                          # glass catches light at the top…
     mid_a = win_a
     bot_a = min(235, win_a + 36)                       # …and deepens at the bottom for legibility
@@ -2415,12 +2421,11 @@ class EmberWindow(QWidget):
         # Swap the QSS theme. The frosted veil thins automatically when a real blur is active
         # (blurred=True) so the desktop blur shows; otherwise the gradient + specular rim carry
         # the glass look on their own.
-        # The translucent glass stylesheet is only safe when a REAL blur sits behind the
-        # window (Windows acrylic, or the opt-in macOS native blur via EMBER_NATIVE_BLUR).
-        # Without it, a frameless translucent window just shows the desktop through
-        # everything — the "see-through / overlapping / unreadable" bug. So only use the
-        # glass look when actually blurred; otherwise fall back to the solid opaque theme.
-        if enabled and blurred:
+        # Apply the glass stylesheet whenever Liquid Glass is on. _glass_style keeps the
+        # window near-opaque when there's no real blur behind it (so the desktop doesn't show
+        # through and make it unreadable — that was the see-through bug), and thins the veil
+        # when a blur IS mounted (Windows acrylic / opt-in EMBER_NATIVE_BLUR).
+        if enabled:
             self.setStyleSheet(_glass_style(200, self.settings.get("accent_color", "#58a6ff"),
                                             see_through=blur_level, blurred=blurred))
         else:

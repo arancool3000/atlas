@@ -20,7 +20,7 @@ __version__ = "1.0.0"
 # until you've actually created the repo (so a fresh checkout never errors).
 # Defaults match this repo; override via env (e.g. in CI) without editing the file.
 GITHUB_OWNER = os.environ.get("EMBER_GITHUB_OWNER", "arancool3000")
-GITHUB_REPO = os.environ.get("EMBER_GITHUB_REPO", "atlas")
+GITHUB_REPO = os.environ.get("EMBER_GITHUB_REPO", "EmberAI")
 
 # Per-OS release asset names (the updater downloads these; the release scripts produce them).
 ASSET_NAMES = {"macos": "Ember-macOS.zip", "windows": "Ember-Windows.zip"}
