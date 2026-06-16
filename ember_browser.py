@@ -29,8 +29,10 @@ try:
     from PyQt6.QtWebEngineCore import (QWebEngineProfile, QWebEnginePage,
                                        QWebEngineUrlRequestInterceptor, QWebEngineSettings)
     WEBENGINE_OK = True
-except Exception:
+    WEBENGINE_ERROR = ""
+except Exception as e:
     WEBENGINE_OK = False
+    WEBENGINE_ERROR = f"{type(e).__name__}: {e}"
 
 HOME_URL = "https://duckduckgo.com/"
 

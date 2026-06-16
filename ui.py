@@ -3417,9 +3417,15 @@ class EmberWindow(QWidget):
             self._add_bubble("error", f"Ember Browser unavailable: {e}")
             return
         if not ember_browser.WEBENGINE_OK:
+            err = getattr(ember_browser, "WEBENGINE_ERROR", "") or "PyQt6-WebEngine not installed"
             self._add_bubble("system",
-                "Ember Browser needs the web engine. Install it once:\n"
-                "  uv pip install PyQt6-WebEngine\nthen reopen Ember.")
+                "Ember Browser can't load the web engine (Qt WebEngine).\n\n"
+                f"Reason: {err}\n\n"
+                "Fix — install it into the SAME environment Ember runs from, matching your "
+                "PyQt6 version:\n"
+                "  uv pip install --reinstall PyQt6 PyQt6-WebEngine\n\n"
+                "Then fully quit and reopen Ember. (Compare versions with: "
+                "uv pip show PyQt6 PyQt6-WebEngine — they must match.)")
             return
         try:
             if getattr(self, "_browser_win", None) is None:
