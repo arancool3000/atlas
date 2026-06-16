@@ -4057,6 +4057,13 @@ def main(instance_listener=None):
     if _SAFE_MODE:
         print("[Ember] EMBER_SAFE_MODE on — native blur, global hotkey, accessibility "
               "prompt, and phone-remote autostart are disabled.")
+    # Qt WebEngine (Ember Browser) is imported lazily, AFTER the app starts. That's only
+    # allowed if shared GL contexts are enabled before the QApplication is created — otherwise
+    # importing it raises "AA_ShareOpenGLContexts must be set before a QCoreApplication".
+    try:
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     app.setApplicationName("Ember")
     app.setQuitOnLastWindowClosed(True)
