@@ -1846,7 +1846,8 @@ class SettingsDialog(QDialog):
             vrow.addWidget(self._vpn_combo, 1)
             for lbl, fn in (("Connect", self._vpn_connect),
                             ("Disconnect", self._vpn_disconnect),
-                            ("Add config…", self._vpn_add)):
+                            ("Add config…", self._vpn_add),
+                            ("Get free config", self._vpn_get_free)):
                 b = QPushButton(lbl)
                 b.clicked.connect(fn)
                 vrow.addWidget(b)
@@ -1910,6 +1911,26 @@ class SettingsDialog(QDialog):
         else:
             QMessageBox.warning(self, "VPN", f"Failed: {r.get('error')}")
         self._refresh_vpn_status()
+
+    def _vpn_get_free(self):
+        import vpn
+        import webbrowser
+        fp = vpn.free_providers()
+        lines = [fp.get("note", "")]
+        for p in fp.get("providers", []):
+            lines.append(f"\n• {p['name']}\n  {p['how']}\n  {p['url']}")
+        box = QMessageBox(self)
+        box.setWindowTitle("Get a free VPN config")
+        box.setText("Free WireGuard configs you can add to Ember:")
+        box.setInformativeText("\n".join(lines))
+        open_btn = box.addButton("Open ProtonVPN free", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            try:
+                webbrowser.open("https://protonvpn.com/free-vpn")
+            except Exception:
+                pass
 
     def _run_in_sandbox_ui(self):
         """Run a chosen file/app inside the strongest available sandbox (Docker or OS-native
@@ -3236,15 +3257,15 @@ class EmberWindow(QWidget):
         return frame
 
     def _clamp_bubble_widths(self):
-        """Cap every bubble to the current chat viewport width. Called on resize and once the
-        window is shown, so bubbles added before the 3-column layout settled (welcome /
-        restored history) don't keep a stale width — and re-wrap their inner labels so the
-        bubble height is recomputed (otherwise long messages get clipped at the bottom)."""
+        """Size every bubble to the chat width. Inner labels get a FIXED width so their
+        word-wrapped height is computed correctly — otherwise the layout allocates a one-line
+        height and bubbles overlap ('playing cards') or clip their text."""
         try:
             view_w = self.chat_scroll.viewport().width() - 24
             if view_w <= 100 or not hasattr(self, "chat_layout"):
                 return
             from PyQt6.QtWidgets import QLabel
+            lbl_w = max(60, view_w - 24)
             for i in range(self.chat_layout.count()):
                 item = self.chat_layout.itemAt(i)
                 w = item.widget() if item else None
@@ -3252,8 +3273,8 @@ class EmberWindow(QWidget):
                     continue
                 w.setMaximumWidth(view_w)
                 for lbl in w.findChildren(QLabel):
-                    lbl.setMaximumWidth(max(60, view_w - 24))
-                w.adjustSize()
+                    lbl.setFixedWidth(lbl_w)
+                w.updateGeometry()
         except Exception:
             pass
 

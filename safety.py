@@ -130,7 +130,7 @@ SAFE_READONLY = {
     "ai_detect_text", "ai_detect_image", "password_generate",
     "read_document", "scan_secrets", "unit_convert", "network_connections",
     "local_ai_status", "local_ai_ask", "list_macros", "get_macro", "run_macro",
-    "describe_image", "transcribe_audio", "security_checkup",
+    "describe_image", "transcribe_audio", "security_checkup", "free_vpn_configs",
 }
 
 SAFE_INTERACTION = {
