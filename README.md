@@ -2,6 +2,22 @@
 
 Ember sees your screen, drives the mouse/keyboard, controls a real browser, runs shell
 commands, manages files, and can be controlled from your phone. macOS + Windows.
+Free, MIT-licensed, and private — your API key stays on your machine; there are no Ember servers.
+
+## ✨ What's inside
+
+- **Autonomous agent** — 170+ tools: move the mouse/keyboard, read the screen with Vision OCR,
+  drive a real browser via the DOM, run shell, manage files, and chain multi-step tasks.
+- **Ember Browser** — a secure, AI-first browser: tracker/ad blocking, an AI-answer search page,
+  summarize/ask about any page, AI-content check, reader mode, per-site dark mode, bookmarks,
+  history, downloads. Works with Gemini or Claude.
+- **Security suite** — on-device antivirus + a real run-in-sandbox, malicious-site blocking,
+  secret redaction, a tamper-evident audit log, read-only / capability modes, and bring-your-own VPN.
+- **AI everywhere** — Gemini *or* Claude; an optional **local model via Ollama** (offline, no API
+  key, no rate limit); image generation, vision Q&A, audio transcription, and AI text/image detection.
+- **Phone Link** — control your computer from your phone's browser on the same Wi-Fi.
+- **Voice, macros & scheduling** — hands-free voice chat, saved task macros, scheduled automations.
+- **Chrome extension** — summarize / ask / AI-check any page from your browser.
 
 ---
 
