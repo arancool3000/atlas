@@ -72,6 +72,27 @@ _CSS = """
   .hint{color:#8a8f98;text-align:center;font-size:13px;margin-top:14px}
 """
 
+BROWSER_QSS = """
+QWidget { background:#0e0f13; color:#e9eaf0; font:14px -apple-system,'Segoe UI',sans-serif; }
+QPushButton { background:#1b1e27; border:1px solid #2a2d39; border-radius:9px; padding:6px 8px;
+              color:#cdd1db; font-weight:600; }
+QPushButton:hover { background:#262a36; border-color:#3a3f4e; }
+QPushButton:pressed { background:#2f3442; }
+QLineEdit { background:#181a22; border:1px solid #2a2d39; border-radius:18px; padding:8px 14px;
+            color:#fff; selection-background-color:#e2562a; }
+QLineEdit:focus { border-color:#e2562a; }
+QTabWidget::pane { border:none; }
+QTabBar::tab { background:#15171e; color:#aeb3c0; padding:7px 14px; border-top-left-radius:9px;
+               border-top-right-radius:9px; margin-right:2px; }
+QTabBar::tab:selected { background:#222533; color:#fff; }
+QTabBar::tab:hover { background:#1d2029; }
+QTextBrowser { background:#15171e; border:1px solid #2a2d39; border-radius:10px; }
+QMenu { background:#181a22; color:#e9eaf0; border:1px solid #2a2d39; }
+QMenu::item:selected { background:#e2562a; }
+QSplitter::handle { background:#2a2d39; width:3px; }
+"""
+
+
 if WEBENGINE_OK:
     class _Guard(QWebEngineUrlRequestInterceptor):
         def __init__(self):
@@ -136,6 +157,7 @@ class EmberBrowser(QWidget):
         self.setWindowTitle("Ember Browser")
         self.resize(1180, 800)
         self.setMinimumSize(640, 480)
+        self.setStyleSheet(BROWSER_QSS)
         self._ai_result.connect(self._show_ai_result)
         self._search_result.connect(self._load_search_results)
         self._bookmarks = self._load_bookmarks()

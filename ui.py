@@ -1822,7 +1822,6 @@ class SettingsDialog(QDialog):
         # --- VPN ---
         _section("VPN (bring-your-own WireGuard)")
         try:
-            from PyQt6.QtWidgets import QComboBox
             vs = vpn.status()
             vl = vpn.list_locations()
             locs = vl.get("locations", [])
@@ -2909,7 +2908,8 @@ class EmberWindow(QWidget):
         self.chat_history["sessions"] = sessions
         active_row = 0
         for i, chat in enumerate(sessions):
-            count = len(chat.get("messages") or [])
+            count = len([m for m in (chat.get("messages") or [])
+                         if m.get("role") in ("user", "assistant")])
             title = chat.get("title") or "New chat"
             item = QListWidgetItem(f"{title}\n{count} message{'s' if count != 1 else ''}")
             item.setData(Qt.ItemDataRole.UserRole, chat.get("id"))
@@ -2945,6 +2945,10 @@ class EmberWindow(QWidget):
 
     def _append_history(self, role: str, text: str, meta: str | None = None):
         if not text:
+            return
+        # Only real conversation is persisted and counted. Tool calls, errors, and system
+        # notices are live UI only — they don't inflate the message count or the saved history.
+        if role not in ("user", "assistant"):
             return
         chat = self._active_chat()
         now = int(time.time())
@@ -3870,7 +3874,8 @@ class EmberWindow(QWidget):
             elif ev.kind == "tool_call":
                 name = ev.payload["name"]
                 args_short = self._shorten_args(ev.payload["args"])
-                self._add_bubble("tool", f"→ {name}({args_short})", meta="tool call")
+                # No separate "calling…" bubble — the status line shows it live and the result
+                # bubble records what ran, so the chat doesn't fill up with activity lines.
                 if _remote:
                     _remote.push_chat("tool", f"Running {name}({args_short})")
                 self._set_status(f"Running {name}…")
