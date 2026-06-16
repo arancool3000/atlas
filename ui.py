@@ -1724,13 +1724,20 @@ class SettingsDialog(QDialog):
 
     def _build_security_tab(self):
         """Security & Pro: malware protection, web protection, agent mode, VPN, audit."""
+        from PyQt6.QtWidgets import QScrollArea
         page = QWidget()
         v = QVBoxLayout(page)
         try:
             self._populate_security_tab(v)
         except Exception as e:
             v.addWidget(QLabel(f"Security panel unavailable: {e}"))
-        self.tabs.addTab(page, "Security")
+        # The panel is taller than the dialog — wrap it so the lower sections (VPN, audit)
+        # are reachable by scrolling instead of being clipped off the bottom.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        self.tabs.addTab(scroll, "Security")
 
     def _populate_security_tab(self, v):
         import antivirus, web_policy, safety, plan, audit, vpn
