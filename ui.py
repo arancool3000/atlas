@@ -2078,7 +2078,10 @@ class EmberWindow(QWidget):
             self._install_hotkey()
         self._overlay_timer = QTimer(self)
         self._overlay_timer.timeout.connect(self._keep_overlay_on_top)
-        self._overlay_timer.start(2500)
+        # Only re-assert top-most when the user actually wants always-on-top; otherwise this
+        # timer would keep yanking Ember in front of whatever app you switched to.
+        if bool(self.settings.get("always_on_top", False)):
+            self._overlay_timer.start(2500)
         self.setAcceptDrops(True)
         self._automation = automation_mod.AutomationEngine(on_fire=self._on_automation_fire)
         self._automation.enabled = bool(self.settings.get("automation_enabled", True))
@@ -2616,10 +2619,13 @@ class EmberWindow(QWidget):
         # NOTE: removed Qt.WindowType.Tool - it was hiding Ember from the taskbar, which
         # blocked taskbar pinning. With just FramelessWindowHint + StaysOnTop, the window
         # shows up in the taskbar like a normal app and can be pinned.
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-        )
+        # Stay-on-top is OFF by default — otherwise Ember floats above every app and the
+        # re-raise timer steals focus/clicks when you switch windows. Opt in with the
+        # "always_on_top" setting.
+        flags = Qt.WindowType.FramelessWindowHint
+        if bool(self.settings.get("always_on_top", False)):
+            flags |= Qt.WindowType.WindowStaysOnTopHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(1040, 760)
         # Apply liquid-glass acrylic backdrop if enabled
@@ -3186,17 +3192,24 @@ class EmberWindow(QWidget):
         return frame
 
     def _clamp_bubble_widths(self):
-        """Cap every bubble to the current chat viewport width. Called on resize and once
-        the window is shown, so bubbles added before the 3-column layout settled (the
-        welcome / restored-history messages) don't keep a stale, too-wide width."""
+        """Cap every bubble to the current chat viewport width. Called on resize and once the
+        window is shown, so bubbles added before the 3-column layout settled (welcome /
+        restored history) don't keep a stale width — and re-wrap their inner labels so the
+        bubble height is recomputed (otherwise long messages get clipped at the bottom)."""
         try:
             view_w = self.chat_scroll.viewport().width() - 24
-            if view_w > 100 and hasattr(self, "chat_layout"):
-                for i in range(self.chat_layout.count()):
-                    item = self.chat_layout.itemAt(i)
-                    w = item.widget() if item else None
-                    if w is not None:
-                        w.setMaximumWidth(view_w)
+            if view_w <= 100 or not hasattr(self, "chat_layout"):
+                return
+            from PyQt6.QtWidgets import QLabel
+            for i in range(self.chat_layout.count()):
+                item = self.chat_layout.itemAt(i)
+                w = item.widget() if item else None
+                if w is None:
+                    continue
+                w.setMaximumWidth(view_w)
+                for lbl in w.findChildren(QLabel):
+                    lbl.setMaximumWidth(max(60, view_w - 24))
+                w.adjustSize()
         except Exception:
             pass
 
