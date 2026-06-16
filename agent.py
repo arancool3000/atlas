@@ -1874,17 +1874,19 @@ class Agent:
                  fallback_models: list[str] | None = None,
                  auto_screenshot: bool = True,
                  request_timeout_seconds: int = 15):
-        self.api_key = api_key
-        self.secondary_api_key = (secondary_api_key or "").strip() or None
+        # Strip ALL whitespace from keys (incl. accidental newlines from a bad paste) so a key
+        # can never become an illegal HTTP header value (LocalProtocolError).
+        self.api_key = "".join((api_key or "").split())
+        self.secondary_api_key = "".join((secondary_api_key or "").split()) or None
         self.dual_api_failover = bool(dual_api_failover)
-        self.api_keys = [api_key]
-        if self.dual_api_failover and self.secondary_api_key and self.secondary_api_key != api_key:
+        self.api_keys = [self.api_key]
+        if self.dual_api_failover and self.secondary_api_key and self.secondary_api_key != self.api_key:
             self.api_keys.append(self.secondary_api_key)
         self._api_key_index = 0
         self.model_name = model_name
         self.active_model = model_name
         self.fallback_models = fallback_models if fallback_models is not None else list(self.DEFAULT_FALLBACKS)
-        self.anthropic_key = anthropic_key
+        self.anthropic_key = "".join((anthropic_key or "").split()) or None
         self.anthropic_model = anthropic_model
         self.auto_screenshot = auto_screenshot
         # Gemini enforces a 10s minimum deadline. Cap upper limit so the agent can't

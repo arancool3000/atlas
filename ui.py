@@ -125,6 +125,7 @@ Tip: just say "organize my Downloads", "find duplicates in Pictures",
 
 
 COMMAND_CENTER_ACTIONS = [
+    ("Phone Link", "__remote__"),
     ("Autopilot", "/autopilot"),
     ("Use App", "/apps"),
     ("Research", "/research"),
@@ -138,7 +139,6 @@ COMMAND_CENTER_ACTIONS = [
     ("Diagnose", "/diagnose"),
     ("Automate", "/automate"),
     ("Schedule", "/schedule"),
-    ("Phone Link", "__remote__"),
     ("Manual", "__manual__"),
 ]
 

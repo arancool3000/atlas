@@ -56,6 +56,8 @@ class ClaudeAgent:
                  auto_screenshot: bool = True, **_kwargs):
         if not api_key:
             raise ValueError("Anthropic API key required for Claude as primary")
+        # Strip whitespace/newlines so a bad paste can't become an illegal HTTP header.
+        api_key = "".join((api_key or "").split())
         self.api_key = api_key
         self.model_name = model_name
         self.active_model = model_name
