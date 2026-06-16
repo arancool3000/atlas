@@ -1640,6 +1640,9 @@ TOOL_DECLARATIONS = [
     {"name": "security_checkup",
      "description": "Summarize Ember's protection status (antivirus, web protection, sandbox) + a score.",
      "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "free_vpn_configs",
+     "description": "List providers that give a FREE personal WireGuard VPN config to add to Ember.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
 ]
 
 
@@ -1802,6 +1805,7 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "describe_image": creative.describe_image,
     "transcribe_audio": creative.transcribe_audio,
     "security_checkup": security_extras.security_checkup,
+    "free_vpn_configs": vpn.free_providers,
     "public_ip": more_tools.public_ip,
     "dns_lookup": more_tools.dns_lookup,
     "network_ping": more_tools.network_ping,

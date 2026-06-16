@@ -30,6 +30,26 @@ SUGGESTED_LOCATIONS = [
 ]
 
 
+# Providers that hand out a FREE personal WireGuard .conf (no shared/bundled config —
+# that would expose private keys and get abused). Grab one, then add it in Ember.
+FREE_PROVIDERS = [
+    {"name": "ProtonVPN (free tier)", "url": "https://protonvpn.com/free-vpn",
+     "how": "Sign up free → Account → WireGuard configuration → pick a FREE server → download the .conf"},
+    {"name": "Windscribe (10 GB/mo free)", "url": "https://windscribe.com/",
+     "how": "Sign up free → Config Generator → WireGuard → choose a free location → download"},
+    {"name": "Cloudflare WARP (free)", "url": "https://1.1.1.1/",
+     "how": "Free encrypted tunnel via its own app (not a location-picker VPN)"},
+]
+
+
+def free_providers() -> dict:
+    """List places to get a FREE personal WireGuard config to add to Ember."""
+    return {"ok": True, "providers": FREE_PROVIDERS,
+            "note": "Ember can't ship working VPN servers — a shared free config would leak its "
+                    "private key and get rate-limited/abused. These give YOU a free personal "
+                    ".conf in ~2 minutes; then add it with add_vpn_location."}
+
+
 def _support_dir() -> Path:
     override = os.environ.get("EMBER_SUPPORT_DIR")
     if override:
