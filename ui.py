@@ -78,6 +78,12 @@ SLASH_COMMANDS = {
     "/update": "__update__",
     "/usage": "__usage__",
     "/plugins": "__plugins__",
+    "/passwords": "__passwords__",
+    "/vpn": "__vpn__",
+    "/workflow": "__workflow__",
+    "/record": "__screen_record__",
+    "/snippets": "__snippets__",
+    "/macros": "__macros__",
 }
 
 HELP_TEXT = """How Ember's buttons work
@@ -119,6 +125,12 @@ Web
 Features (open a tool)
   /remote     start Ember Link for phone control
   /browser    open the Ember Browser app (tab groups + password manager)
+  /passwords  manage saved website logins
+  /vpn        connect / disconnect your WireGuard VPN
+  /workflow   record & replay mouse/keyboard workflows
+  /record     record your screen to a video
+  /snippets   manage reusable text snippets
+  /macros     save & run named task macros
   /usage      show API usage vs the free-tier limits
   /plugins    manage drop-in plugin tools
   /manual     bridge an external AI
@@ -159,6 +171,12 @@ COMMAND_CENTER_GROUPS = [
         ("🌐 Ember Browser",  "__browser_app__", "Open the secure AI browser — tab groups + password manager"),
         ("🛡 Antivirus",      "__scan_folder__", "Scan a folder for malware"),
         ("📦 Sandbox",        "__sandbox__",     "Run a file safely in an isolated sandbox"),
+        ("🔐 Passwords",      "__passwords__",   "Saved website logins (encrypted)"),
+        ("🌍 VPN",            "__vpn__",         "Connect / disconnect your WireGuard VPN"),
+        ("🎬 Workflows",      "__workflow__",    "Record & replay mouse/keyboard workflows"),
+        ("🔴 Screen recorder","__screen_record__","Record your screen to a video file"),
+        ("✂️ Snippets",       "__snippets__",    "Save & expand reusable text snippets"),
+        ("📋 Macros",         "__macros__",      "Save & run named task macros"),
         ("📊 Usage",          "__usage__",       "API calls & tokens vs the free-tier limits"),
         ("🧩 Plugins",        "__plugins__",     "Manage drop-in plugin tools (the plugins/ folder)"),
         ("🔗 Manual bridge",  "__manual__",      "Bridge an external AI for hard reasoning"),
@@ -3017,14 +3035,25 @@ class EmberWindow(QWidget):
         status_layout.addWidget(self.tool_metric)
         command_layout.addWidget(status_strip)
 
+        # Scrollable actions area so the panel can offer many apps/tools without overflowing
+        # the fixed-width column on smaller screens.
+        actions_scroll = QScrollArea()
+        actions_scroll.setWidgetResizable(True)
+        actions_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        actions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        actions_inner = QWidget()
+        actions_layout = QVBoxLayout(actions_inner)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(7)
+
         action_title = QLabel("Actions")
         action_title.setObjectName("sectionTitle")
-        command_layout.addWidget(action_title)
+        actions_layout.addWidget(action_title)
 
         for section_title, items in COMMAND_CENTER_GROUPS:
             sub = QLabel(section_title)
             sub.setObjectName("panelHint")
-            command_layout.addWidget(sub)
+            actions_layout.addWidget(sub)
             for label, cmd, tip in items:
                 b = QPushButton(label)
                 is_feature = cmd.startswith("__")
@@ -3038,9 +3067,11 @@ class EmberWindow(QWidget):
                 if tip:
                     b.setToolTip(tip)
                 b.clicked.connect(lambda _=False, c=cmd: self._run_slash(c))
-                command_layout.addWidget(b)
+                actions_layout.addWidget(b)
 
-        command_layout.addStretch(1)
+        actions_layout.addStretch(1)
+        actions_scroll.setWidget(actions_inner)
+        command_layout.addWidget(actions_scroll, 1)
         self._command_panel = command_panel
         root_row.addWidget(command_panel)
 
@@ -3737,6 +3768,24 @@ class EmberWindow(QWidget):
         if cmd == "__plugins__":
             self._open_plugins_manager()
             return
+        if cmd == "__passwords__":
+            self._open_passwords_manager()
+            return
+        if cmd == "__vpn__":
+            self._open_vpn_manager()
+            return
+        if cmd == "__workflow__":
+            self._open_workflow_recorder()
+            return
+        if cmd == "__screen_record__":
+            self._open_screen_recorder()
+            return
+        if cmd == "__snippets__":
+            self._open_snippets_manager()
+            return
+        if cmd == "__macros__":
+            self._open_macros_manager()
+            return
         self.input_box.setPlainText(cmd)
         self._on_send()
 
@@ -3799,6 +3848,258 @@ class EmberWindow(QWidget):
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(_ps.PLUGINS_DIR)))
         except Exception as e:
             QMessageBox.warning(self, "Plugins", f"{type(e).__name__}: {e}")
+
+    def _open_passwords_manager(self):
+        """Review/delete saved website logins (encrypted via the key vault). New logins are
+        added from the 🔑 button inside Ember Browser."""
+        try:
+            import browser_passwords
+            doms = browser_passwords.list_logins()
+        except Exception as e:
+            QMessageBox.warning(self, "Passwords", f"Password manager unavailable: {e}")
+            return
+        lines = ["<b>Saved logins</b> (encrypted)", ""]
+        lines += ([f"• {d}" for d in doms] if doms else ["No saved logins yet."])
+        lines += ["", "Add a login from the 🔑 button inside Ember Browser."]
+        box = QMessageBox(self)
+        box.setWindowTitle("Passwords")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        browser_btn = box.addButton("Open Ember Browser", QMessageBox.ButtonRole.ActionRole)
+        del_btn = box.addButton("Delete…", QMessageBox.ButtonRole.ActionRole) if doms else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is browser_btn:
+            self._open_ember_browser()
+        elif del_btn is not None and clicked is del_btn:
+            from PyQt6.QtWidgets import QInputDialog
+            dom, ok = QInputDialog.getItem(self, "Delete login", "Site:", doms, 0, False)
+            if ok and dom:
+                browser_passwords.delete_login(dom)
+                self._add_bubble("system", f"Deleted saved login for {dom}.")
+
+    def _open_vpn_manager(self):
+        """Quick VPN panel: connect/disconnect a saved WireGuard location."""
+        try:
+            import vpn
+            st = vpn.status(quick=True)
+            vl = vpn.list_locations()
+        except Exception as e:
+            QMessageBox.warning(self, "VPN", f"VPN unavailable: {e}")
+            return
+        locs = [l.get("name", "?") for l in (vl.get("locations") or [])]
+        lines = ["<b>VPN</b> (bring-your-own WireGuard)", "",
+                 "Status: " + ("Connected ✓" if st.get("connected") else "Not connected"),
+                 f"Saved locations: {len(locs)}"]
+        if not vl.get("wireguard_installed", True):
+            lines.append("Install the free WireGuard app to connect.")
+        box = QMessageBox(self)
+        box.setWindowTitle("VPN")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        conn_btn = box.addButton("Connect…", QMessageBox.ButtonRole.ActionRole) if locs else None
+        disc_btn = box.addButton("Disconnect", QMessageBox.ButtonRole.ActionRole)
+        settings_btn = box.addButton("VPN settings…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if conn_btn is not None and clicked is conn_btn:
+                from PyQt6.QtWidgets import QInputDialog
+                name, ok = QInputDialog.getItem(self, "Connect VPN", "Location:", locs, 0, False)
+                if ok and name:
+                    r = vpn.connect(name)
+                    self._add_bubble("system" if r.get("ok") else "error",
+                                     f"VPN connected: {name}" if r.get("ok")
+                                     else r.get("error", "VPN connect failed"))
+            elif clicked is disc_btn:
+                r = vpn.disconnect()
+                self._add_bubble("system" if r.get("ok") else "error",
+                                 "VPN disconnected" if r.get("ok")
+                                 else r.get("error", "VPN disconnect failed"))
+            elif clicked is settings_btn:
+                self._open_settings()
+        except Exception as e:
+            QMessageBox.warning(self, "VPN", f"{type(e).__name__}: {e}")
+
+    def _open_workflow_recorder(self):
+        """Record & replay real mouse/keyboard workflows."""
+        try:
+            import workflow_recorder as wfr
+            flows = (wfr.list_workflows().get("workflows")) or []
+        except Exception as e:
+            QMessageBox.warning(self, "Workflows", f"Workflow recorder unavailable: {e}")
+            return
+        lines = ["<b>Workflow recorder</b> — record & replay mouse/keyboard", ""]
+        lines += ([f"• {f.get('name')} ({f.get('event_count', 0)} events)" for f in flows]
+                  if flows else ["No saved workflows yet."])
+        box = QMessageBox(self)
+        box.setWindowTitle("Workflows")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        rec_btn = box.addButton("Record new…", QMessageBox.ButtonRole.ActionRole)
+        stop_btn = box.addButton("Stop recording", QMessageBox.ButtonRole.ActionRole)
+        play_btn = box.addButton("Replay…", QMessageBox.ButtonRole.ActionRole) if flows else None
+        del_btn = box.addButton("Delete…", QMessageBox.ButtonRole.ActionRole) if flows else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        from PyQt6.QtWidgets import QInputDialog
+        try:
+            if clicked is rec_btn:
+                name, ok = QInputDialog.getText(self, "Record workflow", "Name:")
+                if ok and name.strip():
+                    r = wfr.record_workflow_start(name.strip())
+                    self._add_bubble("system" if r.get("ok") else "error",
+                        (f"Recording '{name.strip()}' — do your actions, then reopen Workflows "
+                         "and click Stop recording." if r.get("ok")
+                         else r.get("error", "Could not start recording")))
+            elif clicked is stop_btn:
+                r = wfr.record_workflow_stop()
+                self._add_bubble("system" if r.get("ok") else "error",
+                    (f"Saved '{r.get('name')}' ({r.get('event_count', 0)} events)."
+                     if r.get("ok") else r.get("error", "Not recording")))
+            elif play_btn is not None and clicked is play_btn:
+                names = [f.get("name") for f in flows]
+                name, ok = QInputDialog.getItem(self, "Replay workflow", "Workflow:", names, 0, False)
+                if ok and name and QMessageBox.question(
+                        self, "Replay",
+                        f"Replay '{name}'? It will move your mouse and type for you."
+                        ) == QMessageBox.StandardButton.Yes:
+                    # Replay sleeps between events — run off the UI thread so it doesn't freeze.
+                    self._add_bubble("system", f"Replaying workflow '{name}'…")
+                    threading.Thread(target=wfr.replay_workflow, args=(name,), daemon=True).start()
+            elif del_btn is not None and clicked is del_btn:
+                names = [f.get("name") for f in flows]
+                name, ok = QInputDialog.getItem(self, "Delete workflow", "Workflow:", names, 0, False)
+                if ok and name:
+                    wfr.delete_workflow(name)
+                    self._add_bubble("system", f"Deleted workflow '{name}'.")
+        except Exception as e:
+            QMessageBox.warning(self, "Workflows", f"{type(e).__name__}: {e}")
+
+    def _open_screen_recorder(self):
+        """Start/stop screen recording to a video file."""
+        try:
+            import productivity_tools as pt
+            st = pt.screen_record_status()
+        except Exception as e:
+            QMessageBox.warning(self, "Screen recorder", f"Unavailable: {e}")
+            return
+        recording = st.get("recording")
+        lines = ["<b>Screen recorder</b>", "",
+                 (f"● Recording… {st.get('frames', 0)} frames" if recording else "Not recording.")]
+        box = QMessageBox(self)
+        box.setWindowTitle("Screen recorder")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        start_btn = box.addButton("Start…", QMessageBox.ButtonRole.ActionRole) if not recording else None
+        stop_btn = box.addButton("Stop", QMessageBox.ButtonRole.ActionRole) if recording else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        from PyQt6.QtWidgets import QInputDialog
+        try:
+            if start_btn is not None and clicked is start_btn:
+                secs, ok = QInputDialog.getInt(self, "Screen recorder",
+                                               "Record for how many seconds?", 10, 1, 120)
+                if ok:
+                    r = pt.screen_record_start(secs)
+                    self._add_bubble("system" if r.get("ok") else "error",
+                        (f"Recording the screen for {secs}s → {r.get('output')}"
+                         if r.get("ok") else r.get("error", "Could not start recording")))
+            elif stop_btn is not None and clicked is stop_btn:
+                r = pt.screen_record_stop()
+                self._add_bubble("system" if r.get("ok") else "error",
+                    (f"Saved recording: {r.get('output')} ({r.get('frames', 0)} frames)"
+                     if r.get("ok") else r.get("error", "Not recording")))
+        except Exception as e:
+            QMessageBox.warning(self, "Screen recorder", f"{type(e).__name__}: {e}")
+
+    def _open_snippets_manager(self):
+        """Save & manage reusable text snippets (expand with ;keyword in chat)."""
+        try:
+            import productivity_tools as pt
+            snips = (pt.snippet_list().get("snippets")) or {}
+        except Exception as e:
+            QMessageBox.warning(self, "Snippets", f"Unavailable: {e}")
+            return
+        lines = ["<b>Snippets</b> — type ;keyword in chat to expand", ""]
+        lines += ([f"• ;{k} → {v}" for k, v in snips.items()] if snips else ["No snippets yet."])
+        box = QMessageBox(self)
+        box.setWindowTitle("Snippets")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        add_btn = box.addButton("Add…", QMessageBox.ButtonRole.ActionRole)
+        del_btn = box.addButton("Delete…", QMessageBox.ButtonRole.ActionRole) if snips else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        from PyQt6.QtWidgets import QInputDialog
+        try:
+            if clicked is add_btn:
+                kw, ok = QInputDialog.getText(self, "Add snippet", "Keyword:")
+                if ok and kw.strip():
+                    txt, ok2 = QInputDialog.getMultiLineText(self, "Add snippet",
+                                                             f"Text for ;{kw.strip()}:")
+                    if ok2 and txt.strip():
+                        pt.snippet_save(kw.strip(), txt)
+                        self._add_bubble("system", f"Saved snippet ;{kw.strip()}.")
+            elif del_btn is not None and clicked is del_btn:
+                keys = list(snips.keys())
+                kw, ok = QInputDialog.getItem(self, "Delete snippet", "Keyword:", keys, 0, False)
+                if ok and kw:
+                    pt.snippet_delete(kw)
+                    self._add_bubble("system", f"Deleted snippet ;{kw}.")
+        except Exception as e:
+            QMessageBox.warning(self, "Snippets", f"{type(e).__name__}: {e}")
+
+    def _open_macros_manager(self):
+        """Save & run named task macros (Ember carries out the saved task)."""
+        try:
+            import macros
+            items = (macros.list_macros().get("macros")) or []
+        except Exception as e:
+            QMessageBox.warning(self, "Macros", f"Unavailable: {e}")
+            return
+        lines = ["<b>Macros</b> — named tasks Ember runs on demand", ""]
+        lines += ([f"• {m.get('name')}: {m.get('task', '')}" for m in items]
+                  if items else ["No macros yet."])
+        box = QMessageBox(self)
+        box.setWindowTitle("Macros")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        add_btn = box.addButton("New…", QMessageBox.ButtonRole.ActionRole)
+        run_btn = box.addButton("Run…", QMessageBox.ButtonRole.ActionRole) if items else None
+        del_btn = box.addButton("Delete…", QMessageBox.ButtonRole.ActionRole) if items else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        from PyQt6.QtWidgets import QInputDialog
+        names = [m.get("name") for m in items]
+        try:
+            if clicked is add_btn:
+                name, ok = QInputDialog.getText(self, "New macro", "Name:")
+                if ok and name.strip():
+                    task, ok2 = QInputDialog.getMultiLineText(self, "New macro", "Task description:")
+                    if ok2 and task.strip():
+                        macros.save_macro(name.strip(), task.strip())
+                        self._add_bubble("system", f"Saved macro '{name.strip()}'.")
+            elif run_btn is not None and clicked is run_btn:
+                name, ok = QInputDialog.getItem(self, "Run macro", "Macro:", names, 0, False)
+                if ok and name:
+                    gm = macros.get_macro(name)
+                    if gm.get("ok") and gm.get("task"):
+                        self.input_box.setPlainText(gm["task"])
+                        self._on_send()
+            elif del_btn is not None and clicked is del_btn:
+                name, ok = QInputDialog.getItem(self, "Delete macro", "Macro:", names, 0, False)
+                if ok and name:
+                    macros.delete_macro(name)
+                    self._add_bubble("system", f"Deleted macro '{name}'.")
+        except Exception as e:
+            QMessageBox.warning(self, "Macros", f"{type(e).__name__}: {e}")
 
     def _open_ember_browser(self):
         """Open the secure, AI-assisted Ember Browser window (Qt WebEngine)."""
