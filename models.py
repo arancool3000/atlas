@@ -37,23 +37,29 @@ def all_choices() -> list[tuple[str, str, str, str]]:
         out.append(("gemini", mid, name, hint))
     for mid, name, notes in CLAUDE_MODELS:
         out.append(("claude", mid, name, f"{notes} · needs Anthropic API key"))
+    # Local Ollama brain — offline, no key, no rate limits. One generic entry; the actual
+    # local model is resolved at runtime (or set via the "Ollama model" field in Settings).
+    out.append(("ollama", "ollama", "Local (Ollama)",
+                "offline · no key · no rate limits — needs Ollama running (chat only)"))
     return out
 
 
 def provider_for(model_id: str) -> str:
+    if model_id == "ollama" or model_id.startswith("ollama:"):
+        return "ollama"
     if model_id.startswith("claude"):
         return "claude"
     return "gemini"
 
 
 def supports_tool_use(model_id: str) -> bool:
-    """Gemma doesn't support function-calling. Pure Gemini and Claude do."""
-    return not model_id.startswith("gemma")
+    """Gemma + local Ollama don't drive Ember's tools. Pure Gemini and Claude do."""
+    return not (model_id.startswith("gemma") or provider_for(model_id) == "ollama")
 
 
 def supports_vision(model_id: str) -> bool:
-    """Gemma is text-only on the API. Gemini/Claude support images."""
-    return not model_id.startswith("gemma")
+    """Gemma + local Ollama are treated as text-only here. Gemini/Claude support images."""
+    return not (model_id.startswith("gemma") or provider_for(model_id) == "ollama")
 
 
 # Claude models that take adaptive thinking + the effort knob. Opus 4.6+ and Sonnet 4.6

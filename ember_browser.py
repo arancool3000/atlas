@@ -27,7 +27,8 @@ from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 from PyQt6.QtCore import Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
-                             QTabWidget, QLabel, QTextBrowser, QSplitter, QSizePolicy, QMenu)
+                             QTabWidget, QLabel, QTextBrowser, QSplitter, QSizePolicy, QMenu,
+                             QInputDialog, QMessageBox, QLineEdit as _QLE)
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -221,6 +222,7 @@ class EmberBrowser(QWidget):
         bar.addWidget(_btn("🌙", "Dark mode for this site", self._toggle_dark))
         bar.addWidget(_btn("🔎", "Find on page (Ctrl+F)", self._toggle_find))
         bar.addWidget(_btn("✓AI", "Check if the page text is AI-generated", self._ai_check_page, w=50))
+        bar.addWidget(_btn("🔑", "Passwords (save / fill / manage logins)", self._show_password_menu))
         bar.addWidget(_btn("+", "New tab", lambda: self._new_tab()))
         bar.addWidget(_btn("✨", "AI panel", self._toggle_ai))
         outer.addLayout(bar)
@@ -246,6 +248,11 @@ class EmberBrowser(QWidget):
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        # Tab groups: right-click a tab to colour/assign it to a named group.
+        self._tab_groups = dict(self.settings.get("browser_tab_groups", {}))  # name -> color hex
+        tb = self.tabs.tabBar()
+        tb.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        tb.customContextMenuRequested.connect(self._show_tab_menu)
         self._split.addWidget(self.tabs)
         self._ai_panel = self._build_ai_panel()
         self._ai_panel.setVisible(False)
@@ -285,7 +292,7 @@ class EmberBrowser(QWidget):
             pass
         view.urlChanged.connect(lambda u, v=view: self._on_url_changed(v, u))
         view.titleChanged.connect(lambda t, v=view: self._on_title(v, t))
-        view.loadFinished.connect(lambda ok: self._refresh_status())
+        view.loadFinished.connect(lambda ok, v=view: self._on_load_finished(v, ok))
         idx = self.tabs.addTab(view, "New tab")
         self.tabs.setCurrentIndex(idx)
         if url:
@@ -378,6 +385,129 @@ class EmberBrowser(QWidget):
     def _refresh_status(self):
         self._status.setText(f"🛡 {self._guard.blocked} trackers blocked this session"
                              f"   ·   {len(self._bookmarks)} bookmarks")
+
+    def _on_load_finished(self, view, ok):
+        self._refresh_status()
+        if not ok:
+            return
+        # Password autofill: if we have a saved login for this domain, offer to fill it.
+        try:
+            url = view.url().toString()
+            if SEARCH_HOST in url or not url.startswith("http"):
+                return
+            import browser_passwords
+            login = browser_passwords.get_login(url)
+            if login:
+                self._status.setText(f"🔑 Saved login for {login['domain']} — click the 🔑 button to fill")
+                self._pending_autofill_domain = login["domain"]
+        except Exception:
+            pass
+
+    # ---- password manager ----
+    def _current_domain(self) -> str:
+        try:
+            import browser_passwords
+            v = self._cur()
+            return browser_passwords._domain(v.url().toString()) if v is not None else ""
+        except Exception:
+            return ""
+
+    def _show_password_menu(self):
+        import browser_passwords
+        dom = self._current_domain()
+        menu = QMenu(self)
+        act_save = menu.addAction(f"Save login for {dom or 'this site'}…")
+        act_fill = menu.addAction(f"Fill login on {dom or 'this site'}")
+        act_fill.setEnabled(bool(dom and browser_passwords.get_login(dom)))
+        menu.addSeparator()
+        act_manage = menu.addAction("Manage saved logins…")
+        from PyQt6.QtGui import QCursor
+        chosen = menu.exec(QCursor.pos())
+        if chosen is act_save:
+            self._save_login_ui()
+        elif chosen is act_fill:
+            self._fill_login()
+        elif chosen is act_manage:
+            self._manage_logins()
+
+    def _save_login_ui(self):
+        import browser_passwords
+        dom = self._current_domain()
+        if not dom:
+            QMessageBox.information(self, "Passwords", "Open a website first, then save its login.")
+            return
+        existing = browser_passwords.get_login(dom) or {}
+        user, ok = QInputDialog.getText(self, "Save login", f"Username for {dom}:",
+                                        _QLE.EchoMode.Normal, existing.get("username", ""))
+        if not ok:
+            return
+        pw, ok = QInputDialog.getText(self, "Save login", f"Password for {dom}:",
+                                      _QLE.EchoMode.Password, existing.get("password", ""))
+        if not ok:
+            return
+        if browser_passwords.save_login(dom, user.strip(), pw):
+            QMessageBox.information(self, "Passwords", f"Saved login for {dom} (encrypted).")
+        else:
+            QMessageBox.warning(self, "Passwords", "Could not save the login.")
+
+    def _fill_login(self):
+        import browser_passwords
+        v = self._cur()
+        dom = self._current_domain()
+        if v is None or not dom:
+            return
+        login = browser_passwords.get_login(dom)
+        if not login:
+            QMessageBox.information(self, "Passwords", f"No saved login for {dom}.")
+            return
+        try:
+            v.page().runJavaScript(browser_passwords.autofill_js(login))
+            self._status.setText(f"🔑 Filled login for {dom}")
+        except Exception as e:
+            QMessageBox.warning(self, "Passwords", f"Autofill failed: {e}")
+
+    def _manage_logins(self):
+        import browser_passwords
+        doms = browser_passwords.list_logins()
+        if not doms:
+            QMessageBox.information(self, "Saved logins", "No saved logins yet.")
+            return
+        dom, ok = QInputDialog.getItem(self, "Saved logins",
+                                       "Select a site to delete its saved login:", doms, 0, False)
+        if ok and dom:
+            if QMessageBox.question(self, "Delete login", f"Delete the saved login for {dom}?") \
+                    == QMessageBox.StandardButton.Yes:
+                browser_passwords.delete_login(dom)
+                self._status.setText(f"Deleted saved login for {dom}")
+
+    # ---- tab groups ----
+    _GROUP_COLORS = [("Red", "#f7768e"), ("Amber", "#e0af68"), ("Green", "#9ece6a"),
+                     ("Blue", "#7aa2f7"), ("Purple", "#bb9af7"), ("Cyan", "#7dcfff")]
+
+    def _show_tab_menu(self, pos):
+        from PyQt6.QtGui import QColor
+        tb = self.tabs.tabBar()
+        index = tb.tabAt(pos)
+        if index < 0:
+            return
+        menu = QMenu(self)
+        group_menu = menu.addMenu("Add tab to group")
+        for gname, gcolor in self._GROUP_COLORS:
+            act = group_menu.addAction(f"● {gname}")
+            act.setData((index, gcolor))
+        ungroup = menu.addAction("Remove from group")
+        menu.addSeparator()
+        close_act = menu.addAction("Close tab")
+        chosen = menu.exec(tb.mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is close_act:
+            self._close_tab(index)
+        elif chosen is ungroup:
+            tb.setTabTextColor(index, QColor())
+        elif chosen.data():
+            idx, color = chosen.data()
+            tb.setTabTextColor(idx, QColor(color))
 
     # ---- Ember Search ----
     def _home_html(self) -> str:

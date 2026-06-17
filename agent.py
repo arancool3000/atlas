@@ -42,6 +42,13 @@ import extra_tools
 import screen_vision
 import remote_server
 import scheduled_tasks
+# --- roadmap backlog feature modules ---
+import usage as usage_tracker           # imported aliased: _send_streaming has a local var named `usage`
+import key_vault
+import download_guard
+import workflow_recorder
+import productivity_tools
+import plugin_system
 from claude_bridge import build_handoff_prompt, copy_to_clipboard, try_anthropic_api
 
 
@@ -2001,6 +2008,31 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
 }
 
 
+# ---- Roadmap backlog feature tools ----------------------------------------------
+# Each module exports its own TOOL_DECLARATIONS / TOOL_DISPATCH (+ READONLY/INTERACTION
+# sets used by safety.py). Merge them here so the central tables stay the single source
+# of truth the agent + lean-mode filter read from.
+for _feat in (key_vault, usage_tracker, download_guard, workflow_recorder,
+              productivity_tools, plugin_system):
+    for _decl in _feat.TOOL_DECLARATIONS:
+        if _decl["name"] not in TOOL_DISPATCH:
+            TOOL_DECLARATIONS.append(_decl)
+    TOOL_DISPATCH.update(_feat.TOOL_DISPATCH)
+
+# Dynamically loaded user plugins (drop a .py into the plugins/ folder -> auto-registers).
+# A broken plugin is skipped by load_plugins(); we never let it break startup.
+try:
+    _plug = plugin_system.load_plugins()
+    for _decl in _plug.get("declarations", []):
+        if _decl["name"] not in TOOL_DISPATCH:
+            TOOL_DECLARATIONS.append(_decl)
+            TOOL_DISPATCH[_decl["name"]] = _plug["dispatch"][_decl["name"]]
+    # Read-only plugin tools get the safe classification; the rest stay medium-risk.
+    safety.SAFE_READONLY |= set(_plug.get("read_only_names", set()))
+except Exception:
+    pass
+
+
 # Read-only tools with no side effects (no input injection, no mouse, no writes).
 # When the model emits a batch of ONLY these, Ember runs them concurrently instead of
 # one-at-a-time - a meaningful latency win on multi-read turns (e.g. "diagnose my PC").
@@ -2022,6 +2054,11 @@ PARALLEL_SAFE_TOOLS = frozenset({
     "browser_get_page", "browser_get_text", "browser_list_tabs", "browser_current",
     "git_status", "git_log", "git_diff", "speed_test", "calculate_text_stats",
     "list_scheduled_tasks",
+    # roadmap backlog read-only tools
+    "vault_status", "vault_get_key", "vault_list_keys", "usage_summary",
+    "download_guard_status", "download_guard_events", "list_workflows",
+    "snippet_list", "snippet_get", "snippet_expand", "email_breach_check",
+    "list_plugins",
 })
 
 
@@ -2142,7 +2179,7 @@ class Agent:
             # responses, fewer tokens). Core computer-control / browser / file / security tools stay.
             niche = {"text_tools", "chart_tools", "quick_tools", "power_tools", "ai_detect",
                      "local_ai", "macros", "creative", "security_extras", "cleanup",
-                     "nettools", "mediatools", "privacy"}
+                     "nettools", "mediatools", "privacy", "productivity_tools"}
             drop = {name for name, fn in TOOL_DISPATCH.items()
                     if getattr(fn, "__module__", "") in niche}
             decls = [td for td in TOOL_DECLARATIONS if td["name"] not in drop]
@@ -2628,6 +2665,17 @@ class Agent:
         steps = 0
         while steps < max_steps and not self._stop_flag.is_set():
             steps += 1
+            # Usage dashboard: record every model response's token usage (free-tier headroom).
+            try:
+                _um = getattr(response, "usage_metadata", None)
+                if _um is not None:
+                    usage_tracker.record_call(
+                        self.active_model,
+                        int(getattr(_um, "prompt_token_count", 0) or 0),
+                        int(getattr(_um, "candidates_token_count", 0) or 0),
+                    )
+            except Exception:
+                pass
             function_calls = []
             text_parts = []
             try:

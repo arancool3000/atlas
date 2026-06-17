@@ -76,9 +76,26 @@ SLASH_COMMANDS = {
     "/reset": "__clear__",
     "/forget": "__forget_all__",
     "/update": "__update__",
+    "/usage": "__usage__",
+    "/plugins": "__plugins__",
+    "/passwords": "__passwords__",
+    "/vpn": "__vpn__",
+    "/workflow": "__workflow__",
+    "/record": "__screen_record__",
+    "/snippets": "__snippets__",
+    "/macros": "__macros__",
+    "/localai": "__local_ai__",
+    "/ollama": "__local_ai__",
 }
 
-HELP_TEXT = """Slash commands
+HELP_TEXT = """How Ember's buttons work
+The Command Center has two kinds of buttons:
+  • Apps & tools — OPEN a feature (Phone Link, Ember Browser, Antivirus, Sandbox,
+    Usage, Plugins, Manual bridge).
+  • Quick tasks — TYPE a request into the chat and send it. They're just examples;
+    you can also type any request yourself.
+
+Slash commands  (type these, or use the Quick-task buttons)
 
 Autonomy
   /autopilot  take over a computer task end-to-end
@@ -107,15 +124,36 @@ Web
   /web        open automation browser
   /shot       take a screenshot
 
+Features (open a tool)
+  /remote     start Ember Link for phone control
+  /browser    open the Ember Browser app (tab groups + password manager)
+  /passwords  manage saved website logins
+  /vpn        connect / disconnect your WireGuard VPN
+  /workflow   record & replay mouse/keyboard workflows
+  /record     record your screen to a video
+  /snippets   manage reusable text snippets
+  /macros     save & run named task macros
+  /localai    use a local Ollama model (offline, no key, no limits)
+  /usage      show API usage vs the free-tier limits
+  /plugins    manage drop-in plugin tools
+  /manual     bridge an external AI
+
 Session
   /voice      toggle hands-free voice chat
-  /remote     start Ember Link for phone control
-  /manual     bridge an external AI
   /windows    list open windows
   /clear      clear chat
   /forget     wipe saved facts
   /update     install the latest Ember version
   /help       this list
+
+More you can just ASK for (no command needed)
+  • "save a snippet" / "expand ;sig" — reusable text snippets
+  • "record a workflow" / "replay <name>" — record & replay mouse+keyboard
+  • "record my screen for 20s" — screen recorder
+  • "has my email been breached?" — email breach check
+  • "scan this download" — and turn on real-time download protection in Settings
+  • Settings ▸ Models: store API keys in the encrypted vault
+  • Plugins: drop a .py in the plugins/ folder to add your own tools (/plugins)
 
 Global hotkey: configurable in Settings -> Performance (default Ctrl+Shift+Space).
 Drop a file/folder onto the chat to discuss it.
@@ -125,25 +163,43 @@ Tip: just say "organize my Downloads", "find duplicates in Pictures",
 """
 
 
-COMMAND_CENTER_ACTIONS = [
-    ("Phone Link", "__remote__"),
-    ("Ember Browser", "__browser_app__"),
-    ("Antivirus", "__scan_folder__"),
-    ("Sandbox", "__sandbox__"),
-    ("Autopilot", "/autopilot"),
-    ("Use App", "/apps"),
-    ("Research", "/research"),
-    ("Create", "/create"),
-    ("Screen", "/shot"),
-    ("Browser", "/web"),
-    ("Files", "/organize"),
-    ("Downloads", "/downloads"),
-    ("Duplicates", "/dedupe"),
-    ("Performance", "/perf"),
-    ("Diagnose", "/diagnose"),
-    ("Automate", "/automate"),
-    ("Schedule", "/schedule"),
-    ("Manual", "__manual__"),
+# Command Center, grouped so a new user can tell the two kinds of buttons apart:
+#  - "Apps & tools" OPEN a feature/window (Phone Link, Browser, Antivirus, …).
+#  - "Quick tasks" TYPE a request into the chat and send it (they are example prompts).
+# Each entry is (label, command, tooltip). A command starting with "__" opens a feature;
+# anything else is a prompt/slash that gets sent to Ember as a request.
+COMMAND_CENTER_GROUPS = [
+    ("Apps & tools", [
+        ("📱 Phone Link",     "__remote__",      "Control this Mac from your phone (Ember Link)"),
+        ("🌐 Ember Browser",  "__browser_app__", "Open the secure AI browser — tab groups + password manager"),
+        ("🛡 Antivirus",      "__scan_folder__", "Scan a folder for malware"),
+        ("📦 Sandbox",        "__sandbox__",     "Run a file safely in an isolated sandbox"),
+        ("🔐 Passwords",      "__passwords__",   "Saved website logins (encrypted)"),
+        ("🌍 VPN",            "__vpn__",         "Connect / disconnect your WireGuard VPN"),
+        ("🎬 Workflows",      "__workflow__",    "Record & replay mouse/keyboard workflows"),
+        ("🔴 Screen recorder","__screen_record__","Record your screen to a video file"),
+        ("✂️ Snippets",       "__snippets__",    "Save & expand reusable text snippets"),
+        ("📋 Macros",         "__macros__",      "Save & run named task macros"),
+        ("🖥 Local AI",       "__local_ai__",    "Use a local Ollama model — offline, no key, no limits"),
+        ("📊 Usage",          "__usage__",       "API calls & tokens vs the free-tier limits"),
+        ("🧩 Plugins",        "__plugins__",     "Manage drop-in plugin tools (the plugins/ folder)"),
+        ("🔗 Manual bridge",  "__manual__",      "Bridge an external AI for hard reasoning"),
+    ]),
+    ("Quick tasks", [
+        ("Autopilot a task",  "/autopilot", None),
+        ("Operate this app",  "/apps",      None),
+        ("Research a topic",  "/research",  None),
+        ("Create a file",     "/create",    None),
+        ("Take a screenshot", "/shot",      None),
+        ("Automate a website","/web",       None),
+        ("Organize a folder", "/organize",  None),
+        ("Clean Downloads",   "/downloads", None),
+        ("Find duplicates",   "/dedupe",    None),
+        ("Performance check", "/perf",      None),
+        ("Diagnose this PC",  "/diagnose",  None),
+        ("Build a rule",      "/automate",  None),
+        ("Schedule a task",   "/schedule",  None),
+    ]),
 ]
 
 
@@ -211,10 +267,29 @@ def _md_to_html(text: str) -> str:
     return s
 
 
+_VAULT_KEYS = ("gemini_api_key", "gemini_api_key_secondary", "anthropic_api_key")
+
+
+def _hydrate_keys_from_vault(settings: dict) -> dict:
+    """When the encrypted key vault is enabled, settings.json holds blanked keys; pull the
+    real values back into the in-memory settings so the running agent can use them."""
+    if settings.get("use_key_vault"):
+        try:
+            import key_vault
+            for k in _VAULT_KEYS:
+                if not settings.get(k):
+                    v = key_vault.get_key(k)
+                    if v:
+                        settings[k] = v
+        except Exception:
+            pass
+    return settings
+
+
 def load_settings() -> dict:
     if SETTINGS_PATH.exists():
         try:
-            return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            return _hydrate_keys_from_vault(json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
             pass
     return {
@@ -225,6 +300,7 @@ def load_settings() -> dict:
         "provider": "gemini",
         "anthropic_api_key": "",
         "anthropic_model": "claude-opus-4-8",
+        "ollama_model": "",
         "auto_screenshot": True,
         "autocorrect_chat": True,
         "voice_output": False,
@@ -255,8 +331,23 @@ def load_settings() -> dict:
 
 def save_settings(settings: dict):
     try:
+        to_write = settings
+        if settings.get("use_key_vault"):
+            # Move API keys into the encrypted vault and write a redacted copy to disk, so
+            # settings.json never holds plaintext keys. The in-memory dict keeps the real
+            # values (the running agent still works). If the vault write fails for any key,
+            # fall back to writing that key as-is rather than silently losing it.
+            try:
+                import key_vault
+                to_write = dict(settings)
+                for k in _VAULT_KEYS:
+                    val = to_write.get(k)
+                    if val and key_vault.set_key(k, val):
+                        to_write[k] = ""
+            except Exception:
+                to_write = settings
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        SETTINGS_PATH.write_text(json.dumps(to_write, indent=2), encoding="utf-8")
     except OSError as e:
         # Never let a failed write crash the app or silently lose the API key.
         print(f"[settings save failed: {e}] path={SETTINGS_PATH}")
@@ -586,6 +677,22 @@ QPushButton#commandAction:hover {{
     color: #ffffff;
     border-color: rgba(255, 255, 255, 106);
 }}
+QPushButton#commandTask {{
+    background-color: rgba(255, 255, 255, 10);
+    color: rgba(246, 246, 244, 200);
+    border: 1px solid rgba(255, 255, 255, 26);
+    border-left: 3px solid rgba(122, 162, 247, 170);
+    border-radius: 9px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-style: italic;
+    text-align: left;
+}}
+QPushButton#commandTask:hover {{
+    background-color: rgba(255, 255, 255, 30);
+    color: #ffffff;
+}}
 QPushButton#voiceToggle {{
     background-color: rgba(255, 255, 255, 220);
     color: #08080a;
@@ -901,6 +1008,22 @@ QPushButton#commandAction:hover {
     background-color: rgba(255,255,255,0.12);
     color: #ffffff;
     border-color: rgba(255,255,255,0.36);
+}
+QPushButton#commandTask {
+    background-color: rgba(255,255,255,0.04);
+    color: rgba(40,42,54,0.85);
+    border: 1px solid rgba(0,0,0,0.10);
+    border-left: 3px solid rgba(122,162,247,0.85);
+    border-radius: 9px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-style: italic;
+    text-align: left;
+}
+QPushButton#commandTask:hover {
+    background-color: rgba(122,162,247,0.16);
+    color: #08080a;
 }
 QPushButton#voiceToggle {
     background-color: rgba(238,241,248,0.92);
@@ -1308,6 +1431,69 @@ class ManualModeDialog(QDialog):
         self.output_view.setPlainText("\n".join(lines))
 
 
+# Theme presets: each sets accent color + glass opacity + glow/animations/liquid-glass at once.
+_THEME_PRESETS = {
+    "Midnight Blue": {"accent_color": "#7aa2f7", "glass_opacity": 75, "glow_enabled": True,
+                      "animations_enabled": True, "liquid_glass": False},
+    "Neon Purple":   {"accent_color": "#bb9af7", "glass_opacity": 60, "glow_enabled": True,
+                      "animations_enabled": True, "liquid_glass": False},
+    "Minimal Light": {"accent_color": "#7dcfff", "glass_opacity": 40, "glow_enabled": False,
+                      "animations_enabled": False, "liquid_glass": True},
+    "Forest":        {"accent_color": "#9ece6a", "glass_opacity": 70, "glow_enabled": True,
+                      "animations_enabled": True, "liquid_glass": False},
+    "Amber Warm":    {"accent_color": "#e0af68", "glass_opacity": 80, "glow_enabled": True,
+                      "animations_enabled": True, "liquid_glass": False},
+    "High Contrast": {"accent_color": "#f7768e", "glass_opacity": 95, "glow_enabled": False,
+                      "animations_enabled": False, "liquid_glass": False},
+}
+
+
+def show_usage_dashboard(parent):
+    """Show the API usage dashboard (calls/tokens vs the free-tier limits). Shared by the
+    Settings dialog and the Command Center so the same view is reachable from both."""
+    try:
+        import usage
+        s = usage.summary()
+    except Exception as e:
+        QMessageBox.warning(parent, "Usage dashboard", f"Could not read usage: {e}")
+        return
+
+    def _bar(pct):
+        pct = max(0, min(100, int(pct)))
+        return "█" * round(pct / 10) + "░" * (10 - round(pct / 10))
+
+    lines = [
+        "<b>API usage — Gemini free tier</b>", "",
+        f"This minute:  {s['calls_last_minute']}/{s['limit_per_minute']} calls   "
+        f"{_bar(s['minute_pct'])} {int(s['minute_pct'])}%",
+        f"Today:        {s['calls_today']}/{s['limit_per_day']} calls   "
+        f"{_bar(s['day_pct'])} {int(s['day_pct'])}%",
+        f"Tokens today: {s['tokens_today']:,}",
+        f"Remaining:    {s['minute_remaining']} this minute · {s['day_remaining']} today",
+    ]
+    by_model = s.get("by_model") or {}
+    if by_model:
+        lines += ["", "<b>By model (today)</b>"]
+        lines += [f"  {m}: {c}" for m, c in sorted(by_model.items(), key=lambda kv: -kv[1])]
+    last7 = s.get("last_7_days") or []
+    if last7:
+        lines += ["", "<b>Last 7 days</b>"]
+        lines += [f"  {d['date']}: {d['calls']} calls · {d['tokens']:,} tokens" for d in last7]
+    box = QMessageBox(parent)
+    box.setWindowTitle("Usage dashboard")
+    box.setTextFormat(Qt.TextFormat.RichText)
+    box.setText("<pre style='font-family:monospace'>" + "\n".join(lines) + "</pre>")
+    reset_btn = box.addButton("Reset counters", QMessageBox.ButtonRole.DestructiveRole)
+    box.addButton(QMessageBox.StandardButton.Close)
+    box.exec()
+    if box.clickedButton() is reset_btn:
+        try:
+            import usage
+            usage.usage_reset()
+        except Exception:
+            pass
+
+
 class SettingsDialog(QDialog):
     """Tabbed settings: Models · Performance · Automations · Memory · Security · About."""
 
@@ -1375,6 +1561,21 @@ class SettingsDialog(QDialog):
         self.anthropic_key_input.setPlaceholderText("Required if Claude is the primary model")
         layout.addRow("Anthropic API key:", self.anthropic_key_input)
 
+        self.vault_check = QCheckBox("🔒 Store API keys in the encrypted vault (not plaintext settings.json)")
+        self.vault_check.setChecked(bool(self.settings.get("use_key_vault", False)))
+        layout.addRow(self.vault_check)
+        try:
+            import key_vault
+            _vbk = key_vault.backend()
+        except Exception:
+            _vbk = "encrypted-file"
+        vault_hint = QLabel(
+            f"Keys are encrypted using the {'OS keychain' if _vbk == 'keychain' else 'an encrypted file (Fernet)'}. "
+            "When on, settings.json keeps blank keys and the real values live in the vault.")
+        vault_hint.setStyleSheet("color: #565f89; font-size: 11px;")
+        vault_hint.setWordWrap(True)
+        layout.addRow(vault_hint)
+
         self.model_combo = QComboBox()
         self._model_options = model_catalog.all_choices()
         current = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
@@ -1390,16 +1591,43 @@ class SettingsDialog(QDialog):
         rate_btn.clicked.connect(self._show_rates)
         layout.addRow("", rate_btn)
 
+        # Local AI (Ollama): pick "Local (Ollama)" as the model above; optionally name a model.
+        self.ollama_model_input = QLineEdit(self.settings.get("ollama_model", ""))
+        self.ollama_model_input.setPlaceholderText("e.g. llama3.2 (blank = first installed)")
+        layout.addRow("Ollama model (local):", self.ollama_model_input)
+        ollama_btn = QPushButton("Check local Ollama")
+        ollama_btn.clicked.connect(self._check_ollama)
+        layout.addRow("", ollama_btn)
+
         info = QLabel(
             "Gemini 3.1 Flash Lite has the highest free-tier RPD (500/day).\n"
             "Gemma 4 models go to 1500 RPD but don't support tool-use - text only.\n"
-            "Gemma 3 27B is used for short chat titles. Pick a Claude model to switch to Anthropic as the primary brain."
+            "Gemma 3 27B is used for short chat titles. Pick a Claude model to switch to Anthropic.\n"
+            "Local (Ollama) runs fully offline with no key or limits (chat only — no computer "
+            "control). Install from ollama.com and `ollama pull llama3.2`."
         )
         info.setStyleSheet("color: #565f89; font-size: 11px;")
         info.setWordWrap(True)
         layout.addRow(info)
 
         self.tabs.addTab(page, "Models")
+
+    def _check_ollama(self):
+        try:
+            import local_ai
+            st = local_ai.local_ai_status()
+        except Exception as e:
+            QMessageBox.warning(self, "Local AI", f"Could not check Ollama: {e}")
+            return
+        if st.get("running"):
+            models = st.get("models") or []
+            msg = ("Ollama is running ✓\n\nInstalled models:\n  "
+                   + ("\n  ".join(models) if models else "(none — run: ollama pull llama3.2)"))
+        else:
+            msg = (st.get("note")
+                   or "Ollama is not running. Install it from https://ollama.com, then run "
+                      "`ollama pull llama3.2` and start Ollama.")
+        QMessageBox.information(self, "Local AI (Ollama)", msg)
 
     def _build_appearance_tab(self):
         page = QWidget()
@@ -1473,6 +1701,16 @@ class SettingsDialog(QDialog):
         self.accent_combo.setCurrentIndex(idx)
         layout.addRow("Accent color:", self.accent_combo)
 
+        # --- Theme presets: one click sets accent + glass + glow + animations together. ---
+        self.theme_preset_combo = QComboBox()
+        self.theme_preset_combo.addItem("Custom (current)", userData=None)
+        for pname in _THEME_PRESETS:
+            self.theme_preset_combo.addItem(pname, userData=pname)
+        self.theme_preset_combo.setCurrentIndex(0)
+        self.theme_preset_combo.activated.connect(
+            lambda _i: self._apply_theme_preset(self.theme_preset_combo.currentData()))
+        layout.addRow("Theme preset:", self.theme_preset_combo)
+
         note = QLabel(
             "Appearance changes apply when you save. Restart Ember via Ember.bat to fully refresh."
         )
@@ -1481,6 +1719,22 @@ class SettingsDialog(QDialog):
         layout.addRow(note)
 
         self.tabs.addTab(page, "Appearance")
+
+    def _apply_theme_preset(self, key):
+        """Apply a named theme preset to the Appearance widgets (does not save until the user
+        clicks Save). 'Custom (current)' (key None) is a no-op."""
+        preset = _THEME_PRESETS.get(key)
+        if not preset:
+            return
+        # accent: match the preset color to a combo entry by its userData
+        for i in range(self.accent_combo.count()):
+            if self.accent_combo.itemData(i) == preset["accent_color"]:
+                self.accent_combo.setCurrentIndex(i)
+                break
+        self.glass_opacity_slider.setValue(int(preset["glass_opacity"]))
+        self.glow_check.setChecked(bool(preset["glow_enabled"]))
+        self.animations_check.setChecked(bool(preset["animations_enabled"]))
+        self.liquid_glass_check.setChecked(bool(preset["liquid_glass"]))
 
     def _build_voice_tab(self):
         page = QWidget()
@@ -1545,6 +1799,15 @@ class SettingsDialog(QDialog):
                                           "(loads only core tools, hides niche utilities)")
         self.lean_tools_check.setChecked(bool(self.settings.get("lean_tools", True)))
         layout.addRow(self.lean_tools_check)
+
+        self.download_protect_check = QCheckBox(
+            "🛡 Real-time download protection — auto-scan new files in Downloads for malware")
+        self.download_protect_check.setChecked(bool(self.settings.get("download_protection", False)))
+        layout.addRow(self.download_protect_check)
+
+        usage_btn = QPushButton("📊 Show usage dashboard (calls / tokens vs free-tier limits)")
+        usage_btn.clicked.connect(self._show_usage_dashboard)
+        layout.addRow("", usage_btn)
 
         # Show whether the parent window successfully registered the hotkey
         parent_w = self.parent()
@@ -2012,6 +2275,9 @@ class SettingsDialog(QDialog):
     def _show_rates(self):
         QMessageBox.information(self, "Free-tier rate limits", model_catalog.rate_limit_summary())
 
+    def _show_usage_dashboard(self):
+        show_usage_dashboard(self)
+
     def get_settings(self) -> dict:
         self.settings["gemini_api_key"] = self.gemini_key_input.text().strip()
         self.settings["gemini_api_key_secondary"] = self.gemini_key_secondary_input.text().strip()
@@ -2024,12 +2290,18 @@ class SettingsDialog(QDialog):
         self.settings["provider"] = provider
         if provider == "gemini":
             self.settings["gemini_model"] = sel_id
-        else:
+        elif provider == "claude":
             self.settings["anthropic_model"] = sel_id
+        if hasattr(self, "ollama_model_input"):
+            self.settings["ollama_model"] = self.ollama_model_input.text().strip()
         self.settings["auto_screenshot"] = self.auto_shot_check.isChecked()
         self.settings["remote_autostart"] = self.remote_autostart_check.isChecked()
         self.settings["auto_update"] = self.auto_update_check.isChecked()
         self.settings["lean_tools"] = self.lean_tools_check.isChecked()
+        if hasattr(self, "download_protect_check"):
+            self.settings["download_protection"] = self.download_protect_check.isChecked()
+        if hasattr(self, "vault_check"):
+            self.settings["use_key_vault"] = self.vault_check.isChecked()
         self.settings["voice_output"] = self.voice_check.isChecked()
         self.settings["voice_chat_spoken_replies"] = self.voice_chat_reply_check.isChecked()
         self.settings["voice_chat_auto_send"] = self.voice_auto_send_check.isChecked()
@@ -2158,13 +2430,22 @@ class EmberWindow(QWidget):
             # Bring Ember Link (phone control) up as soon as the app opens — deferred a beat
             # so the window paints first. Starts silently; no modal on launch.
             QTimer.singleShot(1200, self._autostart_remote_control)
+        if self.settings.get("download_protection", False) and not _SAFE_MODE:
+            # Real-time download protection: start the Downloads watcher in the background.
+            QTimer.singleShot(1800, self._autostart_download_protection)
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
             # non-blocking and failure-silent.
             QTimer.singleShot(5000, self._check_for_update_async)
             QTimer.singleShot(1500, self._git_self_update)
-        if self.settings.get("gemini_api_key"):
+        # Enough to start: a Gemini key, OR Claude selected with an Anthropic key, OR the
+        # local Ollama brain (which needs no key at all).
+        _prov = self.settings.get("provider") or model_catalog.provider_for(
+            self.settings.get("model_id") or self.settings.get("gemini_model") or "")
+        _can_start = bool(self.settings.get("gemini_api_key")) or _prov == "ollama" or (
+            _prov == "claude" and self.settings.get("anthropic_api_key"))
+        if _can_start:
             # Defer agent init (and the heavy google.genai import) so the window paints first.
             self._set_status("Starting…")
             QTimer.singleShot(0, self._init_agent)
@@ -2794,18 +3075,43 @@ class EmberWindow(QWidget):
         status_layout.addWidget(self.tool_metric)
         command_layout.addWidget(status_strip)
 
+        # Scrollable actions area so the panel can offer many apps/tools without overflowing
+        # the fixed-width column on smaller screens.
+        actions_scroll = QScrollArea()
+        actions_scroll.setWidgetResizable(True)
+        actions_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        actions_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        actions_inner = QWidget()
+        actions_layout = QVBoxLayout(actions_inner)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(7)
+
         action_title = QLabel("Actions")
         action_title.setObjectName("sectionTitle")
-        command_layout.addWidget(action_title)
+        actions_layout.addWidget(action_title)
 
-        for label, cmd in COMMAND_CENTER_ACTIONS:
-            b = QPushButton(label)
-            b.setObjectName("commandAction")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(lambda _=False, c=cmd: self._run_slash(c))
-            command_layout.addWidget(b)
+        for section_title, items in COMMAND_CENTER_GROUPS:
+            sub = QLabel(section_title)
+            sub.setObjectName("panelHint")
+            actions_layout.addWidget(sub)
+            for label, cmd, tip in items:
+                b = QPushButton(label)
+                is_feature = cmd.startswith("__")
+                # Features OPEN something (solid button); quick tasks TYPE a request (outlined).
+                b.setObjectName("commandAction" if is_feature else "commandTask")
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                if not tip and not is_feature:
+                    sent = SLASH_COMMANDS.get(cmd, cmd)
+                    if isinstance(sent, str) and not sent.startswith("__"):
+                        tip = "Sends this request to Ember:\n" + (sent[:160] + ("…" if len(sent) > 160 else ""))
+                if tip:
+                    b.setToolTip(tip)
+                b.clicked.connect(lambda _=False, c=cmd: self._run_slash(c))
+                actions_layout.addWidget(b)
 
-        command_layout.addStretch(1)
+        actions_layout.addStretch(1)
+        actions_scroll.setWidget(actions_inner)
+        command_layout.addWidget(actions_scroll, 1)
         self._command_panel = command_panel
         root_row.addWidget(command_panel)
 
@@ -2880,6 +3186,14 @@ class EmberWindow(QWidget):
             b = QPushButton(label)
             b.setObjectName("chip")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            # Make it obvious whether a chip opens a feature or sends an example request.
+            if cmd == "__voice_chat__":
+                b.setToolTip("Toggle hands-free voice chat")
+            else:
+                sent = SLASH_COMMANDS.get(cmd, cmd)
+                if isinstance(sent, str) and not sent.startswith("__"):
+                    b.setToolTip("Sends this request to Ember:\n"
+                                 + sent[:160] + ("…" if len(sent) > 160 else ""))
             b.clicked.connect(lambda _=False, c=cmd: self._run_slash(c))
             chip_flow.addWidget(b)
         layout.addWidget(chip_holder)
@@ -3450,6 +3764,12 @@ class EmberWindow(QWidget):
         if target == "__manual__":
             self._open_manual_mode()
             return True
+        # Any other feature-opener target (e.g. __browser_app__, __scan_folder__, __sandbox__,
+        # __usage__, __plugins__) is handled by _run_slash — route it there instead of sending
+        # the literal "__opener__" token to the agent as a chat message.
+        if target.startswith("__"):
+            self._run_slash(target)
+            return True
         expanded = target + (" " + rest if rest else "")
         agent_text = self._agent_contextual_text(expanded)
         self._add_bubble("user", text + f"\n(expanded: {target[:80]}{'…' if len(target) > 80 else ''})")
@@ -3482,8 +3802,390 @@ class EmberWindow(QWidget):
         if cmd == "__update__":
             self._start_update()
             return
+        if cmd == "__usage__":
+            self._show_usage_dashboard()
+            return
+        if cmd == "__plugins__":
+            self._open_plugins_manager()
+            return
+        if cmd == "__passwords__":
+            self._open_passwords_manager()
+            return
+        if cmd == "__vpn__":
+            self._open_vpn_manager()
+            return
+        if cmd == "__workflow__":
+            self._open_workflow_recorder()
+            return
+        if cmd == "__screen_record__":
+            self._open_screen_recorder()
+            return
+        if cmd == "__snippets__":
+            self._open_snippets_manager()
+            return
+        if cmd == "__macros__":
+            self._open_macros_manager()
+            return
+        if cmd == "__local_ai__":
+            self._open_local_ai()
+            return
         self.input_box.setPlainText(cmd)
         self._on_send()
+
+    def _show_usage_dashboard(self):
+        show_usage_dashboard(self)
+
+    def _open_plugins_manager(self):
+        """Show loaded plugins and let the user reload, scaffold a new one, or open the folder."""
+        try:
+            import plugin_system
+            info = plugin_system.list_plugins()
+        except Exception as e:
+            QMessageBox.warning(self, "Plugins", f"Plugin system unavailable: {e}")
+            return
+        plugins = info.get("plugins") or []
+        lines = ["<b>Plugins</b> — drop a .py file into the plugins/ folder to add tools.", ""]
+        if plugins:
+            for p in plugins:
+                tools = ", ".join(p.get("tools") or []) or "(no tools)"
+                lines.append(f"• {p.get('file')}: {tools}")
+        else:
+            lines.append("No plugins yet.")
+        if info.get("errors"):
+            lines.append("")
+            lines.append("<b>Errors</b>")
+            for er in info["errors"]:
+                lines.append(f"• {er.get('plugin')}: {er.get('error')}")
+        box = QMessageBox(self)
+        box.setWindowTitle("Plugins")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        new_btn = box.addButton("New plugin…", QMessageBox.ButtonRole.ActionRole)
+        reload_btn = box.addButton("Reload", QMessageBox.ButtonRole.ActionRole)
+        folder_btn = box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if clicked is new_btn:
+                from PyQt6.QtWidgets import QInputDialog
+                name, ok = QInputDialog.getText(self, "New plugin", "Plugin name:")
+                if ok and name.strip():
+                    r = plugin_system.create_plugin_template(name.strip())
+                    if r.get("ok"):
+                        self._add_bubble("system", f"Created plugin template: {r.get('path')}\n"
+                                                   "Edit it, then click Plugins ▸ Reload.")
+                    else:
+                        QMessageBox.warning(self, "Plugins", r.get("error", "Could not create."))
+            elif clicked is reload_btn:
+                r = plugin_system.reload_plugins()
+                self._add_bubble("system",
+                                 f"Reloaded plugins: {r.get('loaded', 0)} loaded "
+                                 f"({', '.join(r.get('tools') or []) or 'none'}). "
+                                 "Restart Ember to expose new plugin tools to the agent.")
+            elif clicked is folder_btn:
+                import plugin_system as _ps
+                from PyQt6.QtGui import QDesktopServices
+                from PyQt6.QtCore import QUrl
+                _ps.PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(_ps.PLUGINS_DIR)))
+        except Exception as e:
+            QMessageBox.warning(self, "Plugins", f"{type(e).__name__}: {e}")
+
+    def _open_passwords_manager(self):
+        """Review/delete saved website logins (encrypted via the key vault). New logins are
+        added from the 🔑 button inside Ember Browser."""
+        try:
+            import browser_passwords
+            doms = browser_passwords.list_logins()
+        except Exception as e:
+            QMessageBox.warning(self, "Passwords", f"Password manager unavailable: {e}")
+            return
+        lines = ["<b>Saved logins</b> (encrypted)", ""]
+        lines += ([f"• {d}" for d in doms] if doms else ["No saved logins yet."])
+        lines += ["", "Add a login from the 🔑 button inside Ember Browser."]
+        box = QMessageBox(self)
+        box.setWindowTitle("Passwords")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        browser_btn = box.addButton("Open Ember Browser", QMessageBox.ButtonRole.ActionRole)
+        del_btn = box.addButton("Delete…", QMessageBox.ButtonRole.ActionRole) if doms else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is browser_btn:
+            self._open_ember_browser()
+        elif del_btn is not None and clicked is del_btn:
+            from PyQt6.QtWidgets import QInputDialog
+            dom, ok = QInputDialog.getItem(self, "Delete login", "Site:", doms, 0, False)
+            if ok and dom:
+                browser_passwords.delete_login(dom)
+                self._add_bubble("system", f"Deleted saved login for {dom}.")
+
+    def _open_vpn_manager(self):
+        """Quick VPN panel: connect/disconnect a saved WireGuard location."""
+        try:
+            import vpn
+            st = vpn.status(quick=True)
+            vl = vpn.list_locations()
+        except Exception as e:
+            QMessageBox.warning(self, "VPN", f"VPN unavailable: {e}")
+            return
+        locs = [l.get("name", "?") for l in (vl.get("locations") or [])]
+        lines = ["<b>VPN</b> (bring-your-own WireGuard)", "",
+                 "Status: " + ("Connected ✓" if st.get("connected") else "Not connected"),
+                 f"Saved locations: {len(locs)}"]
+        if not vl.get("wireguard_installed", True):
+            lines.append("Install the free WireGuard app to connect.")
+        box = QMessageBox(self)
+        box.setWindowTitle("VPN")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        conn_btn = box.addButton("Connect…", QMessageBox.ButtonRole.ActionRole) if locs else None
+        disc_btn = box.addButton("Disconnect", QMessageBox.ButtonRole.ActionRole)
+        settings_btn = box.addButton("VPN settings…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if conn_btn is not None and clicked is conn_btn:
+                from PyQt6.QtWidgets import QInputDialog
+                name, ok = QInputDialog.getItem(self, "Connect VPN", "Location:", locs, 0, False)
+                if ok and name:
+                    r = vpn.connect(name)
+                    self._add_bubble("system" if r.get("ok") else "error",
+                                     f"VPN connected: {name}" if r.get("ok")
+                                     else r.get("error", "VPN connect failed"))
+            elif clicked is disc_btn:
+                r = vpn.disconnect()
+                self._add_bubble("system" if r.get("ok") else "error",
+                                 "VPN disconnected" if r.get("ok")
+                                 else r.get("error", "VPN disconnect failed"))
+            elif clicked is settings_btn:
+                self._open_settings()
+        except Exception as e:
+            QMessageBox.warning(self, "VPN", f"{type(e).__name__}: {e}")
+
+    def _open_workflow_recorder(self):
+        """Record & replay real mouse/keyboard workflows."""
+        try:
+            import workflow_recorder as wfr
+            flows = (wfr.list_workflows().get("workflows")) or []
+        except Exception as e:
+            QMessageBox.warning(self, "Workflows", f"Workflow recorder unavailable: {e}")
+            return
+        lines = ["<b>Workflow recorder</b> — record & replay mouse/keyboard", ""]
+        lines += ([f"• {f.get('name')} ({f.get('event_count', 0)} events)" for f in flows]
+                  if flows else ["No saved workflows yet."])
+        box = QMessageBox(self)
+        box.setWindowTitle("Workflows")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        rec_btn = box.addButton("Record new…", QMessageBox.ButtonRole.ActionRole)
+        stop_btn = box.addButton("Stop recording", QMessageBox.ButtonRole.ActionRole)
+        play_btn = box.addButton("Replay…", QMessageBox.ButtonRole.ActionRole) if flows else None
+        del_btn = box.addButton("Delete…", QMessageBox.ButtonRole.ActionRole) if flows else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        from PyQt6.QtWidgets import QInputDialog
+        try:
+            if clicked is rec_btn:
+                name, ok = QInputDialog.getText(self, "Record workflow", "Name:")
+                if ok and name.strip():
+                    r = wfr.record_workflow_start(name.strip())
+                    self._add_bubble("system" if r.get("ok") else "error",
+                        (f"Recording '{name.strip()}' — do your actions, then reopen Workflows "
+                         "and click Stop recording." if r.get("ok")
+                         else r.get("error", "Could not start recording")))
+            elif clicked is stop_btn:
+                r = wfr.record_workflow_stop()
+                self._add_bubble("system" if r.get("ok") else "error",
+                    (f"Saved '{r.get('name')}' ({r.get('event_count', 0)} events)."
+                     if r.get("ok") else r.get("error", "Not recording")))
+            elif play_btn is not None and clicked is play_btn:
+                names = [f.get("name") for f in flows]
+                name, ok = QInputDialog.getItem(self, "Replay workflow", "Workflow:", names, 0, False)
+                if ok and name and QMessageBox.question(
+                        self, "Replay",
+                        f"Replay '{name}'? It will move your mouse and type for you."
+                        ) == QMessageBox.StandardButton.Yes:
+                    # Replay sleeps between events — run off the UI thread so it doesn't freeze.
+                    self._add_bubble("system", f"Replaying workflow '{name}'…")
+                    threading.Thread(target=wfr.replay_workflow, args=(name,), daemon=True).start()
+            elif del_btn is not None and clicked is del_btn:
+                names = [f.get("name") for f in flows]
+                name, ok = QInputDialog.getItem(self, "Delete workflow", "Workflow:", names, 0, False)
+                if ok and name:
+                    wfr.delete_workflow(name)
+                    self._add_bubble("system", f"Deleted workflow '{name}'.")
+        except Exception as e:
+            QMessageBox.warning(self, "Workflows", f"{type(e).__name__}: {e}")
+
+    def _open_screen_recorder(self):
+        """Start/stop screen recording to a video file."""
+        try:
+            import productivity_tools as pt
+            st = pt.screen_record_status()
+        except Exception as e:
+            QMessageBox.warning(self, "Screen recorder", f"Unavailable: {e}")
+            return
+        recording = st.get("recording")
+        lines = ["<b>Screen recorder</b>", "",
+                 (f"● Recording… {st.get('frames', 0)} frames" if recording else "Not recording.")]
+        box = QMessageBox(self)
+        box.setWindowTitle("Screen recorder")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        start_btn = box.addButton("Start…", QMessageBox.ButtonRole.ActionRole) if not recording else None
+        stop_btn = box.addButton("Stop", QMessageBox.ButtonRole.ActionRole) if recording else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        from PyQt6.QtWidgets import QInputDialog
+        try:
+            if start_btn is not None and clicked is start_btn:
+                secs, ok = QInputDialog.getInt(self, "Screen recorder",
+                                               "Record for how many seconds?", 10, 1, 120)
+                if ok:
+                    r = pt.screen_record_start(secs)
+                    self._add_bubble("system" if r.get("ok") else "error",
+                        (f"Recording the screen for {secs}s → {r.get('output')}"
+                         if r.get("ok") else r.get("error", "Could not start recording")))
+            elif stop_btn is not None and clicked is stop_btn:
+                r = pt.screen_record_stop()
+                self._add_bubble("system" if r.get("ok") else "error",
+                    (f"Saved recording: {r.get('output')} ({r.get('frames', 0)} frames)"
+                     if r.get("ok") else r.get("error", "Not recording")))
+        except Exception as e:
+            QMessageBox.warning(self, "Screen recorder", f"{type(e).__name__}: {e}")
+
+    def _open_snippets_manager(self):
+        """Save & manage reusable text snippets (expand with ;keyword in chat)."""
+        try:
+            import productivity_tools as pt
+            snips = (pt.snippet_list().get("snippets")) or {}
+        except Exception as e:
+            QMessageBox.warning(self, "Snippets", f"Unavailable: {e}")
+            return
+        lines = ["<b>Snippets</b> — type ;keyword in chat to expand", ""]
+        lines += ([f"• ;{k} → {v}" for k, v in snips.items()] if snips else ["No snippets yet."])
+        box = QMessageBox(self)
+        box.setWindowTitle("Snippets")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        add_btn = box.addButton("Add…", QMessageBox.ButtonRole.ActionRole)
+        del_btn = box.addButton("Delete…", QMessageBox.ButtonRole.ActionRole) if snips else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        from PyQt6.QtWidgets import QInputDialog
+        try:
+            if clicked is add_btn:
+                kw, ok = QInputDialog.getText(self, "Add snippet", "Keyword:")
+                if ok and kw.strip():
+                    txt, ok2 = QInputDialog.getMultiLineText(self, "Add snippet",
+                                                             f"Text for ;{kw.strip()}:")
+                    if ok2 and txt.strip():
+                        pt.snippet_save(kw.strip(), txt)
+                        self._add_bubble("system", f"Saved snippet ;{kw.strip()}.")
+            elif del_btn is not None and clicked is del_btn:
+                keys = list(snips.keys())
+                kw, ok = QInputDialog.getItem(self, "Delete snippet", "Keyword:", keys, 0, False)
+                if ok and kw:
+                    pt.snippet_delete(kw)
+                    self._add_bubble("system", f"Deleted snippet ;{kw}.")
+        except Exception as e:
+            QMessageBox.warning(self, "Snippets", f"{type(e).__name__}: {e}")
+
+    def _open_macros_manager(self):
+        """Save & run named task macros (Ember carries out the saved task)."""
+        try:
+            import macros
+            items = (macros.list_macros().get("macros")) or []
+        except Exception as e:
+            QMessageBox.warning(self, "Macros", f"Unavailable: {e}")
+            return
+        lines = ["<b>Macros</b> — named tasks Ember runs on demand", ""]
+        lines += ([f"• {m.get('name')}: {m.get('task', '')}" for m in items]
+                  if items else ["No macros yet."])
+        box = QMessageBox(self)
+        box.setWindowTitle("Macros")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        add_btn = box.addButton("New…", QMessageBox.ButtonRole.ActionRole)
+        run_btn = box.addButton("Run…", QMessageBox.ButtonRole.ActionRole) if items else None
+        del_btn = box.addButton("Delete…", QMessageBox.ButtonRole.ActionRole) if items else None
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        from PyQt6.QtWidgets import QInputDialog
+        names = [m.get("name") for m in items]
+        try:
+            if clicked is add_btn:
+                name, ok = QInputDialog.getText(self, "New macro", "Name:")
+                if ok and name.strip():
+                    task, ok2 = QInputDialog.getMultiLineText(self, "New macro", "Task description:")
+                    if ok2 and task.strip():
+                        macros.save_macro(name.strip(), task.strip())
+                        self._add_bubble("system", f"Saved macro '{name.strip()}'.")
+            elif run_btn is not None and clicked is run_btn:
+                name, ok = QInputDialog.getItem(self, "Run macro", "Macro:", names, 0, False)
+                if ok and name:
+                    gm = macros.get_macro(name)
+                    if gm.get("ok") and gm.get("task"):
+                        self.input_box.setPlainText(gm["task"])
+                        self._on_send()
+            elif del_btn is not None and clicked is del_btn:
+                name, ok = QInputDialog.getItem(self, "Delete macro", "Macro:", names, 0, False)
+                if ok and name:
+                    macros.delete_macro(name)
+                    self._add_bubble("system", f"Deleted macro '{name}'.")
+        except Exception as e:
+            QMessageBox.warning(self, "Macros", f"{type(e).__name__}: {e}")
+
+    def _open_local_ai(self):
+        """Show local Ollama status and offer to switch Ember's brain to it (offline, no key)."""
+        try:
+            import local_ai
+            st = local_ai.local_ai_status()
+        except Exception as e:
+            QMessageBox.warning(self, "Local AI", f"Could not check Ollama: {e}")
+            return
+        cur = (self.settings.get("provider")
+               or model_catalog.provider_for(self.settings.get("model_id", "")))
+        lines = ["<b>Local AI (Ollama)</b> — offline · no API key · no rate limits", ""]
+        if st.get("running"):
+            models = st.get("models") or []
+            lines.append("Ollama is running ✓")
+            lines.append("Installed models: " + (", ".join(models) if models
+                         else "(none — run: ollama pull llama3.2)"))
+        else:
+            lines.append(st.get("note") or "Ollama is not running. Install it from ollama.com, "
+                         "then run: ollama pull llama3.2")
+        lines += ["", ("Ember is currently using the local model." if cur == "ollama"
+                       else "Click 'Use local AI' to switch Ember's brain to Ollama. "
+                            "Local mode is chat only (no computer control).")]
+        box = QMessageBox(self)
+        box.setWindowTitle("Local AI")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        use_btn = (box.addButton("Use local AI", QMessageBox.ButtonRole.AcceptRole)
+                   if cur != "ollama" else None)
+        settings_btn = box.addButton("Open model settings…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        if use_btn is not None and clicked is use_btn:
+            self.settings["model_id"] = "ollama"
+            self.settings["provider"] = "ollama"
+            save_settings(self.settings)
+            self._init_agent()
+            self._add_bubble("system", "Switched to the local Ollama brain (offline, no key). "
+                                       "Note: local mode is chat only — for computer control, "
+                                       "switch back to Gemini or Claude in Settings.")
+        elif clicked is settings_btn:
+            self._open_settings()
 
     def _open_ember_browser(self):
         """Open the secure, AI-assisted Ember Browser window (Qt WebEngine)."""
@@ -3537,6 +4239,19 @@ class EmberWindow(QWidget):
         )
         box.exec()
         self._add_bubble("system", f"Ember Link is live at **{url}** (PIN **{pin}**). Same Wi-Fi required.")
+
+    def _autostart_download_protection(self):
+        """Start real-time download protection (Downloads folder malware watcher) in the
+        background. Best-effort and failure-silent so it never blocks the app."""
+        try:
+            import download_guard
+            r = download_guard.start()
+            if r.get("ok"):
+                print(f"[Download protection on: watching {r.get('folder')}]")
+            else:
+                print(f"[Download protection failed: {r.get('error')}]")
+        except Exception as e:
+            print(f"[Download protection autostart failed: {e}]")
 
     def _autostart_remote_control(self):
         """Bring Ember Link up automatically at launch — no modal, just a status note.
@@ -3845,7 +4560,13 @@ class EmberWindow(QWidget):
         model_id = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
         provider = self.settings.get("provider") or model_catalog.provider_for(model_id)
         try:
-            if provider == "claude":
+            if provider == "ollama":
+                from ollama_agent import OllamaAgent
+                self.agent = OllamaAgent(
+                    model_name=self.settings.get("ollama_model") or "",
+                    auto_screenshot=bool(self.settings.get("auto_screenshot", True)),
+                )
+            elif provider == "claude":
                 key = self.settings.get("anthropic_api_key") or ""
                 if not key:
                     self._set_status("Need Anthropic API key for Claude — open settings (gear)")
