@@ -84,6 +84,8 @@ SLASH_COMMANDS = {
     "/record": "__screen_record__",
     "/snippets": "__snippets__",
     "/macros": "__macros__",
+    "/localai": "__local_ai__",
+    "/ollama": "__local_ai__",
 }
 
 HELP_TEXT = """How Ember's buttons work
@@ -131,6 +133,7 @@ Features (open a tool)
   /record     record your screen to a video
   /snippets   manage reusable text snippets
   /macros     save & run named task macros
+  /localai    use a local Ollama model (offline, no key, no limits)
   /usage      show API usage vs the free-tier limits
   /plugins    manage drop-in plugin tools
   /manual     bridge an external AI
@@ -177,6 +180,7 @@ COMMAND_CENTER_GROUPS = [
         ("🔴 Screen recorder","__screen_record__","Record your screen to a video file"),
         ("✂️ Snippets",       "__snippets__",    "Save & expand reusable text snippets"),
         ("📋 Macros",         "__macros__",      "Save & run named task macros"),
+        ("🖥 Local AI",       "__local_ai__",    "Use a local Ollama model — offline, no key, no limits"),
         ("📊 Usage",          "__usage__",       "API calls & tokens vs the free-tier limits"),
         ("🧩 Plugins",        "__plugins__",     "Manage drop-in plugin tools (the plugins/ folder)"),
         ("🔗 Manual bridge",  "__manual__",      "Bridge an external AI for hard reasoning"),
@@ -296,6 +300,7 @@ def load_settings() -> dict:
         "provider": "gemini",
         "anthropic_api_key": "",
         "anthropic_model": "claude-opus-4-8",
+        "ollama_model": "",
         "auto_screenshot": True,
         "autocorrect_chat": True,
         "voice_output": False,
@@ -1586,16 +1591,43 @@ class SettingsDialog(QDialog):
         rate_btn.clicked.connect(self._show_rates)
         layout.addRow("", rate_btn)
 
+        # Local AI (Ollama): pick "Local (Ollama)" as the model above; optionally name a model.
+        self.ollama_model_input = QLineEdit(self.settings.get("ollama_model", ""))
+        self.ollama_model_input.setPlaceholderText("e.g. llama3.2 (blank = first installed)")
+        layout.addRow("Ollama model (local):", self.ollama_model_input)
+        ollama_btn = QPushButton("Check local Ollama")
+        ollama_btn.clicked.connect(self._check_ollama)
+        layout.addRow("", ollama_btn)
+
         info = QLabel(
             "Gemini 3.1 Flash Lite has the highest free-tier RPD (500/day).\n"
             "Gemma 4 models go to 1500 RPD but don't support tool-use - text only.\n"
-            "Gemma 3 27B is used for short chat titles. Pick a Claude model to switch to Anthropic as the primary brain."
+            "Gemma 3 27B is used for short chat titles. Pick a Claude model to switch to Anthropic.\n"
+            "Local (Ollama) runs fully offline with no key or limits (chat only — no computer "
+            "control). Install from ollama.com and `ollama pull llama3.2`."
         )
         info.setStyleSheet("color: #565f89; font-size: 11px;")
         info.setWordWrap(True)
         layout.addRow(info)
 
         self.tabs.addTab(page, "Models")
+
+    def _check_ollama(self):
+        try:
+            import local_ai
+            st = local_ai.local_ai_status()
+        except Exception as e:
+            QMessageBox.warning(self, "Local AI", f"Could not check Ollama: {e}")
+            return
+        if st.get("running"):
+            models = st.get("models") or []
+            msg = ("Ollama is running ✓\n\nInstalled models:\n  "
+                   + ("\n  ".join(models) if models else "(none — run: ollama pull llama3.2)"))
+        else:
+            msg = (st.get("note")
+                   or "Ollama is not running. Install it from https://ollama.com, then run "
+                      "`ollama pull llama3.2` and start Ollama.")
+        QMessageBox.information(self, "Local AI (Ollama)", msg)
 
     def _build_appearance_tab(self):
         page = QWidget()
@@ -2258,8 +2290,10 @@ class SettingsDialog(QDialog):
         self.settings["provider"] = provider
         if provider == "gemini":
             self.settings["gemini_model"] = sel_id
-        else:
+        elif provider == "claude":
             self.settings["anthropic_model"] = sel_id
+        if hasattr(self, "ollama_model_input"):
+            self.settings["ollama_model"] = self.ollama_model_input.text().strip()
         self.settings["auto_screenshot"] = self.auto_shot_check.isChecked()
         self.settings["remote_autostart"] = self.remote_autostart_check.isChecked()
         self.settings["auto_update"] = self.auto_update_check.isChecked()
@@ -2405,7 +2439,13 @@ class EmberWindow(QWidget):
             # non-blocking and failure-silent.
             QTimer.singleShot(5000, self._check_for_update_async)
             QTimer.singleShot(1500, self._git_self_update)
-        if self.settings.get("gemini_api_key"):
+        # Enough to start: a Gemini key, OR Claude selected with an Anthropic key, OR the
+        # local Ollama brain (which needs no key at all).
+        _prov = self.settings.get("provider") or model_catalog.provider_for(
+            self.settings.get("model_id") or self.settings.get("gemini_model") or "")
+        _can_start = bool(self.settings.get("gemini_api_key")) or _prov == "ollama" or (
+            _prov == "claude" and self.settings.get("anthropic_api_key"))
+        if _can_start:
             # Defer agent init (and the heavy google.genai import) so the window paints first.
             self._set_status("Starting…")
             QTimer.singleShot(0, self._init_agent)
@@ -3786,6 +3826,9 @@ class EmberWindow(QWidget):
         if cmd == "__macros__":
             self._open_macros_manager()
             return
+        if cmd == "__local_ai__":
+            self._open_local_ai()
+            return
         self.input_box.setPlainText(cmd)
         self._on_send()
 
@@ -4100,6 +4143,49 @@ class EmberWindow(QWidget):
                     self._add_bubble("system", f"Deleted macro '{name}'.")
         except Exception as e:
             QMessageBox.warning(self, "Macros", f"{type(e).__name__}: {e}")
+
+    def _open_local_ai(self):
+        """Show local Ollama status and offer to switch Ember's brain to it (offline, no key)."""
+        try:
+            import local_ai
+            st = local_ai.local_ai_status()
+        except Exception as e:
+            QMessageBox.warning(self, "Local AI", f"Could not check Ollama: {e}")
+            return
+        cur = (self.settings.get("provider")
+               or model_catalog.provider_for(self.settings.get("model_id", "")))
+        lines = ["<b>Local AI (Ollama)</b> — offline · no API key · no rate limits", ""]
+        if st.get("running"):
+            models = st.get("models") or []
+            lines.append("Ollama is running ✓")
+            lines.append("Installed models: " + (", ".join(models) if models
+                         else "(none — run: ollama pull llama3.2)"))
+        else:
+            lines.append(st.get("note") or "Ollama is not running. Install it from ollama.com, "
+                         "then run: ollama pull llama3.2")
+        lines += ["", ("Ember is currently using the local model." if cur == "ollama"
+                       else "Click 'Use local AI' to switch Ember's brain to Ollama. "
+                            "Local mode is chat only (no computer control).")]
+        box = QMessageBox(self)
+        box.setWindowTitle("Local AI")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        use_btn = (box.addButton("Use local AI", QMessageBox.ButtonRole.AcceptRole)
+                   if cur != "ollama" else None)
+        settings_btn = box.addButton("Open model settings…", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        if use_btn is not None and clicked is use_btn:
+            self.settings["model_id"] = "ollama"
+            self.settings["provider"] = "ollama"
+            save_settings(self.settings)
+            self._init_agent()
+            self._add_bubble("system", "Switched to the local Ollama brain (offline, no key). "
+                                       "Note: local mode is chat only — for computer control, "
+                                       "switch back to Gemini or Claude in Settings.")
+        elif clicked is settings_btn:
+            self._open_settings()
 
     def _open_ember_browser(self):
         """Open the secure, AI-assisted Ember Browser window (Qt WebEngine)."""
@@ -4474,7 +4560,13 @@ class EmberWindow(QWidget):
         model_id = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
         provider = self.settings.get("provider") or model_catalog.provider_for(model_id)
         try:
-            if provider == "claude":
+            if provider == "ollama":
+                from ollama_agent import OllamaAgent
+                self.agent = OllamaAgent(
+                    model_name=self.settings.get("ollama_model") or "",
+                    auto_screenshot=bool(self.settings.get("auto_screenshot", True)),
+                )
+            elif provider == "claude":
                 key = self.settings.get("anthropic_api_key") or ""
                 if not key:
                     self._set_status("Need Anthropic API key for Claude — open settings (gear)")

@@ -13,7 +13,9 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   bookmarks, history, downloads, find-in-page, zoom; Gemini or Claude.
 - **Chrome extension** — summarize / ask / AI-check via your own Gemini key.
 - **AI detector** — text (heuristics) + images (metadata/provenance).
-- **Local AI** — Ollama (offline, no key, no rate limit).
+- **Local AI** — Ollama (offline, no key, no rate limit). Selectable as Ember's brain in the
+  model picker ("Local (Ollama)") via `ollama_agent.py` + the "Local AI" Command Center app /
+  `/localai`; chat-only (no computer control). Also available as the `local_ai_*` tools.
 - **Creative AI** — image generation, vision Q&A, audio transcription.
 - **Macros** — save / list / run / delete named task workflows.
 - **Tools** — 176 total: multitools (cleanup, network, media, privacy), charts (matplotlib),
