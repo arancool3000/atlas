@@ -211,10 +211,29 @@ def _md_to_html(text: str) -> str:
     return s
 
 
+_VAULT_KEYS = ("gemini_api_key", "gemini_api_key_secondary", "anthropic_api_key")
+
+
+def _hydrate_keys_from_vault(settings: dict) -> dict:
+    """When the encrypted key vault is enabled, settings.json holds blanked keys; pull the
+    real values back into the in-memory settings so the running agent can use them."""
+    if settings.get("use_key_vault"):
+        try:
+            import key_vault
+            for k in _VAULT_KEYS:
+                if not settings.get(k):
+                    v = key_vault.get_key(k)
+                    if v:
+                        settings[k] = v
+        except Exception:
+            pass
+    return settings
+
+
 def load_settings() -> dict:
     if SETTINGS_PATH.exists():
         try:
-            return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            return _hydrate_keys_from_vault(json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
         except json.JSONDecodeError:
             pass
     return {
@@ -255,8 +274,23 @@ def load_settings() -> dict:
 
 def save_settings(settings: dict):
     try:
+        to_write = settings
+        if settings.get("use_key_vault"):
+            # Move API keys into the encrypted vault and write a redacted copy to disk, so
+            # settings.json never holds plaintext keys. The in-memory dict keeps the real
+            # values (the running agent still works). If the vault write fails for any key,
+            # fall back to writing that key as-is rather than silently losing it.
+            try:
+                import key_vault
+                to_write = dict(settings)
+                for k in _VAULT_KEYS:
+                    val = to_write.get(k)
+                    if val and key_vault.set_key(k, val):
+                        to_write[k] = ""
+            except Exception:
+                to_write = settings
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        SETTINGS_PATH.write_text(json.dumps(to_write, indent=2), encoding="utf-8")
     except OSError as e:
         # Never let a failed write crash the app or silently lose the API key.
         print(f"[settings save failed: {e}] path={SETTINGS_PATH}")
@@ -1308,6 +1342,23 @@ class ManualModeDialog(QDialog):
         self.output_view.setPlainText("\n".join(lines))
 
 
+# Theme presets: each sets accent color + glass opacity + glow/animations/liquid-glass at once.
+_THEME_PRESETS = {
+    "Midnight Blue": {"accent_color": "#7aa2f7", "glass_opacity": 75, "glow_enabled": True,
+                      "animations_enabled": True, "liquid_glass": False},
+    "Neon Purple":   {"accent_color": "#bb9af7", "glass_opacity": 60, "glow_enabled": True,
+                      "animations_enabled": True, "liquid_glass": False},
+    "Minimal Light": {"accent_color": "#7dcfff", "glass_opacity": 40, "glow_enabled": False,
+                      "animations_enabled": False, "liquid_glass": True},
+    "Forest":        {"accent_color": "#9ece6a", "glass_opacity": 70, "glow_enabled": True,
+                      "animations_enabled": True, "liquid_glass": False},
+    "Amber Warm":    {"accent_color": "#e0af68", "glass_opacity": 80, "glow_enabled": True,
+                      "animations_enabled": True, "liquid_glass": False},
+    "High Contrast": {"accent_color": "#f7768e", "glass_opacity": 95, "glow_enabled": False,
+                      "animations_enabled": False, "liquid_glass": False},
+}
+
+
 class SettingsDialog(QDialog):
     """Tabbed settings: Models · Performance · Automations · Memory · Security · About."""
 
@@ -1374,6 +1425,21 @@ class SettingsDialog(QDialog):
         self.anthropic_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.anthropic_key_input.setPlaceholderText("Required if Claude is the primary model")
         layout.addRow("Anthropic API key:", self.anthropic_key_input)
+
+        self.vault_check = QCheckBox("🔒 Store API keys in the encrypted vault (not plaintext settings.json)")
+        self.vault_check.setChecked(bool(self.settings.get("use_key_vault", False)))
+        layout.addRow(self.vault_check)
+        try:
+            import key_vault
+            _vbk = key_vault.backend()
+        except Exception:
+            _vbk = "encrypted-file"
+        vault_hint = QLabel(
+            f"Keys are encrypted using the {'OS keychain' if _vbk == 'keychain' else 'an encrypted file (Fernet)'}. "
+            "When on, settings.json keeps blank keys and the real values live in the vault.")
+        vault_hint.setStyleSheet("color: #565f89; font-size: 11px;")
+        vault_hint.setWordWrap(True)
+        layout.addRow(vault_hint)
 
         self.model_combo = QComboBox()
         self._model_options = model_catalog.all_choices()
@@ -1473,6 +1539,16 @@ class SettingsDialog(QDialog):
         self.accent_combo.setCurrentIndex(idx)
         layout.addRow("Accent color:", self.accent_combo)
 
+        # --- Theme presets: one click sets accent + glass + glow + animations together. ---
+        self.theme_preset_combo = QComboBox()
+        self.theme_preset_combo.addItem("Custom (current)", userData=None)
+        for pname in _THEME_PRESETS:
+            self.theme_preset_combo.addItem(pname, userData=pname)
+        self.theme_preset_combo.setCurrentIndex(0)
+        self.theme_preset_combo.activated.connect(
+            lambda _i: self._apply_theme_preset(self.theme_preset_combo.currentData()))
+        layout.addRow("Theme preset:", self.theme_preset_combo)
+
         note = QLabel(
             "Appearance changes apply when you save. Restart Ember via Ember.bat to fully refresh."
         )
@@ -1481,6 +1557,22 @@ class SettingsDialog(QDialog):
         layout.addRow(note)
 
         self.tabs.addTab(page, "Appearance")
+
+    def _apply_theme_preset(self, key):
+        """Apply a named theme preset to the Appearance widgets (does not save until the user
+        clicks Save). 'Custom (current)' (key None) is a no-op."""
+        preset = _THEME_PRESETS.get(key)
+        if not preset:
+            return
+        # accent: match the preset color to a combo entry by its userData
+        for i in range(self.accent_combo.count()):
+            if self.accent_combo.itemData(i) == preset["accent_color"]:
+                self.accent_combo.setCurrentIndex(i)
+                break
+        self.glass_opacity_slider.setValue(int(preset["glass_opacity"]))
+        self.glow_check.setChecked(bool(preset["glow_enabled"]))
+        self.animations_check.setChecked(bool(preset["animations_enabled"]))
+        self.liquid_glass_check.setChecked(bool(preset["liquid_glass"]))
 
     def _build_voice_tab(self):
         page = QWidget()
@@ -1545,6 +1637,15 @@ class SettingsDialog(QDialog):
                                           "(loads only core tools, hides niche utilities)")
         self.lean_tools_check.setChecked(bool(self.settings.get("lean_tools", True)))
         layout.addRow(self.lean_tools_check)
+
+        self.download_protect_check = QCheckBox(
+            "🛡 Real-time download protection — auto-scan new files in Downloads for malware")
+        self.download_protect_check.setChecked(bool(self.settings.get("download_protection", False)))
+        layout.addRow(self.download_protect_check)
+
+        usage_btn = QPushButton("📊 Show usage dashboard (calls / tokens vs free-tier limits)")
+        usage_btn.clicked.connect(self._show_usage_dashboard)
+        layout.addRow("", usage_btn)
 
         # Show whether the parent window successfully registered the hotkey
         parent_w = self.parent()
@@ -2012,6 +2113,55 @@ class SettingsDialog(QDialog):
     def _show_rates(self):
         QMessageBox.information(self, "Free-tier rate limits", model_catalog.rate_limit_summary())
 
+    def _show_usage_dashboard(self):
+        try:
+            import usage
+            s = usage.summary()
+        except Exception as e:
+            QMessageBox.warning(self, "Usage dashboard", f"Could not read usage: {e}")
+            return
+
+        def _bar(pct):
+            pct = max(0, min(100, int(pct)))
+            filled = round(pct / 10)
+            return "█" * filled + "░" * (10 - filled)
+
+        lines = [
+            "<b>API usage — Gemini free tier</b>",
+            "",
+            f"This minute:  {s['calls_last_minute']}/{s['limit_per_minute']} calls   "
+            f"{_bar(s['minute_pct'])} {int(s['minute_pct'])}%",
+            f"Today:        {s['calls_today']}/{s['limit_per_day']} calls   "
+            f"{_bar(s['day_pct'])} {int(s['day_pct'])}%",
+            f"Tokens today: {s['tokens_today']:,}",
+            f"Remaining:    {s['minute_remaining']} this minute · {s['day_remaining']} today",
+        ]
+        by_model = s.get("by_model") or {}
+        if by_model:
+            lines.append("")
+            lines.append("<b>By model (today)</b>")
+            for m, c in sorted(by_model.items(), key=lambda kv: -kv[1]):
+                lines.append(f"  {m}: {c}")
+        last7 = s.get("last_7_days") or []
+        if last7:
+            lines.append("")
+            lines.append("<b>Last 7 days</b>")
+            for d in last7:
+                lines.append(f"  {d['date']}: {d['calls']} calls · {d['tokens']:,} tokens")
+        box = QMessageBox(self)
+        box.setWindowTitle("Usage dashboard")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<pre style='font-family:monospace'>" + "\n".join(lines) + "</pre>")
+        reset_btn = box.addButton("Reset counters", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is reset_btn:
+            try:
+                import usage
+                usage.usage_reset()
+            except Exception:
+                pass
+
     def get_settings(self) -> dict:
         self.settings["gemini_api_key"] = self.gemini_key_input.text().strip()
         self.settings["gemini_api_key_secondary"] = self.gemini_key_secondary_input.text().strip()
@@ -2030,6 +2180,10 @@ class SettingsDialog(QDialog):
         self.settings["remote_autostart"] = self.remote_autostart_check.isChecked()
         self.settings["auto_update"] = self.auto_update_check.isChecked()
         self.settings["lean_tools"] = self.lean_tools_check.isChecked()
+        if hasattr(self, "download_protect_check"):
+            self.settings["download_protection"] = self.download_protect_check.isChecked()
+        if hasattr(self, "vault_check"):
+            self.settings["use_key_vault"] = self.vault_check.isChecked()
         self.settings["voice_output"] = self.voice_check.isChecked()
         self.settings["voice_chat_spoken_replies"] = self.voice_chat_reply_check.isChecked()
         self.settings["voice_chat_auto_send"] = self.voice_auto_send_check.isChecked()
@@ -2158,6 +2312,9 @@ class EmberWindow(QWidget):
             # Bring Ember Link (phone control) up as soon as the app opens — deferred a beat
             # so the window paints first. Starts silently; no modal on launch.
             QTimer.singleShot(1200, self._autostart_remote_control)
+        if self.settings.get("download_protection", False) and not _SAFE_MODE:
+            # Real-time download protection: start the Downloads watcher in the background.
+            QTimer.singleShot(1800, self._autostart_download_protection)
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
@@ -3537,6 +3694,19 @@ class EmberWindow(QWidget):
         )
         box.exec()
         self._add_bubble("system", f"Ember Link is live at **{url}** (PIN **{pin}**). Same Wi-Fi required.")
+
+    def _autostart_download_protection(self):
+        """Start real-time download protection (Downloads folder malware watcher) in the
+        background. Best-effort and failure-silent so it never blocks the app."""
+        try:
+            import download_guard
+            r = download_guard.start()
+            if r.get("ok"):
+                print(f"[Download protection on: watching {r.get('folder')}]")
+            else:
+                print(f"[Download protection failed: {r.get('error')}]")
+        except Exception as e:
+            print(f"[Download protection autostart failed: {e}]")
 
     def _autostart_remote_control(self):
         """Bring Ember Link up automatically at launch — no modal, just a status note.
