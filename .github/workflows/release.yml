@@ -1,0 +1,131 @@
+name: Release
+
+# Builds the macOS + Windows apps on native runners and publishes a GitHub Release
+# with the binaries + latest.json (which the in-app auto-updater reads). This is the
+# "real GitHub Release" pipeline: tag a version and CI does the rest — no Mac needed
+# on the maintainer's side.
+#
+# Usage:
+#   git tag v1.0.0 && git push origin v1.0.0
+# or run it manually from the Actions tab (workflow_dispatch) with a version.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 1.0.1)"
+        required: true
+
+permissions:
+  contents: write   # needed to create the release + upload assets
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+      - name: Build Ember.app
+        run: |
+          rm -rf build dist
+          python -m PyInstaller --noconfirm Ember.spec
+      - name: Zip bundle (ditto preserves macOS metadata)
+        run: |
+          cd dist
+          ditto -c -k --sequesterRsrc --keepParent Ember.app ../Ember-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ember-macOS
+          path: Ember-macOS.zip
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pyinstaller
+      - name: Build Ember.exe
+        run: |
+          if (Test-Path build) { Remove-Item -Recurse -Force build }
+          if (Test-Path dist) { Remove-Item -Recurse -Force dist }
+          python -m PyInstaller --noconfirm Ember.spec
+      - name: Zip build
+        run: Compress-Archive -Path dist/Ember/* -DestinationPath Ember-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Ember-Windows
+          path: Ember-Windows.zip
+
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${V}" >> "$GITHUB_OUTPUT"
+      - name: Collect assets + build latest.json
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          mkdir -p out
+          cp artifacts/Ember-macOS/Ember-macOS.zip out/ 2>/dev/null || true
+          cp artifacts/Ember-Windows/Ember-Windows.zip out/ 2>/dev/null || true
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          out = pathlib.Path("out")
+          ver = os.environ["VERSION"]; owner = os.environ["OWNER"]; repo = os.environ["REPO"]
+          def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else ""
+          def url(asset): return f"https://github.com/{owner}/{repo}/releases/latest/download/{asset}"
+          downloads = {
+              "macos":   {"url": url("Ember-macOS.zip"),   "sha256": sha(out/"Ember-macOS.zip")},
+              "windows": {"url": url("Ember-Windows.zip"), "sha256": sha(out/"Ember-Windows.zip")},
+          }
+          manifest = {
+              "version": ver,
+              "pub_date": __import__("datetime").date.today().isoformat(),
+              "min_macos": "12.0",
+              "min_windows": "10",
+              "downloads": downloads,
+              "notes": f"Ember {ver}. See the release page for details.",
+          }
+          (out/"latest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', steps.ver.outputs.version) || github.ref_name }}
+          name: Ember ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            out/Ember-macOS.zip
+            out/Ember-Windows.zip
+            out/latest.json

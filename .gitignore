@@ -10,12 +10,14 @@ chat_history/
 *.pem
 .env
 
-# Runtime state for backlog features (encrypted vault, usage, snippets, recordings)
-vault.enc
-usage.json
-snippets.json
-workflows/
-recordings/
+# Runtime state for backlog features (encrypted vault, usage, snippets, recordings).
+# Anchored to the repo root so the workflow_recorder's /workflows/ data dir does NOT
+# shadow .github/workflows/ (the CI definitions).
+/vault.enc
+/usage.json
+/snippets.json
+/workflows/
+/recordings/
 
 # Captured screen content
 screenshots/
