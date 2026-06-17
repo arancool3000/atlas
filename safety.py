@@ -136,6 +136,15 @@ SAFE_READONLY = {
     "sort_lines", "dedupe_lines", "reverse_text", "rot13", "uuid4", "random_int",
     "random_pick", "lorem_ipsum", "int_to_roman", "roman_to_int", "hex_to_rgb", "rgb_to_hex",
     "number_to_words", "is_prime", "days_between", "tip_calculator", "bmi_calculator",
+    # --- roadmap backlog: read-only feature tools ---
+    "vault_status", "vault_get_key", "vault_list_keys",       # key vault (never returns full secret)
+    "usage_summary",                                          # usage dashboard
+    "download_guard_status", "download_guard_events",         # download protection
+    "list_workflows",                                         # workflow recorder
+    "snippet_list", "snippet_get", "snippet_expand",         # snippet expander
+    "email_breach_check", "pick_screen_color", "screenshot_monitor",
+    "screen_record_status",
+    "list_plugins",                                           # plugin system
 }
 
 SAFE_INTERACTION = {
@@ -151,6 +160,14 @@ SAFE_INTERACTION = {
     "right_click_element_by_text",
     "snap_window", "move_window", "minimize_all_other_windows", "show_desktop",
     "switch_window", "media_keys", "show_notification", "say_text",
+    # --- roadmap backlog: low-risk write/act feature tools ---
+    "vault_store_key",                                        # store a secret (reversible)
+    "usage_reset",                                            # clears usage counters
+    "download_guard_start", "download_guard_stop",           # start/stop the watcher
+    "record_workflow_start", "record_workflow_stop", "delete_workflow",
+    "snippet_save", "snippet_delete",                        # snippet CRUD
+    "screen_record_start", "screen_record_stop",             # local screen capture file
+    "reload_plugins", "create_plugin_template",              # plugin management
 }
 
 QUICK_FIX_RISK = {
@@ -306,6 +323,12 @@ def classify(tool_name: str, args: dict) -> tuple[str, str]:
     if tool_name in {"keychain_store", "encrypt_file", "decrypt_file", "media_convert",
                      "qr_make", "strip_metadata", "make_chart", "generate_image"}:
         return "medium", "writes a file / stores a secret"
+
+    # --- roadmap backlog: tools that need a clearer / higher risk than the sets imply ---
+    if tool_name == "replay_workflow":
+        return "high", "replays recorded mouse/keyboard input (can drive any app)"
+    if tool_name == "vault_delete_key":
+        return "medium", "deletes a stored secret from the key vault"
 
     return "medium", "unclassified tool"
 
