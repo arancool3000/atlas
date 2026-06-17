@@ -76,9 +76,18 @@ SLASH_COMMANDS = {
     "/reset": "__clear__",
     "/forget": "__forget_all__",
     "/update": "__update__",
+    "/usage": "__usage__",
+    "/plugins": "__plugins__",
 }
 
-HELP_TEXT = """Slash commands
+HELP_TEXT = """How Ember's buttons work
+The Command Center has two kinds of buttons:
+  • Apps & tools — OPEN a feature (Phone Link, Ember Browser, Antivirus, Sandbox,
+    Usage, Plugins, Manual bridge).
+  • Quick tasks — TYPE a request into the chat and send it. They're just examples;
+    you can also type any request yourself.
+
+Slash commands  (type these, or use the Quick-task buttons)
 
 Autonomy
   /autopilot  take over a computer task end-to-end
@@ -107,15 +116,29 @@ Web
   /web        open automation browser
   /shot       take a screenshot
 
+Features (open a tool)
+  /remote     start Ember Link for phone control
+  /browser    open the Ember Browser app (tab groups + password manager)
+  /usage      show API usage vs the free-tier limits
+  /plugins    manage drop-in plugin tools
+  /manual     bridge an external AI
+
 Session
   /voice      toggle hands-free voice chat
-  /remote     start Ember Link for phone control
-  /manual     bridge an external AI
   /windows    list open windows
   /clear      clear chat
   /forget     wipe saved facts
   /update     install the latest Ember version
   /help       this list
+
+More you can just ASK for (no command needed)
+  • "save a snippet" / "expand ;sig" — reusable text snippets
+  • "record a workflow" / "replay <name>" — record & replay mouse+keyboard
+  • "record my screen for 20s" — screen recorder
+  • "has my email been breached?" — email breach check
+  • "scan this download" — and turn on real-time download protection in Settings
+  • Settings ▸ Models: store API keys in the encrypted vault
+  • Plugins: drop a .py in the plugins/ folder to add your own tools (/plugins)
 
 Global hotkey: configurable in Settings -> Performance (default Ctrl+Shift+Space).
 Drop a file/folder onto the chat to discuss it.
@@ -125,25 +148,36 @@ Tip: just say "organize my Downloads", "find duplicates in Pictures",
 """
 
 
-COMMAND_CENTER_ACTIONS = [
-    ("Phone Link", "__remote__"),
-    ("Ember Browser", "__browser_app__"),
-    ("Antivirus", "__scan_folder__"),
-    ("Sandbox", "__sandbox__"),
-    ("Autopilot", "/autopilot"),
-    ("Use App", "/apps"),
-    ("Research", "/research"),
-    ("Create", "/create"),
-    ("Screen", "/shot"),
-    ("Browser", "/web"),
-    ("Files", "/organize"),
-    ("Downloads", "/downloads"),
-    ("Duplicates", "/dedupe"),
-    ("Performance", "/perf"),
-    ("Diagnose", "/diagnose"),
-    ("Automate", "/automate"),
-    ("Schedule", "/schedule"),
-    ("Manual", "__manual__"),
+# Command Center, grouped so a new user can tell the two kinds of buttons apart:
+#  - "Apps & tools" OPEN a feature/window (Phone Link, Browser, Antivirus, …).
+#  - "Quick tasks" TYPE a request into the chat and send it (they are example prompts).
+# Each entry is (label, command, tooltip). A command starting with "__" opens a feature;
+# anything else is a prompt/slash that gets sent to Ember as a request.
+COMMAND_CENTER_GROUPS = [
+    ("Apps & tools", [
+        ("📱 Phone Link",     "__remote__",      "Control this Mac from your phone (Ember Link)"),
+        ("🌐 Ember Browser",  "__browser_app__", "Open the secure AI browser — tab groups + password manager"),
+        ("🛡 Antivirus",      "__scan_folder__", "Scan a folder for malware"),
+        ("📦 Sandbox",        "__sandbox__",     "Run a file safely in an isolated sandbox"),
+        ("📊 Usage",          "__usage__",       "API calls & tokens vs the free-tier limits"),
+        ("🧩 Plugins",        "__plugins__",     "Manage drop-in plugin tools (the plugins/ folder)"),
+        ("🔗 Manual bridge",  "__manual__",      "Bridge an external AI for hard reasoning"),
+    ]),
+    ("Quick tasks", [
+        ("Autopilot a task",  "/autopilot", None),
+        ("Operate this app",  "/apps",      None),
+        ("Research a topic",  "/research",  None),
+        ("Create a file",     "/create",    None),
+        ("Take a screenshot", "/shot",      None),
+        ("Automate a website","/web",       None),
+        ("Organize a folder", "/organize",  None),
+        ("Clean Downloads",   "/downloads", None),
+        ("Find duplicates",   "/dedupe",    None),
+        ("Performance check", "/perf",      None),
+        ("Diagnose this PC",  "/diagnose",  None),
+        ("Build a rule",      "/automate",  None),
+        ("Schedule a task",   "/schedule",  None),
+    ]),
 ]
 
 
@@ -620,6 +654,22 @@ QPushButton#commandAction:hover {{
     color: #ffffff;
     border-color: rgba(255, 255, 255, 106);
 }}
+QPushButton#commandTask {{
+    background-color: rgba(255, 255, 255, 10);
+    color: rgba(246, 246, 244, 200);
+    border: 1px solid rgba(255, 255, 255, 26);
+    border-left: 3px solid rgba(122, 162, 247, 170);
+    border-radius: 9px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-style: italic;
+    text-align: left;
+}}
+QPushButton#commandTask:hover {{
+    background-color: rgba(255, 255, 255, 30);
+    color: #ffffff;
+}}
 QPushButton#voiceToggle {{
     background-color: rgba(255, 255, 255, 220);
     color: #08080a;
@@ -935,6 +985,22 @@ QPushButton#commandAction:hover {
     background-color: rgba(255,255,255,0.12);
     color: #ffffff;
     border-color: rgba(255,255,255,0.36);
+}
+QPushButton#commandTask {
+    background-color: rgba(255,255,255,0.04);
+    color: rgba(40,42,54,0.85);
+    border: 1px solid rgba(0,0,0,0.10);
+    border-left: 3px solid rgba(122,162,247,0.85);
+    border-radius: 9px;
+    padding: 6px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    font-style: italic;
+    text-align: left;
+}
+QPushButton#commandTask:hover {
+    background-color: rgba(122,162,247,0.16);
+    color: #08080a;
 }
 QPushButton#voiceToggle {
     background-color: rgba(238,241,248,0.92);
@@ -1357,6 +1423,52 @@ _THEME_PRESETS = {
     "High Contrast": {"accent_color": "#f7768e", "glass_opacity": 95, "glow_enabled": False,
                       "animations_enabled": False, "liquid_glass": False},
 }
+
+
+def show_usage_dashboard(parent):
+    """Show the API usage dashboard (calls/tokens vs the free-tier limits). Shared by the
+    Settings dialog and the Command Center so the same view is reachable from both."""
+    try:
+        import usage
+        s = usage.summary()
+    except Exception as e:
+        QMessageBox.warning(parent, "Usage dashboard", f"Could not read usage: {e}")
+        return
+
+    def _bar(pct):
+        pct = max(0, min(100, int(pct)))
+        return "█" * round(pct / 10) + "░" * (10 - round(pct / 10))
+
+    lines = [
+        "<b>API usage — Gemini free tier</b>", "",
+        f"This minute:  {s['calls_last_minute']}/{s['limit_per_minute']} calls   "
+        f"{_bar(s['minute_pct'])} {int(s['minute_pct'])}%",
+        f"Today:        {s['calls_today']}/{s['limit_per_day']} calls   "
+        f"{_bar(s['day_pct'])} {int(s['day_pct'])}%",
+        f"Tokens today: {s['tokens_today']:,}",
+        f"Remaining:    {s['minute_remaining']} this minute · {s['day_remaining']} today",
+    ]
+    by_model = s.get("by_model") or {}
+    if by_model:
+        lines += ["", "<b>By model (today)</b>"]
+        lines += [f"  {m}: {c}" for m, c in sorted(by_model.items(), key=lambda kv: -kv[1])]
+    last7 = s.get("last_7_days") or []
+    if last7:
+        lines += ["", "<b>Last 7 days</b>"]
+        lines += [f"  {d['date']}: {d['calls']} calls · {d['tokens']:,} tokens" for d in last7]
+    box = QMessageBox(parent)
+    box.setWindowTitle("Usage dashboard")
+    box.setTextFormat(Qt.TextFormat.RichText)
+    box.setText("<pre style='font-family:monospace'>" + "\n".join(lines) + "</pre>")
+    reset_btn = box.addButton("Reset counters", QMessageBox.ButtonRole.DestructiveRole)
+    box.addButton(QMessageBox.StandardButton.Close)
+    box.exec()
+    if box.clickedButton() is reset_btn:
+        try:
+            import usage
+            usage.usage_reset()
+        except Exception:
+            pass
 
 
 class SettingsDialog(QDialog):
@@ -2114,53 +2226,7 @@ class SettingsDialog(QDialog):
         QMessageBox.information(self, "Free-tier rate limits", model_catalog.rate_limit_summary())
 
     def _show_usage_dashboard(self):
-        try:
-            import usage
-            s = usage.summary()
-        except Exception as e:
-            QMessageBox.warning(self, "Usage dashboard", f"Could not read usage: {e}")
-            return
-
-        def _bar(pct):
-            pct = max(0, min(100, int(pct)))
-            filled = round(pct / 10)
-            return "█" * filled + "░" * (10 - filled)
-
-        lines = [
-            "<b>API usage — Gemini free tier</b>",
-            "",
-            f"This minute:  {s['calls_last_minute']}/{s['limit_per_minute']} calls   "
-            f"{_bar(s['minute_pct'])} {int(s['minute_pct'])}%",
-            f"Today:        {s['calls_today']}/{s['limit_per_day']} calls   "
-            f"{_bar(s['day_pct'])} {int(s['day_pct'])}%",
-            f"Tokens today: {s['tokens_today']:,}",
-            f"Remaining:    {s['minute_remaining']} this minute · {s['day_remaining']} today",
-        ]
-        by_model = s.get("by_model") or {}
-        if by_model:
-            lines.append("")
-            lines.append("<b>By model (today)</b>")
-            for m, c in sorted(by_model.items(), key=lambda kv: -kv[1]):
-                lines.append(f"  {m}: {c}")
-        last7 = s.get("last_7_days") or []
-        if last7:
-            lines.append("")
-            lines.append("<b>Last 7 days</b>")
-            for d in last7:
-                lines.append(f"  {d['date']}: {d['calls']} calls · {d['tokens']:,} tokens")
-        box = QMessageBox(self)
-        box.setWindowTitle("Usage dashboard")
-        box.setTextFormat(Qt.TextFormat.RichText)
-        box.setText("<pre style='font-family:monospace'>" + "\n".join(lines) + "</pre>")
-        reset_btn = box.addButton("Reset counters", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton(QMessageBox.StandardButton.Close)
-        box.exec()
-        if box.clickedButton() is reset_btn:
-            try:
-                import usage
-                usage.usage_reset()
-            except Exception:
-                pass
+        show_usage_dashboard(self)
 
     def get_settings(self) -> dict:
         self.settings["gemini_api_key"] = self.gemini_key_input.text().strip()
@@ -2955,12 +3021,24 @@ class EmberWindow(QWidget):
         action_title.setObjectName("sectionTitle")
         command_layout.addWidget(action_title)
 
-        for label, cmd in COMMAND_CENTER_ACTIONS:
-            b = QPushButton(label)
-            b.setObjectName("commandAction")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(lambda _=False, c=cmd: self._run_slash(c))
-            command_layout.addWidget(b)
+        for section_title, items in COMMAND_CENTER_GROUPS:
+            sub = QLabel(section_title)
+            sub.setObjectName("panelHint")
+            command_layout.addWidget(sub)
+            for label, cmd, tip in items:
+                b = QPushButton(label)
+                is_feature = cmd.startswith("__")
+                # Features OPEN something (solid button); quick tasks TYPE a request (outlined).
+                b.setObjectName("commandAction" if is_feature else "commandTask")
+                b.setCursor(Qt.CursorShape.PointingHandCursor)
+                if not tip and not is_feature:
+                    sent = SLASH_COMMANDS.get(cmd, cmd)
+                    if isinstance(sent, str) and not sent.startswith("__"):
+                        tip = "Sends this request to Ember:\n" + (sent[:160] + ("…" if len(sent) > 160 else ""))
+                if tip:
+                    b.setToolTip(tip)
+                b.clicked.connect(lambda _=False, c=cmd: self._run_slash(c))
+                command_layout.addWidget(b)
 
         command_layout.addStretch(1)
         self._command_panel = command_panel
@@ -3037,6 +3115,14 @@ class EmberWindow(QWidget):
             b = QPushButton(label)
             b.setObjectName("chip")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
+            # Make it obvious whether a chip opens a feature or sends an example request.
+            if cmd == "__voice_chat__":
+                b.setToolTip("Toggle hands-free voice chat")
+            else:
+                sent = SLASH_COMMANDS.get(cmd, cmd)
+                if isinstance(sent, str) and not sent.startswith("__"):
+                    b.setToolTip("Sends this request to Ember:\n"
+                                 + sent[:160] + ("…" if len(sent) > 160 else ""))
             b.clicked.connect(lambda _=False, c=cmd: self._run_slash(c))
             chip_flow.addWidget(b)
         layout.addWidget(chip_holder)
@@ -3607,6 +3693,12 @@ class EmberWindow(QWidget):
         if target == "__manual__":
             self._open_manual_mode()
             return True
+        # Any other feature-opener target (e.g. __browser_app__, __scan_folder__, __sandbox__,
+        # __usage__, __plugins__) is handled by _run_slash — route it there instead of sending
+        # the literal "__opener__" token to the agent as a chat message.
+        if target.startswith("__"):
+            self._run_slash(target)
+            return True
         expanded = target + (" " + rest if rest else "")
         agent_text = self._agent_contextual_text(expanded)
         self._add_bubble("user", text + f"\n(expanded: {target[:80]}{'…' if len(target) > 80 else ''})")
@@ -3639,8 +3731,74 @@ class EmberWindow(QWidget):
         if cmd == "__update__":
             self._start_update()
             return
+        if cmd == "__usage__":
+            self._show_usage_dashboard()
+            return
+        if cmd == "__plugins__":
+            self._open_plugins_manager()
+            return
         self.input_box.setPlainText(cmd)
         self._on_send()
+
+    def _show_usage_dashboard(self):
+        show_usage_dashboard(self)
+
+    def _open_plugins_manager(self):
+        """Show loaded plugins and let the user reload, scaffold a new one, or open the folder."""
+        try:
+            import plugin_system
+            info = plugin_system.list_plugins()
+        except Exception as e:
+            QMessageBox.warning(self, "Plugins", f"Plugin system unavailable: {e}")
+            return
+        plugins = info.get("plugins") or []
+        lines = ["<b>Plugins</b> — drop a .py file into the plugins/ folder to add tools.", ""]
+        if plugins:
+            for p in plugins:
+                tools = ", ".join(p.get("tools") or []) or "(no tools)"
+                lines.append(f"• {p.get('file')}: {tools}")
+        else:
+            lines.append("No plugins yet.")
+        if info.get("errors"):
+            lines.append("")
+            lines.append("<b>Errors</b>")
+            for er in info["errors"]:
+                lines.append(f"• {er.get('plugin')}: {er.get('error')}")
+        box = QMessageBox(self)
+        box.setWindowTitle("Plugins")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        new_btn = box.addButton("New plugin…", QMessageBox.ButtonRole.ActionRole)
+        reload_btn = box.addButton("Reload", QMessageBox.ButtonRole.ActionRole)
+        folder_btn = box.addButton("Open folder", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if clicked is new_btn:
+                from PyQt6.QtWidgets import QInputDialog
+                name, ok = QInputDialog.getText(self, "New plugin", "Plugin name:")
+                if ok and name.strip():
+                    r = plugin_system.create_plugin_template(name.strip())
+                    if r.get("ok"):
+                        self._add_bubble("system", f"Created plugin template: {r.get('path')}\n"
+                                                   "Edit it, then click Plugins ▸ Reload.")
+                    else:
+                        QMessageBox.warning(self, "Plugins", r.get("error", "Could not create."))
+            elif clicked is reload_btn:
+                r = plugin_system.reload_plugins()
+                self._add_bubble("system",
+                                 f"Reloaded plugins: {r.get('loaded', 0)} loaded "
+                                 f"({', '.join(r.get('tools') or []) or 'none'}). "
+                                 "Restart Ember to expose new plugin tools to the agent.")
+            elif clicked is folder_btn:
+                import plugin_system as _ps
+                from PyQt6.QtGui import QDesktopServices
+                from PyQt6.QtCore import QUrl
+                _ps.PLUGINS_DIR.mkdir(parents=True, exist_ok=True)
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(_ps.PLUGINS_DIR)))
+        except Exception as e:
+            QMessageBox.warning(self, "Plugins", f"{type(e).__name__}: {e}")
 
     def _open_ember_browser(self):
         """Open the secure, AI-assisted Ember Browser window (Qt WebEngine)."""
