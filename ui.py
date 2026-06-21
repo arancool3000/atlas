@@ -5006,6 +5006,18 @@ class EmberWindow(QWidget):
         threading.Thread(target=_warm, daemon=True).start()
 
     def _build_agent(self):
+        import os
+        # A deleted/invalid working directory makes os.getcwd() (called internally by the
+        # model SDK's httpx/anyio) raise a bare FileNotFoundError — which used to show up here
+        # as "Agent init failed". Repair it before constructing the client.
+        try:
+            os.getcwd()
+        except Exception:
+            for _d in (os.path.expanduser("~"), "/"):
+                try:
+                    os.chdir(_d); break
+                except Exception:
+                    continue
         from agent import Agent  # already warm from the background thread -> fast here
         model_id = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
         provider = self.settings.get("provider") or model_catalog.provider_for(model_id)
@@ -5045,7 +5057,18 @@ class EmberWindow(QWidget):
             self.agent.subscribe(lambda ev: self._bridge.event.emit(ev))
             self._set_status(f"Ready ({model_id})")
         except Exception as e:
-            QMessageBox.critical(self, "Agent init failed", f"{type(e).__name__}: {e}\n\nCheck your API key and model name.")
+            # Only blame the key/model for actual auth/model errors; other failures
+            # (e.g. a transient FileNotFoundError) get a generic hint instead of a wrong one.
+            es = str(e).lower()
+            if isinstance(e, FileNotFoundError) or "errno 2" in es:
+                hint = ("A file/path the app expected was missing (often a stale working "
+                        "directory). Restarting Ember usually fixes it.")
+            elif any(t in es for t in ("api key", "api_key", "unauthorized", "permission",
+                                       "401", "403", "not found", "404", "model")):
+                hint = "Check your API key and model name in Settings (gear)."
+            else:
+                hint = "Try again, or restart Ember. Open Settings (gear) to check your key/model."
+            QMessageBox.critical(self, "Agent init failed", f"{type(e).__name__}: {e}\n\n{hint}")
             self._set_status("Agent init failed")
 
     def _should_speak_reply(self) -> bool:

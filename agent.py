@@ -2199,6 +2199,10 @@ class Agent:
             self.run_mode = "auto"
         self._active_tool_scope = None     # None = all tools; else a set of allowed names
         self._spawn_depth = 0              # guards sub-agent recursion
+        # Serialize turns: the chat object isn't thread-safe, so overlapping turns must queue.
+        self._turn_lock = threading.Lock()
+        self._turn_queue: list[str] = []
+        self._busy = False
         self._init_chat()
 
     def _make_client(self, api_key: str):
@@ -2257,8 +2261,13 @@ class Agent:
         # Speed-tuned generation:
         #  - low temperature for faster, more deterministic tool selection
         #  - cap output tokens (most responses are short text + tool calls)
+        try:
+            _sys_prompt = build_system_prompt()
+        except Exception:
+            # Never let a transient error reading memory/system context abort agent init.
+            _sys_prompt = BASE_SYSTEM_PROMPT
         config_kwargs = dict(
-            system_instruction=build_system_prompt(),
+            system_instruction=_sys_prompt,
             tools=[tool_obj],
             safety_settings=_make_safety_settings(),
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
@@ -2301,6 +2310,12 @@ class Agent:
 
     def stop(self):
         self._stop_flag.set()
+        # Drop any queued (not-yet-started) turns so a stop really stops everything.
+        try:
+            with self._turn_lock:
+                self._turn_queue.clear()
+        except Exception:
+            pass
 
     def subscribe(self, fn: Callable[[AgentEvent], None]):
         self._event_subs.append(fn)
@@ -2313,8 +2328,34 @@ class Agent:
                 traceback.print_exc()
 
     def send_user_message(self, text: str):
-        t = threading.Thread(target=self._run_turn, args=(text,), daemon=True)
-        t.start()
+        """Queue a user turn. Turns run ONE AT A TIME — the Gemini chat object is not
+        thread-safe, so firing overlapping turns (e.g. hitting Enter again while a slow or
+        rate-limited turn is still running) corrupted history and made Ember hang / stop
+        replying. Extra messages now queue and run in order instead of racing."""
+        start_worker = False
+        with self._turn_lock:
+            self._turn_queue.append(text)
+            if not self._busy:
+                self._busy = True
+                start_worker = True
+        if start_worker:
+            threading.Thread(target=self._turn_worker, daemon=True).start()
+
+    def _turn_worker(self):
+        while True:
+            with self._turn_lock:
+                if not self._turn_queue:
+                    self._busy = False
+                    return
+                text = self._turn_queue.pop(0)
+            try:
+                self._run_turn(text)   # emits its own "done" in a finally
+            except Exception as e:
+                try:
+                    self._emit(AgentEvent("error", f"{type(e).__name__}: {str(e)[:400]}"))
+                    self._emit(AgentEvent("done"))
+                except Exception:
+                    pass
 
     def _image_part(self, image_bytes: bytes, mime_type: str = "image/jpeg") -> types.Part:
         return types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
@@ -2860,7 +2901,7 @@ class Agent:
 
         def _relay(ev):
             try:
-                if ev.type == "message" and isinstance(ev.payload, str):
+                if ev.kind == "message" and isinstance(ev.payload, str):
                     transcript.append(ev.payload)
             except Exception:
                 pass
