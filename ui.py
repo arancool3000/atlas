@@ -2061,6 +2061,48 @@ class SettingsDialog(QDialog):
         row.addStretch()
         v.addLayout(row)
 
+        # --- Real-time protection (always active) ---
+        _section("Real-time protection (always active)")
+        self._sec_dl_guard = QCheckBox("Real-time download protection (auto-scan new downloads)")
+        self._sec_dl_guard.setChecked(bool(self.settings.get("download_protection", True)))
+        self._sec_dl_guard.stateChanged.connect(self._toggle_download_guard)
+        v.addWidget(self._sec_dl_guard)
+
+        self._sec_fileless = QCheckBox(
+            "Fileless-malware protection (monitor processes for in-memory / LOLBin attacks)")
+        self._sec_fileless.setChecked(bool(self.settings.get("fileless_protection", True)))
+        self._sec_fileless.stateChanged.connect(self._toggle_fileless_guard)
+        v.addWidget(self._sec_fileless)
+
+        self._sec_ioc = QCheckBox(
+            "Deep static analysis (entropy + behavioral IOC signatures on files)")
+        self._sec_ioc.setChecked(bool(cfg.get("ioc_scan", True)) and bool(cfg.get("entropy_scan", True)))
+        self._sec_ioc.stateChanged.connect(
+            lambda s: antivirus.set_config(ioc_scan=bool(s), entropy_scan=bool(s)))
+        v.addWidget(self._sec_ioc)
+
+        self._sec_autokill = QCheckBox(
+            "Auto-terminate confirmed-malicious processes (default: alert only)")
+        self._sec_autokill.setChecked(bool(cfg.get("fileless_auto_terminate", False)))
+        self._sec_autokill.stateChanged.connect(
+            lambda s: antivirus.set_config(fileless_auto_terminate=bool(s)))
+        v.addWidget(self._sec_autokill)
+
+        rt_row = QHBoxLayout()
+        try:
+            import fileless_guard
+            rt_state = "running" if fileless_guard.is_running() else "stopped"
+        except Exception:
+            rt_state = "unavailable"
+        self._sec_fileless_lbl = QLabel(f"Process monitor: {rt_state}")
+        self._sec_fileless_lbl.setStyleSheet("color:#565f89; font-size:11px;")
+        rt_row.addWidget(self._sec_fileless_lbl)
+        proc_btn = QPushButton("Scan running processes now")
+        proc_btn.clicked.connect(self._scan_processes_ui)
+        rt_row.addWidget(proc_btn)
+        rt_row.addStretch()
+        v.addLayout(rt_row)
+
         # --- Web protection ---
         _section("Web protection")
         wp = web_policy.get_config()
@@ -2262,6 +2304,62 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
 
+    def _toggle_download_guard(self, state):
+        """Start/stop real-time download protection from the Security tab and persist it."""
+        on = bool(state)
+        self.settings["download_protection"] = on
+        try:
+            import download_guard
+            r = download_guard.start() if on else download_guard.download_guard_stop()
+            if not r.get("ok"):
+                QMessageBox.warning(self, "Download protection", r.get("error", "failed"))
+        except Exception as e:
+            QMessageBox.warning(self, "Download protection", str(e))
+
+    def _toggle_fileless_guard(self, state):
+        """Start/stop always-on fileless protection from the Security tab and persist it."""
+        on = bool(state)
+        self.settings["fileless_protection"] = on
+        try:
+            import antivirus, fileless_guard
+            antivirus.set_config(fileless_protection=on)
+            r = fileless_guard.start() if on else fileless_guard.fileless_guard_stop()
+            if not r.get("ok"):
+                QMessageBox.warning(self, "Fileless protection", r.get("error", "failed"))
+            try:
+                self._sec_fileless_lbl.setText(
+                    f"Process monitor: {'running' if fileless_guard.is_running() else 'stopped'}")
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.warning(self, "Fileless protection", str(e))
+
+    def _scan_processes_ui(self):
+        """One-shot scan of running processes for fileless-malware behavior."""
+        try:
+            import fileless_guard
+            r = fileless_guard.scan_processes()
+        except Exception as e:
+            QMessageBox.warning(self, "Process scan", str(e))
+            return
+        if not r.get("ok"):
+            QMessageBox.warning(self, "Process scan", r.get("error", "scan failed"))
+            return
+        flagged = r.get("flagged", [])
+        if not flagged:
+            QMessageBox.information(
+                self, "Process scan",
+                f"Scanned {r.get('scanned', 0)} processes — nothing suspicious found.")
+            return
+        blocks = []
+        for f in flagged[:20]:
+            reasons = "; ".join(f.get("reasons", []) or []) or ", ".join(f.get("categories", []))
+            blocks.append(f"{f['verdict'].upper()}  {f.get('name')} (pid {f.get('pid')})\n  {reasons}")
+        QMessageBox.warning(
+            self, "Process scan",
+            f"Scanned {r.get('scanned', 0)} processes — flagged "
+            f"{r.get('flagged_count', 0)}.\n\n" + "\n\n".join(blocks))
+
     def _verify_audit(self):
         import audit
         r = audit.verify()
@@ -2430,9 +2528,12 @@ class EmberWindow(QWidget):
             # Bring Ember Link (phone control) up as soon as the app opens — deferred a beat
             # so the window paints first. Starts silently; no modal on launch.
             QTimer.singleShot(1200, self._autostart_remote_control)
-        if self.settings.get("download_protection", False) and not _SAFE_MODE:
+        if self.settings.get("download_protection", True) and not _SAFE_MODE:
             # Real-time download protection: start the Downloads watcher in the background.
             QTimer.singleShot(1800, self._autostart_download_protection)
+        if self.settings.get("fileless_protection", True) and not _SAFE_MODE:
+            # Always-on fileless / behavioral malware protection (process monitor).
+            QTimer.singleShot(2200, self._autostart_fileless_protection)
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
@@ -4252,6 +4353,25 @@ class EmberWindow(QWidget):
                 print(f"[Download protection failed: {r.get('error')}]")
         except Exception as e:
             print(f"[Download protection autostart failed: {e}]")
+
+    def _autostart_fileless_protection(self):
+        """Start always-on fileless / behavioral malware protection (the background
+        process monitor) at launch. Best-effort and failure-silent."""
+        try:
+            import fileless_guard
+            r = fileless_guard.start()
+            if r.get("ok"):
+                n = r.get("initial_threats", 0)
+                print(f"[Fileless protection on: active{' — ' + str(n) + ' threat(s) on initial sweep' if n else ''}]")
+                if n:
+                    self._add_bubble(
+                        "system",
+                        f"🛡️ Real-time fileless protection flagged **{n}** running "
+                        "process(es) on startup. Open Settings → Security to review.")
+            else:
+                print(f"[Fileless protection failed: {r.get('error')}]")
+        except Exception as e:
+            print(f"[Fileless protection autostart failed: {e}]")
 
     def _autostart_remote_control(self):
         """Bring Ember Link up automatically at launch — no modal, just a status note.

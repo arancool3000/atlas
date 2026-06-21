@@ -46,6 +46,7 @@ import scheduled_tasks
 import usage as usage_tracker           # imported aliased: _send_streaming has a local var named `usage`
 import key_vault
 import download_guard
+import fileless_guard
 import workflow_recorder
 import productivity_tools
 import plugin_system
@@ -2012,7 +2013,7 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
 # Each module exports its own TOOL_DECLARATIONS / TOOL_DISPATCH (+ READONLY/INTERACTION
 # sets used by safety.py). Merge them here so the central tables stay the single source
 # of truth the agent + lean-mode filter read from.
-for _feat in (key_vault, usage_tracker, download_guard, workflow_recorder,
+for _feat in (key_vault, usage_tracker, download_guard, fileless_guard, workflow_recorder,
               productivity_tools, plugin_system):
     for _decl in _feat.TOOL_DECLARATIONS:
         if _decl["name"] not in TOOL_DISPATCH:
@@ -2059,6 +2060,9 @@ PARALLEL_SAFE_TOOLS = frozenset({
     "download_guard_status", "download_guard_events", "list_workflows",
     "snippet_list", "snippet_get", "snippet_expand", "email_breach_check",
     "list_plugins",
+    # real-time fileless / behavioral protection (read-only)
+    "scan_processes", "scan_command",
+    "fileless_guard_status", "fileless_guard_events",
 })
 
 

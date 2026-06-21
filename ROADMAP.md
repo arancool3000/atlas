@@ -30,7 +30,29 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   offline launch, auto-update on launch (git pull for source / auto-install for the app),
   Ember-site links fixed to EmberAI.
 
-## 🆕 Shipped this session (was the backlog)
+## 🆕 Shipped this session — always-on antivirus + fileless detection
+- **Fileless-malware detection** (`fileless_guard.py`) — an always-active background
+  process monitor for in-memory / "living-off-the-land" attacks that file scanners
+  miss. On launch it sweeps every running process, then watches for new ones, scoring
+  each command line with the shared behavioral IOC engine (encoded PowerShell,
+  download-and-execute, reverse shells, LOLBins, ransomware shadow-copy wipes,
+  credential dumping, miners, AV-tampering, obfuscation) **plus process lineage**
+  (e.g. Word → PowerShell). Alerts by default; optional auto-terminate. psutil with a
+  `ps`/`wmic` fallback, fully injectable for tests. Tools: `scan_processes`,
+  `scan_command`, `fileless_guard_start/stop/status/events`.
+- **Much stronger antivirus** (`antivirus.py`) — added **Shannon-entropy** packer
+  detection, a **behavioral IOC/signature engine** (`scan_text_iocs` /
+  `scan_command_line`) reused by the fileless monitor, an **extensible on-disk
+  signature DB** (`signatures.json`: hashes + byte patterns), and richer scan reasons.
+  The "heuristics never auto-delete" safety rule is preserved — file heuristics still
+  cap at *suspicious*; only definitive signals (EICAR / signature hit / known-bad hash
+  / platform-AV / VirusTotal) quarantine.
+- **Always active** — real-time download protection AND the fileless monitor now
+  autostart at launch (default ON) and have toggles in **Settings → Security**
+  ("Real-time protection (always active)" + "Scan running processes now"). New tests:
+  `test_fileless_guard.py` (13) + entropy/IOC/signature cases in `test_antivirus.py`.
+
+## 🆕 Shipped previously (was the backlog)
 1. **Plugin system** (`plugin_system.py` + `plugins/`) — drop a `.py` defining `EMBER_TOOLS` into
    `plugins/` and it auto-registers as tools at startup. Broken plugins are skipped, never crash
    the app. Tools: `list_plugins`, `reload_plugins`, `create_plugin_template`. Example + README ship

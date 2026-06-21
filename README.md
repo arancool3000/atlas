@@ -11,7 +11,8 @@ Free, MIT-licensed, and private — your API key stays on your machine; there ar
 - **Ember Browser** — a secure, AI-first browser: tracker/ad blocking, an AI-answer search page,
   summarize/ask about any page, AI-content check, reader mode, per-site dark mode, bookmarks,
   history, downloads. Works with Gemini or Claude.
-- **Security suite** — on-device antivirus + a real run-in-sandbox, malicious-site blocking,
+- **Security suite** — always-on antivirus (file scanning **+ real-time fileless /
+  behavioral process protection**) + a real run-in-sandbox, malicious-site blocking,
   secret redaction, a tamper-evident audit log, read-only / capability modes, and bring-your-own VPN.
 - **AI everywhere** — Gemini *or* Claude; an optional **local model via Ollama** (offline, no API
   key, no rate limit); image generation, vision Q&A, audio transcription, and AI text/image detection.
@@ -165,15 +166,35 @@ It’s LAN-only and PIN-gated; stop it when done.
 
 ## 🛡️ Built-in malware defense
 
-Ember scans what it downloads and what you ask it to open, isolates anything it
-can't vouch for, and quarantines confirmed threats.
+Ember scans what it downloads and what you ask it to open, **watches running
+processes in real time for fileless attacks**, isolates anything it can't vouch
+for, and quarantines confirmed threats. Real-time protection is **always active**
+by default.
 
+- **Always-on real-time protection** — two background watchers start with the app:
+  a **download monitor** that scans new files the moment they finish downloading,
+  and a **fileless-malware monitor** that continuously inspects running processes
+  for in-memory / "living-off-the-land" attacks (see below). Toggle either in
+  **Settings → Security**.
+- **Fileless-malware detection** — file scanners miss attacks that never touch the
+  disk. Ember classifies every process's command line with a behavioral
+  IOC/signature engine that catches **encoded PowerShell**, **download-and-execute**
+  (`IEX (New-Object Net.WebClient).DownloadString …`), **reverse shells**
+  (`bash -i >& /dev/tcp/…`, `nc -e`), **LOLBins** (certutil / mshta / regsvr32 /
+  rundll32 / bitsadmin / wmic), **ransomware** shadow-copy wipes, **credential
+  dumping** (LSASS / mimikatz), **crypto-miners**, AV-tampering and heavy
+  obfuscation — plus suspicious **process lineage** (e.g. Word spawning PowerShell).
+  Run it on demand with the `scan_processes` / `scan_command` tools, or **Scan
+  running processes now** in Settings → Security. It alerts by default and can be
+  set to auto-terminate confirmed-malicious processes.
 - **Scan on download / before open** — every downloaded file (and any file Ember
   is about to open) is scanned with local heuristics (executable-disguised-as-a-
   document, double extensions like `invoice.pdf.exe`, macro-laden Office files,
-  known-bad hashes), the platform antivirus (**Windows Defender** / **ClamAV** if
-  installed), and **VirusTotal** (hash lookup, plus uploading unknown files when a
-  key is set). Suspicious or malicious files are **not opened until the scan finishes**.
+  **Shannon-entropy packer detection**, **behavioral content signatures**, an
+  **extensible signature DB**, known-bad hashes), the platform antivirus
+  (**Windows Defender** / **ClamAV** if installed), and **VirusTotal** (hash
+  lookup, plus uploading unknown files when a key is set). Suspicious or malicious
+  files are **not opened until the scan finishes**.
 - **Quarantine + auto-delete** — confirmed-malicious files are moved to a locked,
   non-executable vault and automatically deleted after 7 days. Nothing is deleted
   on a mere hunch — only a definitive detection quarantines a file, so a false
@@ -274,7 +295,9 @@ tunnel up — and it never claims to be connected when it isn't.
 | `tools.py`, `more_tools.py`, `extra_tools.py` | the tool set |
 | `screen_vision.py` | exact clicking + on-screen OCR |
 | `remote_server.py` | Ember Link phone control |
-| `antivirus.py` | malware scan, quarantine vault & sandbox |
+| `antivirus.py` | malware scan (entropy + IOC signatures), quarantine vault & sandbox |
+| `fileless_guard.py` | always-on fileless / behavioral process monitor |
+| `download_guard.py` | real-time download folder scanner |
 | `web_policy.py` | website blocking + URL reputation |
 | `redaction.py` | strip secrets/PII from logs, audit & screenshots |
 | `audit.py` | tamper-evident action audit log |
