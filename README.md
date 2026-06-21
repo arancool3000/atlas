@@ -8,10 +8,19 @@ Free, MIT-licensed, and private — your API key stays on your machine; there ar
 
 - **Autonomous agent** — 170+ tools: move the mouse/keyboard, read the screen with Vision OCR,
   drive a real browser via the DOM, run shell, manage files, and chain multi-step tasks.
+  **Human-like mouse movement** (curved, eased paths — not robotic teleports).
+- **Run modes & agents** — pick how Ember works: **auto** (autonomous), **plan** (proposes a
+  plan and waits), **chat** (talk only), or **read-only**. Define **named agents** (a goal +
+  run mode + tool scope + optional schedule, à la Base44 Superagents), run them on demand or
+  **on a schedule** (a background scheduler fires due agents); Ember can also **spawn scoped
+  sub-agents** for sub-tasks (like Claude's Task tool).
+- **Notifications** — connect **Slack, Telegram, Discord, or a webhook** (just a URL/token)
+  so agents (and security alerts) can push you updates; `notify` sends to every channel.
 - **Ember Browser** — a secure, AI-first browser: tracker/ad blocking, an AI-answer search page,
   summarize/ask about any page, AI-content check, reader mode, per-site dark mode, bookmarks,
   history, downloads. Works with Gemini or Claude.
-- **Security suite** — on-device antivirus + a real run-in-sandbox, malicious-site blocking,
+- **Security suite** — always-on antivirus (file scanning **+ real-time fileless /
+  behavioral process protection**) + a real run-in-sandbox, malicious-site blocking,
   secret redaction, a tamper-evident audit log, read-only / capability modes, and bring-your-own VPN.
 - **AI everywhere** — Gemini *or* Claude; an optional **local model via Ollama** (offline, no API
   key, no rate limit); image generation, vision Q&A, audio transcription, and AI text/image detection.
@@ -165,15 +174,45 @@ It’s LAN-only and PIN-gated; stop it when done.
 
 ## 🛡️ Built-in malware defense
 
-Ember scans what it downloads and what you ask it to open, isolates anything it
-can't vouch for, and quarantines confirmed threats.
+Ember scans what it downloads and what you ask it to open, **watches running
+processes in real time for fileless attacks**, isolates anything it can't vouch
+for, and quarantines confirmed threats. Real-time protection is **always active**
+by default.
 
+- **Always-on Security Center** — a unified supervisor scans **every surface
+  malware uses, continuously**, and keeps the individual monitors alive (a watchdog
+  restarts anything that dies, so scanning never silently stops):
+  - **Processes** — the fileless-malware monitor (below).
+  - **Files** — a real-time **download monitor** scans new files the moment they
+    finish downloading, plus periodic sweeps of Downloads/Desktop/Documents/Temp.
+  - **Network** — repeatedly inspects active connections + listening ports for
+    reverse-shell listeners, C2 / mining traffic and interpreters phoning home.
+  - **Persistence** — repeatedly inspects autostart locations (cron, launchd,
+    systemd, shell rc files, registry Run keys, the Startup folder) and scans each
+    entry's command line.
+
+  Everything funnels into one threat feed (`security_center_status` /
+  `security_center_events`); run an on-demand sweep with `run_full_scan`,
+  `scan_network`, `scan_persistence`, or the buttons in **Settings → Security**.
+- **Fileless-malware detection** — file scanners miss attacks that never touch the
+  disk. Ember classifies every process's command line with a behavioral
+  IOC/signature engine that catches **encoded PowerShell**, **download-and-execute**
+  (`IEX (New-Object Net.WebClient).DownloadString …`), **reverse shells**
+  (`bash -i >& /dev/tcp/…`, `nc -e`), **LOLBins** (certutil / mshta / regsvr32 /
+  rundll32 / bitsadmin / wmic), **ransomware** shadow-copy wipes, **credential
+  dumping** (LSASS / mimikatz), **crypto-miners**, AV-tampering and heavy
+  obfuscation — plus suspicious **process lineage** (e.g. Word spawning PowerShell).
+  Run it on demand with the `scan_processes` / `scan_command` tools, or **Scan
+  running processes now** in Settings → Security. It alerts by default and can be
+  set to auto-terminate confirmed-malicious processes.
 - **Scan on download / before open** — every downloaded file (and any file Ember
   is about to open) is scanned with local heuristics (executable-disguised-as-a-
   document, double extensions like `invoice.pdf.exe`, macro-laden Office files,
-  known-bad hashes), the platform antivirus (**Windows Defender** / **ClamAV** if
-  installed), and **VirusTotal** (hash lookup, plus uploading unknown files when a
-  key is set). Suspicious or malicious files are **not opened until the scan finishes**.
+  **Shannon-entropy packer detection**, **behavioral content signatures**, an
+  **extensible signature DB**, known-bad hashes), the platform antivirus
+  (**Windows Defender** / **ClamAV** if installed), and **VirusTotal** (hash
+  lookup, plus uploading unknown files when a key is set). Suspicious or malicious
+  files are **not opened until the scan finishes**.
 - **Quarantine + auto-delete** — confirmed-malicious files are moved to a locked,
   non-executable vault and automatically deleted after 7 days. Nothing is deleted
   on a mere hunch — only a definitive detection quarantines a file, so a false
@@ -272,9 +311,17 @@ tunnel up — and it never claims to be connected when it isn't.
 | `ui.py` | the desktop UI |
 | `agent.py` | the AI agent loop + tool declarations |
 | `tools.py`, `more_tools.py`, `extra_tools.py` | the tool set |
+| `human_mouse.py` | human-like (curved, eased) mouse movement |
+| `agents.py` | run modes + named agent profiles (scope, schedule) |
+| `agent_scheduler.py` | background scheduler that runs due agents |
+| `integrations.py` | Slack / Telegram / Discord / webhook notifications |
+| `tool_args.py` | coerces tool arguments to their declared types |
 | `screen_vision.py` | exact clicking + on-screen OCR |
 | `remote_server.py` | Ember Link phone control |
-| `antivirus.py` | malware scan, quarantine vault & sandbox |
+| `antivirus.py` | malware scan (entropy + IOC signatures), quarantine vault & sandbox |
+| `security_center.py` | unified always-on active scanning (processes/files/network/persistence) + watchdog |
+| `fileless_guard.py` | always-on fileless / behavioral process monitor |
+| `download_guard.py` | real-time download folder scanner |
 | `web_policy.py` | website blocking + URL reputation |
 | `redaction.py` | strip secrets/PII from logs, audit & screenshots |
 | `audit.py` | tamper-evident action audit log |

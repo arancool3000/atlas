@@ -140,6 +140,12 @@ SAFE_READONLY = {
     "vault_status", "vault_get_key", "vault_list_keys",       # key vault (never returns full secret)
     "usage_summary",                                          # usage dashboard
     "download_guard_status", "download_guard_events",         # download protection
+    "scan_processes", "scan_command",                        # fileless / behavioral scan (read-only)
+    "fileless_guard_status", "fileless_guard_events",         # real-time fileless protection
+    "security_center_status", "security_center_events",      # unified Security Center (read-only)
+    "scan_network", "scan_persistence",                      # active network / persistence scans
+    "list_run_modes", "agent_list", "agent_get",            # run modes / agent profiles (read-only)
+    "scheduler_status", "scheduler_events", "integration_list",  # scheduler + integrations (read-only)
     "list_workflows",                                         # workflow recorder
     "snippet_list", "snippet_get", "snippet_expand",         # snippet expander
     "email_breach_check", "pick_screen_color", "screenshot_monitor",
@@ -164,6 +170,12 @@ SAFE_INTERACTION = {
     "vault_store_key",                                        # store a secret (reversible)
     "usage_reset",                                            # clears usage counters
     "download_guard_start", "download_guard_stop",           # start/stop the watcher
+    "fileless_guard_start", "fileless_guard_stop",           # start/stop fileless protection
+    "security_center_start", "security_center_stop",         # start/stop the Security Center
+    "set_run_mode", "agent_create", "agent_delete",         # run-mode + agent profile management
+    "agent_run", "spawn_agent",                             # launch a saved / ad-hoc sub-agent
+    "notify", "integration_set", "integration_remove",     # connected-channel notifications
+    "scheduler_run_due", "scheduler_start", "scheduler_stop",  # background agent scheduler
     "record_workflow_start", "record_workflow_stop", "delete_workflow",
     "snippet_save", "snippet_delete",                        # snippet CRUD
     "screen_record_start", "screen_record_stop",             # local screen capture file

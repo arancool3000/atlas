@@ -2061,6 +2061,72 @@ class SettingsDialog(QDialog):
         row.addStretch()
         v.addLayout(row)
 
+        # --- Real-time protection (always active) ---
+        _section("Real-time protection (always active)")
+        self._sec_dl_guard = QCheckBox("Real-time download protection (auto-scan new downloads)")
+        self._sec_dl_guard.setChecked(bool(self.settings.get("download_protection", True)))
+        self._sec_dl_guard.stateChanged.connect(self._toggle_download_guard)
+        v.addWidget(self._sec_dl_guard)
+
+        self._sec_fileless = QCheckBox(
+            "Fileless-malware protection (monitor processes for in-memory / LOLBin attacks)")
+        self._sec_fileless.setChecked(bool(self.settings.get("fileless_protection", True)))
+        self._sec_fileless.stateChanged.connect(self._toggle_fileless_guard)
+        v.addWidget(self._sec_fileless)
+
+        self._sec_ioc = QCheckBox(
+            "Deep static analysis (entropy + behavioral IOC signatures on files)")
+        self._sec_ioc.setChecked(bool(cfg.get("ioc_scan", True)) and bool(cfg.get("entropy_scan", True)))
+        self._sec_ioc.stateChanged.connect(
+            lambda s: antivirus.set_config(ioc_scan=bool(s), entropy_scan=bool(s)))
+        v.addWidget(self._sec_ioc)
+
+        self._sec_autokill = QCheckBox(
+            "Auto-terminate confirmed-malicious processes (default: alert only)")
+        self._sec_autokill.setChecked(bool(cfg.get("fileless_auto_terminate", False)))
+        self._sec_autokill.stateChanged.connect(
+            lambda s: antivirus.set_config(fileless_auto_terminate=bool(s)))
+        v.addWidget(self._sec_autokill)
+
+        rt_row = QHBoxLayout()
+        try:
+            import fileless_guard
+            rt_state = "running" if fileless_guard.is_running() else "stopped"
+        except Exception:
+            rt_state = "unavailable"
+        self._sec_fileless_lbl = QLabel(f"Process monitor: {rt_state}")
+        self._sec_fileless_lbl.setStyleSheet("color:#565f89; font-size:11px;")
+        rt_row.addWidget(self._sec_fileless_lbl)
+        proc_btn = QPushButton("Scan running processes now")
+        proc_btn.clicked.connect(self._scan_processes_ui)
+        rt_row.addWidget(proc_btn)
+        rt_row.addStretch()
+        v.addLayout(rt_row)
+
+        # --- Security Center (unified active scanning) ---
+        _section("Security Center (active scanning: processes · files · network · persistence)")
+        self._sec_center = QCheckBox(
+            "Always-on Security Center (continuous multi-surface scanning + self-healing watchdog)")
+        self._sec_center.setChecked(bool(self.settings.get("realtime_security_center", True)))
+        self._sec_center.stateChanged.connect(self._toggle_security_center)
+        v.addWidget(self._sec_center)
+
+        self._sec_center_lbl = QLabel(self._security_center_summary())
+        self._sec_center_lbl.setStyleSheet("color:#565f89; font-size:11px;")
+        self._sec_center_lbl.setWordWrap(True)
+        v.addWidget(self._sec_center_lbl)
+
+        sc_row = QHBoxLayout()
+        for label, handler in (("Full scan now", self._full_scan_ui),
+                               ("Scan network", self._scan_network_ui),
+                               ("Scan persistence", self._scan_persistence_ui),
+                               ("Activity…", self._show_security_events)):
+            b = QPushButton(label)
+            b.clicked.connect(handler)
+            sc_row.addWidget(b)
+        sc_row.addStretch()
+        v.addLayout(sc_row)
+
         # --- Web protection ---
         _section("Web protection")
         wp = web_policy.get_config()
@@ -2092,6 +2158,66 @@ class SettingsDialog(QDialog):
         mhint.setStyleSheet("color:#565f89; font-size:11px;")
         mhint.setWordWrap(True)
         v.addWidget(mhint)
+
+        # --- Run mode (how autonomously Ember acts) ---
+        _section("Run mode")
+        rmrow = QHBoxLayout()
+        self._run_mode_combo = QComboBox()
+        self._run_mode_combo.addItems(["auto", "plan", "chat", "read_only"])
+        try:
+            import agents as _ag
+            self._run_mode_combo.setCurrentText(_ag.get_run_mode())
+        except Exception:
+            pass
+        self._run_mode_combo.currentTextChanged.connect(self._set_run_mode)
+        rmrow.addWidget(self._run_mode_combo)
+        agents_btn = QPushButton("Agents…")
+        agents_btn.clicked.connect(self._show_agents)
+        rmrow.addWidget(agents_btn)
+        rmrow.addStretch()
+        v.addLayout(rmrow)
+        rmhint = QLabel("auto = autonomous · plan = propose a plan and wait · "
+                        "chat = talk only · read_only = investigate only")
+        rmhint.setStyleSheet("color:#565f89; font-size:11px;")
+        rmhint.setWordWrap(True)
+        v.addWidget(rmhint)
+
+        # --- Humanized mouse ---
+        _section("Pointer")
+        try:
+            import human_mouse
+            self._human_mouse_chk = QCheckBox("Human-like mouse movement (curved, eased, natural)")
+            self._human_mouse_chk.setChecked(bool(human_mouse.get_options().get("enabled", True)))
+            self._human_mouse_chk.stateChanged.connect(
+                lambda s: human_mouse.set_options(enabled=bool(s)))
+            v.addWidget(self._human_mouse_chk)
+        except Exception:
+            pass
+
+        # --- Notifications / connected channels ---
+        _section("Notifications (Slack · Telegram · Discord · webhook)")
+        try:
+            import integrations
+            chans = integrations.list_integrations().get("channels", [])
+            self._intg_lbl = QLabel("Connected: " + (", ".join(c["channel"] for c in chans) or "none"))
+            self._intg_lbl.setStyleSheet("color:#565f89; font-size:11px;")
+            v.addWidget(self._intg_lbl)
+            irow = QHBoxLayout()
+            conn_btn = QPushButton("Connect a channel…")
+            conn_btn.clicked.connect(self._connect_integration)
+            irow.addWidget(conn_btn)
+            test_btn = QPushButton("Send test")
+            test_btn.clicked.connect(self._test_integration)
+            irow.addWidget(test_btn)
+            irow.addStretch()
+            v.addLayout(irow)
+            self._sc_notify_chk = QCheckBox("Push security threats to my channels")
+            self._sc_notify_chk.setChecked(bool(antivirus.get_config().get("sc_notify", False)))
+            self._sc_notify_chk.stateChanged.connect(
+                lambda s: antivirus.set_config(sc_notify=bool(s)))
+            v.addWidget(self._sc_notify_chk)
+        except Exception:
+            pass
 
         # --- VPN ---
         _section("VPN (bring-your-own WireGuard)")
@@ -2262,6 +2388,252 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
 
+    def _toggle_download_guard(self, state):
+        """Start/stop real-time download protection from the Security tab and persist it."""
+        on = bool(state)
+        self.settings["download_protection"] = on
+        try:
+            import download_guard
+            r = download_guard.start() if on else download_guard.download_guard_stop()
+            if not r.get("ok"):
+                QMessageBox.warning(self, "Download protection", r.get("error", "failed"))
+        except Exception as e:
+            QMessageBox.warning(self, "Download protection", str(e))
+
+    def _toggle_fileless_guard(self, state):
+        """Start/stop always-on fileless protection from the Security tab and persist it."""
+        on = bool(state)
+        self.settings["fileless_protection"] = on
+        try:
+            import antivirus, fileless_guard
+            antivirus.set_config(fileless_protection=on)
+            r = fileless_guard.start() if on else fileless_guard.fileless_guard_stop()
+            if not r.get("ok"):
+                QMessageBox.warning(self, "Fileless protection", r.get("error", "failed"))
+            try:
+                self._sec_fileless_lbl.setText(
+                    f"Process monitor: {'running' if fileless_guard.is_running() else 'stopped'}")
+            except Exception:
+                pass
+        except Exception as e:
+            QMessageBox.warning(self, "Fileless protection", str(e))
+
+    def _scan_processes_ui(self):
+        """One-shot scan of running processes for fileless-malware behavior."""
+        try:
+            import fileless_guard
+            r = fileless_guard.scan_processes()
+        except Exception as e:
+            QMessageBox.warning(self, "Process scan", str(e))
+            return
+        if not r.get("ok"):
+            QMessageBox.warning(self, "Process scan", r.get("error", "scan failed"))
+            return
+        flagged = r.get("flagged", [])
+        if not flagged:
+            QMessageBox.information(
+                self, "Process scan",
+                f"Scanned {r.get('scanned', 0)} processes — nothing suspicious found.")
+            return
+        blocks = []
+        for f in flagged[:20]:
+            reasons = "; ".join(f.get("reasons", []) or []) or ", ".join(f.get("categories", []))
+            blocks.append(f"{f['verdict'].upper()}  {f.get('name')} (pid {f.get('pid')})\n  {reasons}")
+        QMessageBox.warning(
+            self, "Process scan",
+            f"Scanned {r.get('scanned', 0)} processes — flagged "
+            f"{r.get('flagged_count', 0)}.\n\n" + "\n\n".join(blocks))
+
+    def _security_center_summary(self) -> str:
+        try:
+            import security_center
+            st = security_center.security_center_status()
+            if not st.get("ok"):
+                return "Security Center: unavailable"
+            bs = st.get("by_source", {})
+            return (f"Security Center: {'running' if st.get('running') else 'stopped'} · "
+                    f"{st.get('scan_cycles', 0)} scan cycles · {st.get('threats_found', 0)} threats "
+                    f"(process {bs.get('process',0)} · file {bs.get('file',0)} · "
+                    f"network {bs.get('network',0)} · persistence {bs.get('persistence',0)})")
+        except Exception as e:
+            return f"Security Center: {e}"
+
+    def _refresh_security_center_lbl(self):
+        try:
+            self._sec_center_lbl.setText(self._security_center_summary())
+        except Exception:
+            pass
+
+    def _toggle_security_center(self, state):
+        on = bool(state)
+        self.settings["realtime_security_center"] = on
+        try:
+            import antivirus, security_center
+            antivirus.set_config(realtime_security_center=on)
+            r = security_center.start() if on else security_center.security_center_stop()
+            if not r.get("ok"):
+                QMessageBox.warning(self, "Security Center", r.get("error", "failed"))
+            self._refresh_security_center_lbl()
+        except Exception as e:
+            QMessageBox.warning(self, "Security Center", str(e))
+
+    def _full_scan_ui(self):
+        """On-demand full malware sweep of the watched roots (runs off the UI thread)."""
+        from PyQt6.QtWidgets import QApplication
+        try:
+            import security_center
+        except Exception as e:
+            QMessageBox.warning(self, "Full scan", str(e))
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            r = security_center.run_full_scan()
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not r.get("ok"):
+            QMessageBox.warning(self, "Full scan", r.get("error", "scan failed"))
+            return
+        lines = [f"{res['root']}: {res['flagged_count']} flagged / {res['scanned']} scanned"
+                 for res in r.get("results", [])]
+        QMessageBox.information(
+            self, "Full scan complete",
+            f"Scanned {r.get('scanned', 0)} files across {r.get('roots', 0)} folders — "
+            f"flagged {r.get('flagged_count', 0)}.\n\n" + ("\n".join(lines) or "Nothing flagged."))
+        self._refresh_security_center_lbl()
+
+    def _scan_network_ui(self):
+        try:
+            import security_center
+            r = security_center.scan_network()
+        except Exception as e:
+            QMessageBox.warning(self, "Network scan", str(e))
+            return
+        if not r.get("ok"):
+            QMessageBox.warning(self, "Network scan", r.get("error", "scan failed"))
+            return
+        flagged = r.get("flagged", [])
+        detail = "\n\n".join(f"{f['severity'].upper()}: {f['detail']}" for f in flagged[:20]) \
+            or "No suspicious connections found."
+        QMessageBox.information(
+            self, "Network scan",
+            f"Scanned {r.get('scanned', 0)} connections — flagged {r.get('flagged_count', 0)}."
+            f"\n\n{detail}")
+
+    def _scan_persistence_ui(self):
+        try:
+            import security_center
+            r = security_center.scan_persistence()
+        except Exception as e:
+            QMessageBox.warning(self, "Persistence scan", str(e))
+            return
+        if not r.get("ok"):
+            QMessageBox.warning(self, "Persistence scan", r.get("error", "scan failed"))
+            return
+        flagged = r.get("flagged", [])
+        detail = "\n\n".join(f"{f['severity'].upper()} {f.get('location')}: {f['detail']}"
+                             for f in flagged[:20]) or "No suspicious autostart entries found."
+        QMessageBox.information(
+            self, "Persistence scan",
+            f"Scanned {r.get('scanned', 0)} autostart entries — flagged "
+            f"{r.get('flagged_count', 0)}.\n\n{detail}")
+
+    def _show_security_events(self):
+        try:
+            import security_center
+            evs = security_center.security_center_events(limit=40).get("events", [])
+        except Exception as e:
+            QMessageBox.warning(self, "Security activity", str(e))
+            return
+        if not evs:
+            QMessageBox.information(self, "Security activity",
+                                   "No security events recorded yet.")
+            return
+        lines = [f"[{e.get('time','')}] {e.get('source','').upper()} "
+                 f"{e.get('severity','')}: {e.get('detail','')}" for e in evs[-40:]]
+        QMessageBox.information(self, "Security activity (recent)", "\n".join(lines))
+
+    def _refresh_integrations(self):
+        try:
+            import integrations
+            chans = integrations.list_integrations().get("channels", [])
+            self._intg_lbl.setText("Connected: " + (", ".join(c["channel"] for c in chans) or "none"))
+        except Exception:
+            pass
+
+    def _connect_integration(self):
+        from PyQt6.QtWidgets import QInputDialog
+        import integrations
+        chan, ok = QInputDialog.getItem(self, "Connect a channel", "Channel:",
+                                        list(integrations.CHANNELS.keys()), 0, False)
+        if not ok or not chan:
+            return
+        fields = {}
+        for f in integrations.CHANNELS[chan]["fields"]:
+            val, ok2 = QInputDialog.getText(self, f"{chan} — {f}", f"Enter {f}:")
+            if not ok2 or not val.strip():
+                return
+            fields[f] = val.strip()
+        r = integrations.set_integration(chan, **fields)
+        if r.get("ok"):
+            self._refresh_integrations()
+            QMessageBox.information(self, "Notifications", f"Connected {chan}.")
+        else:
+            QMessageBox.warning(self, "Notifications", r.get("error", "failed"))
+
+    def _test_integration(self):
+        import integrations
+        r = integrations.notify("✅ Ember test notification")
+        sent = ", ".join(r.get("sent", []) or [])
+        QMessageBox.information(self, "Notifications",
+                               f"Sent to: {sent}" if sent else
+                               "No channel configured (or send failed). Connect one first.")
+
+    def _set_run_mode(self, mode):
+        try:
+            import agents
+            r = agents.set_run_mode(mode)
+            if r.get("ok"):
+                # Keep the capability-mode combo in sync (run mode sets the capability).
+                try:
+                    self._sec_mode.setCurrentText(r.get("capability_applied") or self._sec_mode.currentText())
+                except Exception:
+                    pass
+                # Apply to the live agent if one exists.
+                ag = getattr(self, "_agent", None) or getattr(self, "agent", None)
+                if ag is not None:
+                    try:
+                        ag.run_mode = mode
+                    except Exception:
+                        pass
+            else:
+                QMessageBox.warning(self, "Run mode", r.get("error", "failed"))
+        except Exception as e:
+            QMessageBox.warning(self, "Run mode", str(e))
+
+    def _show_agents(self):
+        try:
+            import agents
+            lst = agents.list_agents().get("agents", [])
+        except Exception as e:
+            QMessageBox.warning(self, "Agents", str(e))
+            return
+        if not lst:
+            QMessageBox.information(
+                self, "Agents",
+                "No saved agents yet.\n\nAsk Ember in chat, e.g.:\n"
+                "  \"Create an agent called 'Morning Brief' that summarizes my unread mail "
+                "every day at 9am, read-only.\"\n\nOr use the agent_create / agent_run tools.")
+            return
+        lines = []
+        for a in lst:
+            sched = a.get("schedule")
+            when = (f" · every {sched['every_minutes']}m" if sched and "every_minutes" in sched
+                    else f" · daily {sched['daily_at']}" if sched and "daily_at" in sched else "")
+            state = "" if a.get("enabled", True) else " · disabled"
+            lines.append(f"• {a.get('display_name', a['name'])} [{a.get('run_mode')}]"
+                         f"{when}{state}\n    {a.get('description','') or '(no description)'}")
+        QMessageBox.information(self, "Saved agents", "\n\n".join(lines))
+
     def _verify_audit(self):
         import audit
         r = audit.verify()
@@ -2430,9 +2802,19 @@ class EmberWindow(QWidget):
             # Bring Ember Link (phone control) up as soon as the app opens — deferred a beat
             # so the window paints first. Starts silently; no modal on launch.
             QTimer.singleShot(1200, self._autostart_remote_control)
-        if self.settings.get("download_protection", False) and not _SAFE_MODE:
+        if self.settings.get("download_protection", True) and not _SAFE_MODE:
             # Real-time download protection: start the Downloads watcher in the background.
             QTimer.singleShot(1800, self._autostart_download_protection)
+        if self.settings.get("fileless_protection", True) and not _SAFE_MODE:
+            # Always-on fileless / behavioral malware protection (process monitor).
+            QTimer.singleShot(2200, self._autostart_fileless_protection)
+        if self.settings.get("realtime_security_center", True) and not _SAFE_MODE:
+            # Unified always-on Security Center: continuously scans processes, files,
+            # network and persistence, and keeps the other monitors alive (watchdog).
+            QTimer.singleShot(2600, self._autostart_security_center)
+        if self.settings.get("agent_scheduler", True) and not _SAFE_MODE:
+            # Background agent scheduler: runs saved agents on their schedules.
+            QTimer.singleShot(3000, self._autostart_agent_scheduler)
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
@@ -4252,6 +4634,74 @@ class EmberWindow(QWidget):
                 print(f"[Download protection failed: {r.get('error')}]")
         except Exception as e:
             print(f"[Download protection autostart failed: {e}]")
+
+    def _autostart_fileless_protection(self):
+        """Start always-on fileless / behavioral malware protection (the background
+        process monitor) at launch. Best-effort and failure-silent."""
+        try:
+            import fileless_guard
+            r = fileless_guard.start()
+            if r.get("ok"):
+                n = r.get("initial_threats", 0)
+                print(f"[Fileless protection on: active{' — ' + str(n) + ' threat(s) on initial sweep' if n else ''}]")
+                if n:
+                    self._add_bubble(
+                        "system",
+                        f"🛡️ Real-time fileless protection flagged **{n}** running "
+                        "process(es) on startup. Open Settings → Security to review.")
+            else:
+                print(f"[Fileless protection failed: {r.get('error')}]")
+        except Exception as e:
+            print(f"[Fileless protection autostart failed: {e}]")
+
+    def _autostart_security_center(self):
+        """Bring up the unified always-on Security Center (continuous active scanning
+        of processes, files, network and persistence). Best-effort, failure-silent."""
+        try:
+            import security_center
+            r = security_center.start()
+            if r.get("ok"):
+                print("[Security Center active: continuous scanning of processes, "
+                      "files, network & persistence]")
+            else:
+                print(f"[Security Center failed: {r.get('error')}]")
+        except Exception as e:
+            print(f"[Security Center autostart failed: {e}]")
+
+    def _run_saved_agent(self, name):
+        """Runner the scheduler calls to actually run a saved agent: launch it as a
+        scoped sub-agent on the live agent, then push a summary to connected channels."""
+        try:
+            import agents, agent as agent_module
+            ag = getattr(self, "agent", None)
+            req = agents.build_run_request(name, all_tool_names=list(agent_module.TOOL_DISPATCH))
+            if not req.get("ok"):
+                return req
+            if ag is None or not hasattr(ag, "_spawn"):
+                return {"ok": False, "error": "no live agent to run with"}
+            res = ag._spawn(req["instructions"], mode=req["run_mode"],
+                            allowed_tools=req.get("allowed_tools"), label=name)
+            try:
+                import integrations
+                if integrations.is_configured():
+                    integrations.notify(f"🤖 Agent '{name}' ran: "
+                                        f"{str(res.get('summary','done'))[:280]}")
+            except Exception:
+                pass
+            return res
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def _autostart_agent_scheduler(self):
+        """Start the background agent scheduler and register the live runner."""
+        try:
+            import agent_scheduler
+            agent_scheduler.set_runner(self._run_saved_agent)
+            r = agent_scheduler.start()
+            print("[Agent scheduler started]" if r.get("ok")
+                  else f"[Agent scheduler failed: {r.get('error')}]")
+        except Exception as e:
+            print(f"[Agent scheduler autostart failed: {e}]")
 
     def _autostart_remote_control(self):
         """Bring Ember Link up automatically at launch — no modal, just a status note.

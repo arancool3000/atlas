@@ -34,7 +34,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -89,6 +91,28 @@ DEFAULT_CONFIG: dict = {
     "vt_upload_max_bytes": 32 * 1024 * 1024, # VirusTotal's free upload ceiling
     "vt_malicious_threshold": 3,   # >= this many AV engines flag it -> malicious
     "agent_mode": "full",          # full | restricted | read_only (agent capability cap)
+    # --- stronger static analysis ---
+    "entropy_scan": True,          # flag packed/encrypted executables via Shannon entropy
+    "entropy_threshold": 7.2,      # >= this (bits/byte) on code content -> likely packed/encrypted
+    "ioc_scan": True,              # scan script/command content for malware IOCs (fileless, LOLBins)
+    "scan_archives": True,         # look INSIDE zip archives for malicious members
+    "archive_max_members": 200,    # max members inspected per archive
+    "archive_member_max_bytes": 4 * 1024 * 1024,  # max bytes read per member
+    # --- always-on fileless/behavioral protection (see fileless_guard.py) ---
+    "fileless_protection": True,   # real-time monitoring of running processes / command lines
+    "fileless_poll_seconds": 4,    # how often the behavioral monitor samples processes
+    "fileless_auto_terminate": False,  # kill confirmed-malicious processes (default: alert only)
+    # --- unified always-on active scanning (see security_center.py) ---
+    "realtime_security_center": True,  # master switch for continuous multi-surface scanning
+    "sc_network_scan": True,       # continuously inspect network connections / listening ports
+    "sc_persistence_scan": True,   # continuously inspect autostart / persistence locations
+    "sc_file_sweep": True,         # periodically sweep sensitive folders for malware
+    "sc_network_interval": 20,     # seconds between network scans
+    "sc_persistence_interval": 45, # seconds between persistence scans
+    "sc_file_sweep_interval": 600, # seconds between sensitive-folder sweeps
+    "sc_sweep_max_files": 1500,    # cap files scanned per folder per sweep (keeps it light)
+    "sc_watch_roots": [],          # extra folders to sweep ([] -> sensible per-OS defaults)
+    "sc_notify": False,            # push security threats to connected channels (integrations.py)
 }
 
 
@@ -186,15 +210,19 @@ _BENIGN_LOOKING_EXTS = {
 _MACRO_EXTS = {".docm", ".xlsm", ".pptm", ".dotm", ".xltm", ".potm"}
 
 
-def _static_scan(path: Path) -> tuple[int, list[str], dict]:
+def _static_scan(path: Path, cfg: dict | None = None) -> tuple[int, list[str], dict]:
     """Heuristic analysis. Returns (score 0-100, reasons, info)."""
     score = 0
     reasons: list[str] = []
     info: dict = {}
+    cfg = cfg or get_config()
     try:
-        head = path.read_bytes()[:8192]
+        # One bounded read serves the header checks, entropy and IOC scanning.
+        with open(path, "rb") as _fh:
+            sample = _fh.read(262144)
     except Exception as e:
         return 0, [f"could not read file: {e}"], info
+    head = sample[:8192]
 
     name = path.name.lower()
     suffixes = [s.lower() for s in path.suffixes]
@@ -242,6 +270,36 @@ def _static_scan(path: Path) -> tuple[int, list[str], dict]:
         score += 50
         reasons.append(".lnk shortcut launches a shell/PowerShell payload")
 
+    # Optional on-disk byte signatures (extensible signature DB).
+    try:
+        for label, pat in _signature_db().get("byte_patterns", []):
+            if pat and pat in sample:
+                info["signature_hit"] = label
+                return 100, [f"matched malware signature: {label}"], info
+    except Exception:
+        pass
+
+    # Entropy: packed / encrypted executable payloads stand out sharply.
+    if cfg.get("entropy_scan", True) and (exec_kind or is_script or ext in _DANGEROUS_EXTS):
+        body = sample[512:] if len(sample) > 2048 else sample
+        ent = shannon_entropy(body)
+        info["entropy"] = round(ent, 2)
+        if len(sample) >= 2048 and ent >= float(cfg.get("entropy_threshold", 7.2)):
+            score += 25
+            reasons.append(f"very high entropy ({ent:.2f} bits/byte) — likely packed/encrypted code")
+
+    # IOC / fileless content signatures (download-exec, reverse shells, LOLBins…).
+    if cfg.get("ioc_scan", True):
+        text = sample.decode("utf-8", "ignore")
+        ioc_score, ioc_hits = scan_text_iocs(text)
+        if ioc_hits:
+            info["ioc_categories"] = sorted({h["category"] for h in ioc_hits})
+            info["ioc_max_severity"] = max((h["severity"] for h in ioc_hits),
+                                           key=lambda s: _SEV_RANK.get(s, 0))
+            score += min(ioc_score, 75)
+            for h in ioc_hits[:6]:
+                reasons.append(f"malware indicator: {h['label']} [{h['category']}]")
+
     return min(score, 100), reasons, info
 
 
@@ -253,6 +311,282 @@ def _zip_has_macro(path: Path) -> bool:
             return any(n.endswith("vbaProject.bin") for n in zf.namelist())
     except Exception:
         return False
+
+
+def _scan_archive(path: Path, cfg: dict) -> dict | None:
+    """Look inside a zip archive for malicious members. Returns
+    {verdict, reasons, scanned} or None if it isn't a (readable) archive.
+
+    Definitive signals (EICAR / signature byte match) inside a member -> malicious;
+    disguised executables / IOC content -> suspicious. Bounded by member count and
+    per-member byte caps so a zip bomb can't blow it up."""
+    try:
+        if not zipfile.is_zipfile(path):
+            return None
+    except Exception:
+        return None
+    max_members = int(cfg.get("archive_max_members", 200))
+    member_cap = int(cfg.get("archive_member_max_bytes", 4 * 1024 * 1024))
+    verdict = "clean"
+    reasons: list[str] = []
+    scanned = 0
+
+    def _raise(v):
+        nonlocal verdict
+        if _VERDICT_ORDER[v] > _VERDICT_ORDER[verdict]:
+            verdict = v
+
+    try:
+        sigs = _signature_db().get("byte_patterns", [])
+        with zipfile.ZipFile(path) as zf:
+            for info in zf.infolist():
+                if scanned >= max_members:
+                    break
+                if info.is_dir() or info.file_size > member_cap:
+                    continue
+                try:
+                    data = zf.read(info.filename)[:member_cap]
+                except Exception:
+                    continue
+                scanned += 1
+                mname = info.filename
+                if EICAR_SIG in data:
+                    _raise("malicious")
+                    reasons.append(f"archive member '{mname}' contains the EICAR test signature")
+                    continue
+                sig_hit = next((label for label, pat in sigs if pat and pat in data), None)
+                if sig_hit:
+                    _raise("malicious")
+                    reasons.append(f"archive member '{mname}' matched signature: {sig_hit}")
+                    continue
+                ext2 = os.path.splitext(mname.lower())[1]
+                exec_kind = next((k for m, k in _EXEC_MAGIC if data.startswith(m)), None)
+                if exec_kind and ext2 in _BENIGN_LOOKING_EXTS:
+                    _raise("suspicious")
+                    reasons.append(f"archive member '{mname}': executable disguised as '{ext2}'")
+                if cfg.get("ioc_scan", True):
+                    sc, hits = scan_text_iocs(data.decode("utf-8", "ignore"))
+                    if any(h["severity"] == "high" for h in hits) or sc >= _SUSPICIOUS_SCORE:
+                        _raise("suspicious")
+                        reasons.append(f"archive member '{mname}': "
+                                       + "; ".join(h["label"] for h in hits[:2]))
+    except Exception:
+        return None
+    if scanned == 0:
+        return None
+    return {"verdict": verdict, "reasons": reasons[:8], "scanned": scanned}
+
+
+# ---------------------------------------------------------------------------
+# Entropy  (packed / encrypted / obfuscated content is high-entropy)
+# ---------------------------------------------------------------------------
+
+def shannon_entropy(data: bytes) -> float:
+    """Shannon entropy of `data` in bits/byte (0-8). Plain text ~4-5; native code
+    ~5-6.5; packed / encrypted / compressed payloads push toward 7.5-8.0."""
+    if not data:
+        return 0.0
+    counts = [0] * 256
+    for b in data:
+        counts[b] += 1
+    n = len(data)
+    ent = 0.0
+    for c in counts:
+        if c:
+            p = c / n
+            ent -= p * math.log2(p)
+    return ent
+
+
+# ---------------------------------------------------------------------------
+# Behavioral IOC / signature engine
+#
+# Pattern-matches the *content* of scripts and the *command lines* of running
+# processes for the techniques fileless malware and "living-off-the-land"
+# attacks rely on (they leave little or nothing on disk): encoded PowerShell,
+# download-and-execute, reverse shells, LOLBins, ransomware shadow-copy wipes,
+# credential dumping, crypto-miners and heavy obfuscation. Each pattern carries
+# a severity:
+#   high   -> almost never benign; in process context this is "malicious".
+#   medium -> strong indicator; "suspicious".
+#   low    -> a weak hint that only matters when it stacks with others.
+# ---------------------------------------------------------------------------
+
+# (label, category, severity, score, regex-source)
+_IOC_DEFS: list[tuple[str, str, str, int, str]] = [
+    ("PowerShell -EncodedCommand payload", "encoded-powershell", "high", 80,
+     r"powershell(?:\.exe)?\b[^\n]*?\s-e(?:nc|ncodedcommand|c)?\b[^\n]*?[A-Za-z0-9+/]{40,}={0,2}"),
+    ("PowerShell hidden window", "evasion", "medium", 30,
+     r"powershell(?:\.exe)?\b[^\n]*?-w(?:indowstyle)?\s+hidden"),
+    ("PowerShell no-profile flag", "evasion", "low", 18,
+     r"powershell(?:\.exe)?\b[^\n]*?-nop(?:rofile)?\b"),
+    ("Download-and-execute (IEX + web client)", "download-exec", "high", 85,
+     r"(?:iex|invoke-expression)\b[^\n]*?(?:downloadstring|downloaddata|downloadfile|net\.webclient|invoke-webrequest|\biwr\b|\bcurl\b|\bwget\b)"),
+    ("In-memory web download (Net.WebClient)", "download-exec", "medium", 42,
+     r"new-object\s+(?:system\.)?net\.webclient"),
+    ("certutil download/decode (LOLBin)", "lolbin", "high", 70,
+     r"certutil(?:\.exe)?\b[^\n]*?(?:-urlcache|-decode|-encode|-verifyctl|-split)"),
+    ("bitsadmin transfer (LOLBin)", "lolbin", "medium", 48,
+     r"bitsadmin\b[^\n]*?/transfer"),
+    ("mshta remote/script payload (LOLBin)", "lolbin", "high", 62,
+     r"mshta(?:\.exe)?\b[^\n]*?(?:https?:|javascript:|vbscript:)"),
+    ("regsvr32 scriptlet (LOLBin)", "lolbin", "high", 62,
+     r"regsvr32(?:\.exe)?\b[^\n]*?(?:/i:http|scrobj\.dll)"),
+    ("rundll32 script/remote (LOLBin)", "lolbin", "medium", 48,
+     r"rundll32(?:\.exe)?\b[^\n]*?(?:javascript:|\.dll\s*,|url\.dll|shell32\.dll)"),
+    ("WMIC process spawn (LOLBin)", "lolbin", "medium", 48,
+     r"wmic\b[^\n]*?process\b[^\n]*?call\b[^\n]*?create"),
+    ("WMI/CIM remote process create", "lateral-movement", "medium", 40,
+     r"(?:invoke-cimmethod|invoke-wmimethod)\b[^\n]*?create"),
+    ("MSBuild inline-task abuse (LOLBin)", "lolbin", "medium", 45,
+     r"msbuild(?:\.exe)?\b[^\n]*?\.(?:xml|csproj|targets)\b"),
+    ("Reverse shell via /dev/tcp", "reverse-shell", "high", 90,
+     r"/dev/(?:tcp|udp)/[^\s/]+/\d+"),
+    ("Reverse shell via netcat -e", "reverse-shell", "high", 82,
+     r"\bn(?:c|cat)\b[^\n]*?\s-[a-z]*e\b[^\n]*?(?:/bin/|cmd)"),
+    ("FIFO + netcat reverse shell", "reverse-shell", "high", 80,
+     r"mkfifo\b[^\n]*?(?:nc|ncat|/dev/tcp)"),
+    ("curl/wget piped to a shell", "download-exec", "high", 78,
+     r"(?:curl|wget)\b[^\n|]*?https?://[^\n|]*?\|\s*(?:sudo\s+)?(?:ba|z|d|c)?sh\b"),
+    ("Python inline exec/eval payload", "obfuscation", "medium", 42,
+     r"python[0-9.]*\s+-c\b[^\n]*?(?:exec\s*\(|eval\s*\(|__import__\s*\(|base64|socket\.socket)"),
+    ("eval() of decoded data", "obfuscation", "medium", 45,
+     r"eval\s*\(\s*(?:atob|base64\.b64decode|bytes\.fromhex|String\.fromCharCode)"),
+    ("Base64 decode in script", "obfuscation", "low", 22,
+     r"(?:frombase64string|::frombase64|\bbase64\s+-{1,2}d(?:ecode)?\b|b64decode|\batob\s*\()"),
+    ("JavaScript char-code obfuscation", "obfuscation", "low", 22,
+     r"String\.fromCharCode\s*\([^)]{24,}"),
+    ("Large base64 blob", "obfuscation", "low", 18,
+     r"[A-Za-z0-9+/]{220,}={0,2}"),
+    ("Defender / AV tampering", "av-evasion", "high", 78,
+     r"(?:set-mppreference\b[^\n]*?-disable|add-mppreference\b[^\n]*?-exclusion|disableantispyware|disablerealtimemonitoring|disablebehaviormonitoring)"),
+    ("Shadow-copy / backup wipe (ransomware)", "ransomware", "high", 90,
+     r"(?:vssadmin\b[^\n]*?delete\b[^\n]*?shadows|wbadmin\b[^\n]*?delete\b[^\n]*?catalog|bcdedit\b[^\n]*?recoveryenabled\s+no|wmic\b[^\n]*?shadowcopy\b[^\n]*?delete|delete\b[^\n]*?systemstatebackup)"),
+    ("Event-log / history clearing", "anti-forensics", "medium", 42,
+     r"(?:wevtutil\b[^\n]*?\bcl\b|clear-eventlog\b|\bhistory\s+-c\b|\bset\s+HISTFILE=)"),
+    ("Credential dumping (LSASS / mimikatz)", "credential-theft", "high", 90,
+     r"(?:sekurlsa::logonpasswords|mimikatz|privilege::debug|procdump\b[^\n]*?lsass|comsvcs\.dll\b[^\n]*?minidump|reg\s+save\s+hk(?:lm|ey_local_machine)\\?\\?sam)"),
+    ("Crypto-miner pool/binary", "cryptominer", "high", 80,
+     r"(?:stratum\+(?:tcp|ssl)://|\bxmrig\b|--donate-level|cryptonight|minergate|nanopool|supportxmr|\brandomx\b|pool\.minexmr)"),
+    ("Persistence: registry Run key", "persistence", "medium", 38,
+     r"reg(?:\.exe)?\s+add\b[^\n]*?\\(?:currentversion\\run|currentversion\\runonce|userinit|winlogon)"),
+    ("Persistence: scheduled task", "persistence", "medium", 32,
+     r"schtasks(?:\.exe)?\b[^\n]*?/create"),
+    ("Persistence: cron / launchd / autostart", "persistence", "low", 22,
+     r"(?:crontab\s+-|/etc/cron|launchctl\s+load|library/launchagents|library/launchdaemons|\.config/autostart)"),
+    ("In-memory execution (memfd / fileless ELF)", "fileless", "high", 72,
+     r"(?:memfd_create|/proc/self/fd/\d|\bld_preload\s*=)"),
+]
+
+_COMPILED_IOCS: list[tuple[str, str, str, int, "re.Pattern[str]"]] = []
+for _label, _cat, _sev, _score, _src in _IOC_DEFS:
+    try:
+        _COMPILED_IOCS.append((_label, _cat, _sev, _score,
+                               re.compile(_src, re.IGNORECASE | re.MULTILINE)))
+    except re.error:
+        pass
+
+_SEV_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def scan_text_iocs(text: str) -> tuple[int, list[dict]]:
+    """Scan a blob of text (script body or command line) for malware indicators.
+
+    Returns (combined_score 0-100, hits) where each hit is
+    {label, category, severity, score}. Each indicator counts at most once."""
+    if not text:
+        return 0, []
+    hits: list[dict] = []
+    seen: set[str] = set()
+    total = 0
+    for label, cat, sev, score, rx in _COMPILED_IOCS:
+        if label in seen:
+            continue
+        try:
+            if rx.search(text):
+                seen.add(label)
+                hits.append({"label": label, "category": cat, "severity": sev, "score": score})
+                total += score
+        except Exception:
+            continue
+    hits.sort(key=lambda h: (-_SEV_RANK.get(h["severity"], 0), -h["score"]))
+    return min(total, 100), hits
+
+
+def scan_command_line(cmdline: str, name: str = "") -> dict:
+    """Classify a single command line / process invocation for fileless-malware
+    behavior. Unlike file scanning (which never auto-deletes and so caps at
+    'suspicious'), a process is live and observable, so an unambiguous (high
+    severity) technique is reported as 'malicious'.
+
+    Returns {verdict, score, reasons, categories, hits}."""
+    text = (f"{name} {cmdline}" if name else (cmdline or "")).strip()
+    score, hits = scan_text_iocs(text)
+    has_high = any(h["severity"] == "high" for h in hits)
+    has_med = any(h["severity"] == "medium" for h in hits)
+    if has_high:
+        verdict = "malicious"
+    elif has_med or score >= _SUSPICIOUS_SCORE:
+        verdict = "suspicious"
+    else:
+        verdict = "clean"
+    return {
+        "verdict": verdict,
+        "score": score,
+        "reasons": [f"{h['label']} [{h['category']}]" for h in hits],
+        "categories": sorted({h["category"] for h in hits}),
+        "hits": hits,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Extensible signature database  (optional, user/admin-updatable)
+# ---------------------------------------------------------------------------
+
+_SIG_CACHE: dict | None = None
+_SIG_CACHE_MTIME: float = 0.0
+
+
+def _signature_db() -> dict:
+    """Load the optional on-disk signature DB (support_dir/signatures.json), cached
+    by mtime. Lets the protection be strengthened without a code change:
+        {"sha256": ["<hash>", ...], "patterns": [{"label","hex"|"text"}, ...],
+         "bad_ips": ["1.2.3.4", ...]}
+    Returns {"hashes": set[str], "byte_patterns": [(label, bytes)], "bad_ips": set[str]}."""
+    global _SIG_CACHE, _SIG_CACHE_MTIME
+    p = _support_dir() / "signatures.json"
+    try:
+        mtime = p.stat().st_mtime if p.exists() else 0.0
+    except Exception:
+        mtime = 0.0
+    if _SIG_CACHE is not None and mtime == _SIG_CACHE_MTIME:
+        return _SIG_CACHE
+    hashes: set[str] = set()
+    byte_patterns: list[tuple[str, bytes]] = []
+    bad_ips: set[str] = set()
+    try:
+        if p.exists():
+            raw = json.loads(p.read_text("utf-8"))
+            for h in raw.get("sha256", []) or []:
+                if isinstance(h, str) and len(h.strip()) == 64:
+                    hashes.add(h.strip().lower())
+            for sig in raw.get("patterns", []) or []:
+                try:
+                    label = str(sig.get("label", "signature"))
+                    if sig.get("hex"):
+                        byte_patterns.append((label, bytes.fromhex(sig["hex"])))
+                    elif sig.get("text"):
+                        byte_patterns.append((label, str(sig["text"]).encode("utf-8")))
+                except Exception:
+                    continue
+            for ip in raw.get("bad_ips", []) or []:
+                if isinstance(ip, str) and ip.strip():
+                    bad_ips.add(ip.strip())
+    except Exception:
+        pass
+    _SIG_CACHE = {"hashes": hashes, "byte_patterns": byte_patterns, "bad_ips": bad_ips}
+    _SIG_CACHE_MTIME = mtime
+    return _SIG_CACHE
 
 
 # ---------------------------------------------------------------------------
@@ -420,18 +754,22 @@ def scan_file(path: str, deep: bool = True) -> dict:
             if _VERDICT_ORDER[v] > _VERDICT_ORDER[verdict]:
                 verdict = v
 
-        # 1) Static heuristics (suspicious ceiling, except EICAR).
-        score, sreasons, info = _static_scan(p)
+        # 1) Static heuristics (suspicious ceiling, except EICAR / signature hit).
+        score, sreasons, info = _static_scan(p, cfg)
         reasons += sreasons
         engines.append("heuristics")
-        if info.get("eicar"):
+        if info.get("entropy") is not None:
+            engines.append("entropy")
+        if info.get("ioc_categories"):
+            engines.append("ioc-signatures")
+        if info.get("eicar") or info.get("signature_hit"):
             _raise("malicious")
         elif score >= _SUSPICIOUS_SCORE:
             _raise("suspicious")
 
-        # 2) Hash + known-bad list.
+        # 2) Hash + known-bad list (built-in + extensible signature DB).
         sha = sha256_file(p, max_bytes=None) if size <= cfg["max_scan_bytes"] else sha256_file(p, cfg["max_scan_bytes"])
-        if sha in KNOWN_BAD_SHA256:
+        if sha in KNOWN_BAD_SHA256 or sha in _signature_db().get("hashes", set()):
             _raise("malicious")
             reasons.append("matches a known-malicious file hash")
 
@@ -457,6 +795,15 @@ def scan_file(path: str, deep: bool = True) -> dict:
                         f"VirusTotal ({vt.get('source','?')}): "
                         f"{vt.get('malicious_count',0)} malicious / "
                         f"{vt.get('suspicious_count',0)} suspicious engines")
+
+        # 5) Look inside zip archives for malicious members.
+        if cfg.get("scan_archives", True):
+            arch = _scan_archive(p, cfg)
+            if arch is not None:
+                engines.append("archive")
+                _raise(arch["verdict"])
+                if arch["verdict"] != "clean":
+                    reasons += arch["reasons"]
 
         return {"ok": True, "path": str(p), "sha256": sha, "verdict": verdict,
                 "score": score, "reasons": reasons or ["no indicators found"],
@@ -884,6 +1231,11 @@ def security_status() -> dict:
     """Report what protection is active (engines available, settings, quarantine size)."""
     cfg = get_config()
     engines = ["heuristics", "known-bad-hashes"]
+    if cfg.get("entropy_scan", True):
+        engines.append("entropy")
+    if cfg.get("ioc_scan", True):
+        engines.append("ioc-signatures")
+        engines.append("fileless-behavioral")
     if sys.platform.startswith("win") and (Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
                                            / "Windows Defender" / "MpCmdRun.exe").exists():
         engines.append("windows-defender")
@@ -896,6 +1248,13 @@ def security_status() -> dict:
                      else ("macos-seatbelt" if sys.platform == "darwin"
                            else ("windows-restricted-token" if sys.platform.startswith("win")
                                  else "none"))))
+    # Real-time behavioral (fileless) monitor state, if the module is present.
+    fileless_running = False
+    try:
+        import fileless_guard
+        fileless_running = fileless_guard.is_running()
+    except Exception:
+        pass
     return {
         "ok": True,
         "enabled": cfg.get("enabled"),
@@ -903,6 +1262,10 @@ def security_status() -> dict:
         "scan_before_open": cfg.get("scan_before_open"),
         "on_malware": cfg.get("on_malware"),
         "autodelete_days": cfg.get("autodelete_days"),
+        "entropy_scan": cfg.get("entropy_scan", True),
+        "ioc_scan": cfg.get("ioc_scan", True),
+        "fileless_protection": cfg.get("fileless_protection", True),
+        "fileless_monitor_running": fileless_running,
         "engines_available": engines,
         "sandbox_available": sandbox,
         "quarantine_count": len(_load_index()),

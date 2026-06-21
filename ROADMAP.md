@@ -30,7 +30,88 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   offline launch, auto-update on launch (git pull for source / auto-install for the app),
   Ember-site links fixed to EmberAI.
 
-## 🆕 Shipped this session (was the backlog)
+## 🆕 Shipped this session — scheduler, integrations + cross-feature polish
+- **Background agent scheduler** (`agent_scheduler.py`) — a daemon that ticks on a
+  timer, asks `agents.due_agents()` what's due and runs each via a registered runner
+  (the UI wires one that spawns the agent as a scoped sub-agent and posts a notify()).
+  Completes the Base44-style "always-on agents on a schedule." Autostarts at launch.
+  Tools: `scheduler_status/events/run_due/start/stop`. Tested (`test_agent_scheduler.py`, 7).
+- **Integrations** (`integrations.py`) — push updates to Slack / Telegram / Discord /
+  generic webhook with just a webhook URL or bot token (no OAuth). `notify()` fans out
+  to all configured channels; secrets masked in listings. Tools: `notify`,
+  `integration_set/list/remove`. UI: a Notifications section (connect a channel, send
+  test). Tested offline via injected HTTP (`test_integrations.py`, 10).
+- **Archive scanning** (`antivirus.py`) — the file scanner now looks INSIDE zip
+  archives for malicious members (EICAR / signature byte-match -> malicious; disguised
+  executables / IOC content -> suspicious), bounded against zip bombs. The signature DB
+  also gained `bad_ips` for the network scanner.
+- **Security → notifications** — when enabled (`sc_notify`), the Security Center pushes
+  real threats (suspicious/malicious) to the connected channels. Off by default.
+- Tests extended: archive cases in `test_antivirus.py` (now 20), notify-hook cases in
+  `test_security_center.py` (now 12).
+
+## 🆕 Shipped this session — agent UX: run modes, agents, human mouse, tool polish
+- **Human-like mouse movement** (`human_mouse.py`) — replaces the old jerky
+  `moveTo(duration=0.08)` teleport with a curved (cubic-Bézier) path, ease-in/out
+  timing, distance-scaled speed, micro-jitter and overshoot-and-settle on long moves.
+  Routed through `tools.click/move_mouse/drag` + `screen_vision` drag-select (graceful
+  fallback if pyautogui is missing). Toggle in Settings → Security → Pointer.
+  Pure path math is unit-tested (`test_human_mouse.py`, 10).
+- **Run modes (like Claude)** + **named agents (like Base44 Superagents)** (`agents.py`) —
+  run modes `auto` / `plan` / `chat` / `read_only` map to capability + a live
+  system-prompt directive (framed into every turn). Named agent profiles: a goal,
+  default run mode, **tool scope** (permission control via categories/allow/deny),
+  optional model, and an optional **schedule** (`every_minutes` / `daily_at`) so they
+  can run on a timer. CRUD + scheduling + scope resolution + `build_run_request` are
+  pure and tested (`test_agents.py`, 16). Tools: `list_run_modes`, `set_run_mode`,
+  `agent_create/list/get/delete`, `agent_run`. UI: a Run-mode selector + Agents list
+  in Settings → Security.
+- **Sub-agents (like Claude's Task)** — `spawn_agent` and `agent_run` launch a fresh,
+  scoped sub-agent that runs its own bounded tool loop and reports a summary; it
+  forwards events to the parent UI (so progress + confirmations are visible/answerable),
+  carries an isolated tool whitelist + run mode, and is recursion-bounded.
+- **Tool-use polish** — `tool_args.py` coerces every tool argument to its declared type
+  before dispatch ("100"→100, "true"→True, 3.0→3), killing a big class of "bad args"
+  failures. Applied in the executor; unit-tested (`test_tool_args.py`, 7).
+
+## 🆕 Shipped this session — always-on antivirus + fileless detection
+- **Fileless-malware detection** (`fileless_guard.py`) — an always-active background
+  process monitor for in-memory / "living-off-the-land" attacks that file scanners
+  miss. On launch it sweeps every running process, then watches for new ones, scoring
+  each command line with the shared behavioral IOC engine (encoded PowerShell,
+  download-and-execute, reverse shells, LOLBins, ransomware shadow-copy wipes,
+  credential dumping, miners, AV-tampering, obfuscation) **plus process lineage**
+  (e.g. Word → PowerShell). Alerts by default; optional auto-terminate. psutil with a
+  `ps`/`wmic` fallback, fully injectable for tests. Tools: `scan_processes`,
+  `scan_command`, `fileless_guard_start/stop/status/events`.
+- **Much stronger antivirus** (`antivirus.py`) — added **Shannon-entropy** packer
+  detection, a **behavioral IOC/signature engine** (`scan_text_iocs` /
+  `scan_command_line`) reused by the fileless monitor, an **extensible on-disk
+  signature DB** (`signatures.json`: hashes + byte patterns), and richer scan reasons.
+  The "heuristics never auto-delete" safety rule is preserved — file heuristics still
+  cap at *suspicious*; only definitive signals (EICAR / signature hit / known-bad hash
+  / platform-AV / VirusTotal) quarantine.
+- **Always active** — real-time download protection AND the fileless monitor now
+  autostart at launch (default ON) and have toggles in **Settings → Security**
+  ("Real-time protection (always active)" + "Scan running processes now"). New tests:
+  `test_fileless_guard.py` (13) + entropy/IOC/signature cases in `test_antivirus.py`.
+- **Security Center** (`security_center.py`) — a unified, always-on supervisor that
+  turns the individual defenses into one continuous, self-healing layer. It actively
+  and repeatedly scans **every** surface on its own schedule: processes (keeps the
+  fileless monitor alive), files (keeps the download watcher alive + periodically
+  sweeps Downloads/Desktop/Documents/Temp), **network** connections + listening
+  ports (reverse-shell listeners, C2/mining, interpreters phoning home), and
+  **persistence/autostart** (cron, launchd, systemd, shell rc files, registry Run
+  keys, Startup folder — each command scanned by the IOC engine, with baseline-diff
+  for new entries). A **watchdog** restarts any monitor that dies so scanning never
+  stops. Findings funnel into one bounded, de-duplicated threat feed. Threat-intel is
+  extensible via `signatures.json` (`bad_ips` added alongside hashes/patterns).
+  Autostarts at launch; **Settings → Security** gets a "Security Center" section with
+  Full scan / Scan network / Scan persistence / Activity buttons. Tools:
+  `security_center_start/stop/status/events`, `run_full_scan`, `scan_network`,
+  `scan_persistence`. New `test_security_center.py` (10).
+
+## 🆕 Shipped previously (was the backlog)
 1. **Plugin system** (`plugin_system.py` + `plugins/`) — drop a `.py` defining `EMBER_TOOLS` into
    `plugins/` and it auto-registers as tools at startup. Broken plugins are skipped, never crash
    the app. Tools: `list_plugins`, `reload_plugins`, `create_plugin_template`. Example + README ship
