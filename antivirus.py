@@ -95,6 +95,9 @@ DEFAULT_CONFIG: dict = {
     "entropy_scan": True,          # flag packed/encrypted executables via Shannon entropy
     "entropy_threshold": 7.2,      # >= this (bits/byte) on code content -> likely packed/encrypted
     "ioc_scan": True,              # scan script/command content for malware IOCs (fileless, LOLBins)
+    "scan_archives": True,         # look INSIDE zip archives for malicious members
+    "archive_max_members": 200,    # max members inspected per archive
+    "archive_member_max_bytes": 4 * 1024 * 1024,  # max bytes read per member
     # --- always-on fileless/behavioral protection (see fileless_guard.py) ---
     "fileless_protection": True,   # real-time monitoring of running processes / command lines
     "fileless_poll_seconds": 4,    # how often the behavioral monitor samples processes
@@ -109,6 +112,7 @@ DEFAULT_CONFIG: dict = {
     "sc_file_sweep_interval": 600, # seconds between sensitive-folder sweeps
     "sc_sweep_max_files": 1500,    # cap files scanned per folder per sweep (keeps it light)
     "sc_watch_roots": [],          # extra folders to sweep ([] -> sensible per-OS defaults)
+    "sc_notify": False,            # push security threats to connected channels (integrations.py)
 }
 
 
@@ -307,6 +311,70 @@ def _zip_has_macro(path: Path) -> bool:
             return any(n.endswith("vbaProject.bin") for n in zf.namelist())
     except Exception:
         return False
+
+
+def _scan_archive(path: Path, cfg: dict) -> dict | None:
+    """Look inside a zip archive for malicious members. Returns
+    {verdict, reasons, scanned} or None if it isn't a (readable) archive.
+
+    Definitive signals (EICAR / signature byte match) inside a member -> malicious;
+    disguised executables / IOC content -> suspicious. Bounded by member count and
+    per-member byte caps so a zip bomb can't blow it up."""
+    try:
+        if not zipfile.is_zipfile(path):
+            return None
+    except Exception:
+        return None
+    max_members = int(cfg.get("archive_max_members", 200))
+    member_cap = int(cfg.get("archive_member_max_bytes", 4 * 1024 * 1024))
+    verdict = "clean"
+    reasons: list[str] = []
+    scanned = 0
+
+    def _raise(v):
+        nonlocal verdict
+        if _VERDICT_ORDER[v] > _VERDICT_ORDER[verdict]:
+            verdict = v
+
+    try:
+        sigs = _signature_db().get("byte_patterns", [])
+        with zipfile.ZipFile(path) as zf:
+            for info in zf.infolist():
+                if scanned >= max_members:
+                    break
+                if info.is_dir() or info.file_size > member_cap:
+                    continue
+                try:
+                    data = zf.read(info.filename)[:member_cap]
+                except Exception:
+                    continue
+                scanned += 1
+                mname = info.filename
+                if EICAR_SIG in data:
+                    _raise("malicious")
+                    reasons.append(f"archive member '{mname}' contains the EICAR test signature")
+                    continue
+                sig_hit = next((label for label, pat in sigs if pat and pat in data), None)
+                if sig_hit:
+                    _raise("malicious")
+                    reasons.append(f"archive member '{mname}' matched signature: {sig_hit}")
+                    continue
+                ext2 = os.path.splitext(mname.lower())[1]
+                exec_kind = next((k for m, k in _EXEC_MAGIC if data.startswith(m)), None)
+                if exec_kind and ext2 in _BENIGN_LOOKING_EXTS:
+                    _raise("suspicious")
+                    reasons.append(f"archive member '{mname}': executable disguised as '{ext2}'")
+                if cfg.get("ioc_scan", True):
+                    sc, hits = scan_text_iocs(data.decode("utf-8", "ignore"))
+                    if any(h["severity"] == "high" for h in hits) or sc >= _SUSPICIOUS_SCORE:
+                        _raise("suspicious")
+                        reasons.append(f"archive member '{mname}': "
+                                       + "; ".join(h["label"] for h in hits[:2]))
+    except Exception:
+        return None
+    if scanned == 0:
+        return None
+    return {"verdict": verdict, "reasons": reasons[:8], "scanned": scanned}
 
 
 # ---------------------------------------------------------------------------
@@ -727,6 +795,15 @@ def scan_file(path: str, deep: bool = True) -> dict:
                         f"VirusTotal ({vt.get('source','?')}): "
                         f"{vt.get('malicious_count',0)} malicious / "
                         f"{vt.get('suspicious_count',0)} suspicious engines")
+
+        # 5) Look inside zip archives for malicious members.
+        if cfg.get("scan_archives", True):
+            arch = _scan_archive(p, cfg)
+            if arch is not None:
+                engines.append("archive")
+                _raise(arch["verdict"])
+                if arch["verdict"] != "clean":
+                    reasons += arch["reasons"]
 
         return {"ok": True, "path": str(p), "sha256": sha, "verdict": verdict,
                 "score": score, "reasons": reasons or ["no indicators found"],

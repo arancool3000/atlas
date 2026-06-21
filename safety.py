@@ -145,6 +145,7 @@ SAFE_READONLY = {
     "security_center_status", "security_center_events",      # unified Security Center (read-only)
     "scan_network", "scan_persistence",                      # active network / persistence scans
     "list_run_modes", "agent_list", "agent_get",            # run modes / agent profiles (read-only)
+    "scheduler_status", "scheduler_events", "integration_list",  # scheduler + integrations (read-only)
     "list_workflows",                                         # workflow recorder
     "snippet_list", "snippet_get", "snippet_expand",         # snippet expander
     "email_breach_check", "pick_screen_color", "screenshot_monitor",
@@ -173,6 +174,8 @@ SAFE_INTERACTION = {
     "security_center_start", "security_center_stop",         # start/stop the Security Center
     "set_run_mode", "agent_create", "agent_delete",         # run-mode + agent profile management
     "agent_run", "spawn_agent",                             # launch a saved / ad-hoc sub-agent
+    "notify", "integration_set", "integration_remove",     # connected-channel notifications
+    "scheduler_run_due", "scheduler_start", "scheduler_stop",  # background agent scheduler
     "record_workflow_start", "record_workflow_stop", "delete_workflow",
     "snippet_save", "snippet_delete",                        # snippet CRUD
     "screen_record_start", "screen_record_stop",             # local screen capture file

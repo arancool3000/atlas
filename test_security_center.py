@@ -199,6 +199,36 @@ def test_new_persistence_entry_noted_after_baseline():
     _reset()
 
 
+def test_threat_notify_hook_when_enabled():
+    _reset()
+    sent = []
+    sc._NOTIFIER = lambda text: sent.append(text)
+    antivirus.set_config(sc_notify=True)
+    try:
+        sc._record("network", "malicious", "connection to known-bad host 1.2.3.4")
+        assert len(sent) == 1 and "malicious" in sent[0], sent
+        # info-level events never notify
+        sc._record("watchdog", "info", "started monitor")
+        assert len(sent) == 1, sent
+    finally:
+        antivirus.set_config(sc_notify=False)
+        sc._NOTIFIER = None
+        _reset()
+
+
+def test_threat_notify_suppressed_when_disabled():
+    _reset()
+    sent = []
+    sc._NOTIFIER = lambda text: sent.append(text)
+    antivirus.set_config(sc_notify=False)
+    try:
+        sc._record("network", "malicious", "x")
+        assert sent == [], sent
+    finally:
+        sc._NOTIFIER = None
+        _reset()
+
+
 def test_tool_wiring_exports():
     assert set(sc.TOOL_DISPATCH) == {d["name"] for d in sc.TOOL_DECLARATIONS}
     assert "scan_network" in sc.READONLY_TOOLS

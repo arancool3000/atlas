@@ -60,8 +60,10 @@ _NET_SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "nc", "ncat", "netcat", "soca
 # Injection points for tests:
 #   _NET_ENUM():     -> list[{"pid","name","laddr","raddr","lport","rport","status"}]
 #   _PERSIST_ENUM(): -> list[{"location","name","command"}]
+#   _NOTIFIER(text): -> push a threat alert to connected channels (default integrations.notify)
 _NET_ENUM = None
 _PERSIST_ENUM = None
+_NOTIFIER = None
 
 _LOCK = threading.Lock()
 _thread: "threading.Thread | None" = None
@@ -106,6 +108,25 @@ def _record(source: str, severity: str, detail: str, extra: dict | None = None) 
             _counts[source] += 1
         if severity in ("suspicious", "malicious"):
             _threats += 1
+    _maybe_notify(entry)
+
+
+def _maybe_notify(entry: dict) -> None:
+    """If enabled + a channel is configured, push real threats to Slack/Telegram/etc.
+    Runs outside the lock; fully failure-silent."""
+    if entry.get("severity") not in ("suspicious", "malicious"):
+        return
+    try:
+        if not _cfg().get("sc_notify", False):
+            return
+        fn = _NOTIFIER
+        if fn is None:
+            import integrations
+            fn = integrations.notify
+        fn(f"🛡️ Ember security [{entry['severity']}] {entry['source']}: "
+           f"{str(entry.get('detail',''))[:240]}")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

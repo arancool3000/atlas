@@ -170,6 +170,36 @@ def test_signature_db_hash_is_malicious():
         antivirus._SIG_CACHE = None
 
 
+def test_archive_with_eicar_member_is_malicious():
+    import zipfile
+    z = Path(_TMP) / "bundle.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("notes.txt", "hello")
+        zf.writestr("inner/payload.bin", antivirus.EICAR_SIG)
+    r = antivirus.scan_file(str(z), deep=False)
+    assert r["verdict"] == "malicious", r
+
+
+def test_archive_with_disguised_exe_member_is_suspicious():
+    import zipfile
+    z = Path(_TMP) / "photos.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("vacation.jpg", b"MZ\x90\x00" + b"\x00" * 64)  # PE wearing .jpg
+    r = antivirus.scan_file(str(z), deep=False)
+    assert r["verdict"] == "suspicious", r
+    assert "archive" in r["engines"], r
+
+
+def test_clean_archive_is_clean():
+    import zipfile
+    z = Path(_TMP) / "clean.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.txt", "just text\n")
+        zf.writestr("b.csv", "1,2,3\n")
+    r = antivirus.scan_file(str(z), deep=False)
+    assert r["verdict"] == "clean", r
+
+
 def test_status_reports_strong_engines():
     s = antivirus.security_status()
     assert "ioc-signatures" in s["engines_available"], s

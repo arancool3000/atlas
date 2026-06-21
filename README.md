@@ -11,8 +11,11 @@ Free, MIT-licensed, and private — your API key stays on your machine; there ar
   **Human-like mouse movement** (curved, eased paths — not robotic teleports).
 - **Run modes & agents** — pick how Ember works: **auto** (autonomous), **plan** (proposes a
   plan and waits), **chat** (talk only), or **read-only**. Define **named agents** (a goal +
-  run mode + tool scope + optional schedule, à la Base44 Superagents) and run them on demand or
-  on a timer; Ember can also **spawn scoped sub-agents** for sub-tasks (like Claude's Task tool).
+  run mode + tool scope + optional schedule, à la Base44 Superagents), run them on demand or
+  **on a schedule** (a background scheduler fires due agents); Ember can also **spawn scoped
+  sub-agents** for sub-tasks (like Claude's Task tool).
+- **Notifications** — connect **Slack, Telegram, Discord, or a webhook** (just a URL/token)
+  so agents (and security alerts) can push you updates; `notify` sends to every channel.
 - **Ember Browser** — a secure, AI-first browser: tracker/ad blocking, an AI-answer search page,
   summarize/ask about any page, AI-content check, reader mode, per-site dark mode, bookmarks,
   history, downloads. Works with Gemini or Claude.
@@ -310,6 +313,8 @@ tunnel up — and it never claims to be connected when it isn't.
 | `tools.py`, `more_tools.py`, `extra_tools.py` | the tool set |
 | `human_mouse.py` | human-like (curved, eased) mouse movement |
 | `agents.py` | run modes + named agent profiles (scope, schedule) |
+| `agent_scheduler.py` | background scheduler that runs due agents |
+| `integrations.py` | Slack / Telegram / Discord / webhook notifications |
 | `tool_args.py` | coerces tool arguments to their declared types |
 | `screen_vision.py` | exact clicking + on-screen OCR |
 | `remote_server.py` | Ember Link phone control |

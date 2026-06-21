@@ -49,6 +49,8 @@ import download_guard
 import fileless_guard
 import security_center
 import agents as agent_profiles
+import agent_scheduler
+import integrations
 import tool_args
 import workflow_recorder
 import productivity_tools
@@ -2035,7 +2037,8 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
 # sets used by safety.py). Merge them here so the central tables stay the single source
 # of truth the agent + lean-mode filter read from.
 for _feat in (key_vault, usage_tracker, download_guard, fileless_guard, security_center,
-              agent_profiles, workflow_recorder, productivity_tools, plugin_system):
+              agent_profiles, agent_scheduler, integrations,
+              workflow_recorder, productivity_tools, plugin_system):
     for _decl in _feat.TOOL_DECLARATIONS:
         if _decl["name"] not in TOOL_DISPATCH:
             TOOL_DECLARATIONS.append(_decl)
@@ -2089,6 +2092,7 @@ PARALLEL_SAFE_TOOLS = frozenset({
     "scan_network", "scan_persistence",
     # agent run modes / profiles (read-only)
     "list_run_modes", "agent_list", "agent_get",
+    "scheduler_status", "scheduler_events", "integration_list",
 })
 
 # Declared-type map for argument coercion (built AFTER all module tools merged in).

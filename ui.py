@@ -2194,6 +2194,31 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
 
+        # --- Notifications / connected channels ---
+        _section("Notifications (Slack · Telegram · Discord · webhook)")
+        try:
+            import integrations
+            chans = integrations.list_integrations().get("channels", [])
+            self._intg_lbl = QLabel("Connected: " + (", ".join(c["channel"] for c in chans) or "none"))
+            self._intg_lbl.setStyleSheet("color:#565f89; font-size:11px;")
+            v.addWidget(self._intg_lbl)
+            irow = QHBoxLayout()
+            conn_btn = QPushButton("Connect a channel…")
+            conn_btn.clicked.connect(self._connect_integration)
+            irow.addWidget(conn_btn)
+            test_btn = QPushButton("Send test")
+            test_btn.clicked.connect(self._test_integration)
+            irow.addWidget(test_btn)
+            irow.addStretch()
+            v.addLayout(irow)
+            self._sc_notify_chk = QCheckBox("Push security threats to my channels")
+            self._sc_notify_chk.setChecked(bool(antivirus.get_config().get("sc_notify", False)))
+            self._sc_notify_chk.stateChanged.connect(
+                lambda s: antivirus.set_config(sc_notify=bool(s)))
+            v.addWidget(self._sc_notify_chk)
+        except Exception:
+            pass
+
         # --- VPN ---
         _section("VPN (bring-your-own WireGuard)")
         try:
@@ -2527,6 +2552,42 @@ class SettingsDialog(QDialog):
                  f"{e.get('severity','')}: {e.get('detail','')}" for e in evs[-40:]]
         QMessageBox.information(self, "Security activity (recent)", "\n".join(lines))
 
+    def _refresh_integrations(self):
+        try:
+            import integrations
+            chans = integrations.list_integrations().get("channels", [])
+            self._intg_lbl.setText("Connected: " + (", ".join(c["channel"] for c in chans) or "none"))
+        except Exception:
+            pass
+
+    def _connect_integration(self):
+        from PyQt6.QtWidgets import QInputDialog
+        import integrations
+        chan, ok = QInputDialog.getItem(self, "Connect a channel", "Channel:",
+                                        list(integrations.CHANNELS.keys()), 0, False)
+        if not ok or not chan:
+            return
+        fields = {}
+        for f in integrations.CHANNELS[chan]["fields"]:
+            val, ok2 = QInputDialog.getText(self, f"{chan} — {f}", f"Enter {f}:")
+            if not ok2 or not val.strip():
+                return
+            fields[f] = val.strip()
+        r = integrations.set_integration(chan, **fields)
+        if r.get("ok"):
+            self._refresh_integrations()
+            QMessageBox.information(self, "Notifications", f"Connected {chan}.")
+        else:
+            QMessageBox.warning(self, "Notifications", r.get("error", "failed"))
+
+    def _test_integration(self):
+        import integrations
+        r = integrations.notify("✅ Ember test notification")
+        sent = ", ".join(r.get("sent", []) or [])
+        QMessageBox.information(self, "Notifications",
+                               f"Sent to: {sent}" if sent else
+                               "No channel configured (or send failed). Connect one first.")
+
     def _set_run_mode(self, mode):
         try:
             import agents
@@ -2751,6 +2812,9 @@ class EmberWindow(QWidget):
             # Unified always-on Security Center: continuously scans processes, files,
             # network and persistence, and keeps the other monitors alive (watchdog).
             QTimer.singleShot(2600, self._autostart_security_center)
+        if self.settings.get("agent_scheduler", True) and not _SAFE_MODE:
+            # Background agent scheduler: runs saved agents on their schedules.
+            QTimer.singleShot(3000, self._autostart_agent_scheduler)
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
@@ -4603,6 +4667,41 @@ class EmberWindow(QWidget):
                 print(f"[Security Center failed: {r.get('error')}]")
         except Exception as e:
             print(f"[Security Center autostart failed: {e}]")
+
+    def _run_saved_agent(self, name):
+        """Runner the scheduler calls to actually run a saved agent: launch it as a
+        scoped sub-agent on the live agent, then push a summary to connected channels."""
+        try:
+            import agents, agent as agent_module
+            ag = getattr(self, "agent", None)
+            req = agents.build_run_request(name, all_tool_names=list(agent_module.TOOL_DISPATCH))
+            if not req.get("ok"):
+                return req
+            if ag is None or not hasattr(ag, "_spawn"):
+                return {"ok": False, "error": "no live agent to run with"}
+            res = ag._spawn(req["instructions"], mode=req["run_mode"],
+                            allowed_tools=req.get("allowed_tools"), label=name)
+            try:
+                import integrations
+                if integrations.is_configured():
+                    integrations.notify(f"🤖 Agent '{name}' ran: "
+                                        f"{str(res.get('summary','done'))[:280]}")
+            except Exception:
+                pass
+            return res
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def _autostart_agent_scheduler(self):
+        """Start the background agent scheduler and register the live runner."""
+        try:
+            import agent_scheduler
+            agent_scheduler.set_runner(self._run_saved_agent)
+            r = agent_scheduler.start()
+            print("[Agent scheduler started]" if r.get("ok")
+                  else f"[Agent scheduler failed: {r.get('error')}]")
+        except Exception as e:
+            print(f"[Agent scheduler autostart failed: {e}]")
 
     def _autostart_remote_control(self):
         """Bring Ember Link up automatically at launch — no modal, just a status note.

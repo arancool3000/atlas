@@ -30,6 +30,26 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   offline launch, auto-update on launch (git pull for source / auto-install for the app),
   Ember-site links fixed to EmberAI.
 
+## 🆕 Shipped this session — scheduler, integrations + cross-feature polish
+- **Background agent scheduler** (`agent_scheduler.py`) — a daemon that ticks on a
+  timer, asks `agents.due_agents()` what's due and runs each via a registered runner
+  (the UI wires one that spawns the agent as a scoped sub-agent and posts a notify()).
+  Completes the Base44-style "always-on agents on a schedule." Autostarts at launch.
+  Tools: `scheduler_status/events/run_due/start/stop`. Tested (`test_agent_scheduler.py`, 7).
+- **Integrations** (`integrations.py`) — push updates to Slack / Telegram / Discord /
+  generic webhook with just a webhook URL or bot token (no OAuth). `notify()` fans out
+  to all configured channels; secrets masked in listings. Tools: `notify`,
+  `integration_set/list/remove`. UI: a Notifications section (connect a channel, send
+  test). Tested offline via injected HTTP (`test_integrations.py`, 10).
+- **Archive scanning** (`antivirus.py`) — the file scanner now looks INSIDE zip
+  archives for malicious members (EICAR / signature byte-match -> malicious; disguised
+  executables / IOC content -> suspicious), bounded against zip bombs. The signature DB
+  also gained `bad_ips` for the network scanner.
+- **Security → notifications** — when enabled (`sc_notify`), the Security Center pushes
+  real threats (suspicious/malicious) to the connected channels. Off by default.
+- Tests extended: archive cases in `test_antivirus.py` (now 20), notify-hook cases in
+  `test_security_center.py` (now 12).
+
 ## 🆕 Shipped this session — agent UX: run modes, agents, human mouse, tool polish
 - **Human-like mouse movement** (`human_mouse.py`) — replaces the old jerky
   `moveTo(duration=0.08)` teleport with a curved (cubic-Bézier) path, ease-in/out
