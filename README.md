@@ -171,11 +171,21 @@ processes in real time for fileless attacks**, isolates anything it can't vouch
 for, and quarantines confirmed threats. Real-time protection is **always active**
 by default.
 
-- **Always-on real-time protection** — two background watchers start with the app:
-  a **download monitor** that scans new files the moment they finish downloading,
-  and a **fileless-malware monitor** that continuously inspects running processes
-  for in-memory / "living-off-the-land" attacks (see below). Toggle either in
-  **Settings → Security**.
+- **Always-on Security Center** — a unified supervisor scans **every surface
+  malware uses, continuously**, and keeps the individual monitors alive (a watchdog
+  restarts anything that dies, so scanning never silently stops):
+  - **Processes** — the fileless-malware monitor (below).
+  - **Files** — a real-time **download monitor** scans new files the moment they
+    finish downloading, plus periodic sweeps of Downloads/Desktop/Documents/Temp.
+  - **Network** — repeatedly inspects active connections + listening ports for
+    reverse-shell listeners, C2 / mining traffic and interpreters phoning home.
+  - **Persistence** — repeatedly inspects autostart locations (cron, launchd,
+    systemd, shell rc files, registry Run keys, the Startup folder) and scans each
+    entry's command line.
+
+  Everything funnels into one threat feed (`security_center_status` /
+  `security_center_events`); run an on-demand sweep with `run_full_scan`,
+  `scan_network`, `scan_persistence`, or the buttons in **Settings → Security**.
 - **Fileless-malware detection** — file scanners miss attacks that never touch the
   disk. Ember classifies every process's command line with a behavioral
   IOC/signature engine that catches **encoded PowerShell**, **download-and-execute**
@@ -296,6 +306,7 @@ tunnel up — and it never claims to be connected when it isn't.
 | `screen_vision.py` | exact clicking + on-screen OCR |
 | `remote_server.py` | Ember Link phone control |
 | `antivirus.py` | malware scan (entropy + IOC signatures), quarantine vault & sandbox |
+| `security_center.py` | unified always-on active scanning (processes/files/network/persistence) + watchdog |
 | `fileless_guard.py` | always-on fileless / behavioral process monitor |
 | `download_guard.py` | real-time download folder scanner |
 | `web_policy.py` | website blocking + URL reputation |

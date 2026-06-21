@@ -51,6 +51,21 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   autostart at launch (default ON) and have toggles in **Settings → Security**
   ("Real-time protection (always active)" + "Scan running processes now"). New tests:
   `test_fileless_guard.py` (13) + entropy/IOC/signature cases in `test_antivirus.py`.
+- **Security Center** (`security_center.py`) — a unified, always-on supervisor that
+  turns the individual defenses into one continuous, self-healing layer. It actively
+  and repeatedly scans **every** surface on its own schedule: processes (keeps the
+  fileless monitor alive), files (keeps the download watcher alive + periodically
+  sweeps Downloads/Desktop/Documents/Temp), **network** connections + listening
+  ports (reverse-shell listeners, C2/mining, interpreters phoning home), and
+  **persistence/autostart** (cron, launchd, systemd, shell rc files, registry Run
+  keys, Startup folder — each command scanned by the IOC engine, with baseline-diff
+  for new entries). A **watchdog** restarts any monitor that dies so scanning never
+  stops. Findings funnel into one bounded, de-duplicated threat feed. Threat-intel is
+  extensible via `signatures.json` (`bad_ips` added alongside hashes/patterns).
+  Autostarts at launch; **Settings → Security** gets a "Security Center" section with
+  Full scan / Scan network / Scan persistence / Activity buttons. Tools:
+  `security_center_start/stop/status/events`, `run_full_scan`, `scan_network`,
+  `scan_persistence`. New `test_security_center.py` (10).
 
 ## 🆕 Shipped previously (was the backlog)
 1. **Plugin system** (`plugin_system.py` + `plugins/`) — drop a `.py` defining `EMBER_TOOLS` into

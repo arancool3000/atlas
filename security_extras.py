@@ -40,6 +40,18 @@ def security_checkup() -> dict:
         pass
 
     try:
+        import security_center
+        sc = security_center.security_center_status()
+        report["security_center"] = {
+            "running": bool(sc.get("running")),
+            "scan_cycles": sc.get("scan_cycles", 0),
+            "threats_found": sc.get("threats_found", 0),
+            "by_source": sc.get("by_source", {}),
+        }
+    except Exception as e:
+        report["security_center"] = {"error": str(e)}
+
+    try:
         import web_policy
         wp = web_policy.get_config()
         report["web_protection"] = {"enabled": bool(wp.get("enabled", False)),
@@ -57,17 +69,20 @@ def security_checkup() -> dict:
     av = report.get("antivirus", {})
     wp = report.get("web_protection", {})
     rt = report.get("realtime_protection", {})
+    scn = report.get("security_center", {})
     score = 0
     if av.get("engines"):
-        score += 30
+        score += 25
     if av.get("sandbox"):
-        score += 15
+        score += 10
     if av.get("fileless_protection") or rt.get("fileless_monitor_running"):
-        score += 20  # always-on behavioral/fileless monitor
+        score += 15  # always-on behavioral/fileless monitor
     if rt.get("download_monitor_running"):
         score += 5
+    if scn.get("running"):
+        score += 20  # unified always-on active scanning (network + persistence + sweeps)
     if wp.get("enabled"):
-        score += 20
+        score += 15
     if wp.get("online_reputation"):
         score += 10
     report["score"] = score
@@ -75,6 +90,9 @@ def security_checkup() -> dict:
     recs = []
     if not av.get("engines"):
         recs.append("No scan engine detected — heuristics still apply; VirusTotal adds cloud lookups.")
+    if not scn.get("running"):
+        recs.append("Turn on the always-on Security Center in Settings → Security for continuous "
+                    "scanning of processes, files, network and persistence.")
     if not (av.get("fileless_protection") or rt.get("fileless_monitor_running")):
         recs.append("Turn on real-time fileless protection in Settings → Security (always-active "
                     "process monitor for in-memory / LOLBin attacks).")

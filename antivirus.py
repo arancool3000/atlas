@@ -99,6 +99,16 @@ DEFAULT_CONFIG: dict = {
     "fileless_protection": True,   # real-time monitoring of running processes / command lines
     "fileless_poll_seconds": 4,    # how often the behavioral monitor samples processes
     "fileless_auto_terminate": False,  # kill confirmed-malicious processes (default: alert only)
+    # --- unified always-on active scanning (see security_center.py) ---
+    "realtime_security_center": True,  # master switch for continuous multi-surface scanning
+    "sc_network_scan": True,       # continuously inspect network connections / listening ports
+    "sc_persistence_scan": True,   # continuously inspect autostart / persistence locations
+    "sc_file_sweep": True,         # periodically sweep sensitive folders for malware
+    "sc_network_interval": 20,     # seconds between network scans
+    "sc_persistence_interval": 45, # seconds between persistence scans
+    "sc_file_sweep_interval": 600, # seconds between sensitive-folder sweeps
+    "sc_sweep_max_files": 1500,    # cap files scanned per folder per sweep (keeps it light)
+    "sc_watch_roots": [],          # extra folders to sweep ([] -> sensible per-OS defaults)
 }
 
 
@@ -472,8 +482,9 @@ _SIG_CACHE_MTIME: float = 0.0
 def _signature_db() -> dict:
     """Load the optional on-disk signature DB (support_dir/signatures.json), cached
     by mtime. Lets the protection be strengthened without a code change:
-        {"sha256": ["<hash>", ...], "patterns": [{"label","hex"|"text"}, ...]}
-    Returns {"hashes": set[str], "byte_patterns": [(label, bytes)]}."""
+        {"sha256": ["<hash>", ...], "patterns": [{"label","hex"|"text"}, ...],
+         "bad_ips": ["1.2.3.4", ...]}
+    Returns {"hashes": set[str], "byte_patterns": [(label, bytes)], "bad_ips": set[str]}."""
     global _SIG_CACHE, _SIG_CACHE_MTIME
     p = _support_dir() / "signatures.json"
     try:
@@ -484,6 +495,7 @@ def _signature_db() -> dict:
         return _SIG_CACHE
     hashes: set[str] = set()
     byte_patterns: list[tuple[str, bytes]] = []
+    bad_ips: set[str] = set()
     try:
         if p.exists():
             raw = json.loads(p.read_text("utf-8"))
@@ -499,9 +511,12 @@ def _signature_db() -> dict:
                         byte_patterns.append((label, str(sig["text"]).encode("utf-8")))
                 except Exception:
                     continue
+            for ip in raw.get("bad_ips", []) or []:
+                if isinstance(ip, str) and ip.strip():
+                    bad_ips.add(ip.strip())
     except Exception:
         pass
-    _SIG_CACHE = {"hashes": hashes, "byte_patterns": byte_patterns}
+    _SIG_CACHE = {"hashes": hashes, "byte_patterns": byte_patterns, "bad_ips": bad_ips}
     _SIG_CACHE_MTIME = mtime
     return _SIG_CACHE
 
