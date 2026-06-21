@@ -85,6 +85,65 @@ def test_options_roundtrip():
     hm.set_options(speed=1.0, enabled=True)
 
 
+# --- driver accuracy (fake pyautogui, no display) ------------------------------
+
+class _FakePG:
+    def __init__(self):
+        self.PAUSE = 0.05
+        self.calls = []
+        self._pos = (0, 0)
+    def position(self): return self._pos
+    def size(self): return (1920, 1080)
+    def moveTo(self, x, y, duration=0, _pause=True):
+        self._pos = (x, y); self.calls.append(("moveTo", x, y))
+    def click(self, x=None, y=None, button="left", _pause=True):
+        if x is not None: self._pos = (x, y)
+        self.calls.append(("click", self._pos[0], self._pos[1], button))
+    def doubleClick(self, x=None, y=None, button="left", _pause=True):
+        if x is not None: self._pos = (x, y)
+        self.calls.append(("doubleClick", self._pos[0], self._pos[1], button))
+    def mouseDown(self, button="left", _pause=True): self.calls.append(("down", self._pos))
+    def mouseUp(self, button="left", _pause=True): self.calls.append(("up", self._pos))
+
+
+def _with_fake():
+    fake = _FakePG()
+    hm._pg = lambda: fake          # inject; restore in finally
+    return fake
+
+
+def test_move_lands_exactly_on_target():
+    fake = _with_fake()
+    try:
+        assert hm.move(640, 360, duration=0) is True
+        assert fake._pos == (640, 360), fake._pos          # exact final position
+        assert fake.calls[-1] == ("moveTo", 640, 360)      # explicit end-snap
+    finally:
+        import importlib; importlib.reload(hm)
+
+
+def test_click_presses_at_exact_coordinates():
+    fake = _with_fake()
+    try:
+        hm.click(800, 450, duration=0) if False else hm.click(800, 450)
+        click_calls = [c for c in fake.calls if c[0] == "click"]
+        assert click_calls and click_calls[-1][1:3] == (800, 450), fake.calls[-3:]
+    finally:
+        import importlib; importlib.reload(hm)
+
+
+def test_drag_down_at_start_up_at_end_exact():
+    fake = _with_fake()
+    try:
+        hm.drag(100, 100, 700, 500, duration=0)
+        downs = [c for c in fake.calls if c[0] == "down"]
+        ups = [c for c in fake.calls if c[0] == "up"]
+        assert downs and downs[0][1] == (100, 100), downs
+        assert ups and ups[-1][1] == (700, 500), ups
+    finally:
+        import importlib; importlib.reload(hm)
+
+
 def _run_all() -> bool:
     import types
     funcs = [v for k, v in sorted(globals().items())
