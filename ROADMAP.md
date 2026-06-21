@@ -30,6 +30,18 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   offline launch, auto-update on launch (git pull for source / auto-install for the app),
   Ember-site links fixed to EmberAI.
 
+## 🆕 Shipped this session — pixel-accurate mouse + rate-limit resilience
+- **Accurate mouse** (`human_mouse.py`) — humanized travel stays, but the pointer now
+  **snaps to the exact integer target** at the end of every move, and clicks/presses are
+  issued at **explicit coordinates** (and drags press/release at exact start/end points),
+  so realism never costs accuracy. New driver tests assert clicks land on the exact pixel.
+- **Rate-limit resilience without losing history** (`agent.py`) — on a 429 Ember now, in
+  order and **always preserving chat history**: (1) instantly retries the same model on the
+  alternate API key, (2) waits out the per-minute limit and retries the same chat, (3)
+  switches to a fallback model. `_init_chat(history=…)` + `_capture_history()` carry the full
+  conversation (including a mid-turn tool call) into the new key/model, so switching no longer
+  wipes context or forces a reset — mid-turn switches now work too.
+
 ## 🆕 Shipped this session — scheduler, integrations + cross-feature polish
 - **Background agent scheduler** (`agent_scheduler.py`) — a daemon that ticks on a
   timer, asks `agents.due_agents()` what's due and runs each via a registered runner

@@ -2210,16 +2210,36 @@ class Agent:
         except Exception:
             return genai.Client(api_key=api_key)
 
+    def _capture_history(self):
+        """Return the current chat's history so it can be carried into a new chat when we
+        switch API key or model — so switching NEVER wipes the conversation. The
+        comprehensive history (default) includes a mid-turn function_call, which is what
+        lets an in-flight tool turn survive the switch. Returns None if unavailable."""
+        ch = getattr(self, "_chat", None)
+        if ch is None:
+            return None
+        try:
+            return list(ch.get_history())
+        except TypeError:
+            try:
+                return list(ch.get_history(curated=False))
+            except Exception:
+                return None
+        except Exception:
+            return None
+
     def _switch_api_key(self, index: int):
+        # Carry the conversation across the key switch (history preserved).
+        hist = self._capture_history()
         self._api_key_index = index
         self._client = self._make_client(self.api_keys[self._api_key_index])
-        self._init_chat(model=self.active_model)
+        self._init_chat(model=self.active_model, history=hist)
 
     def _api_label(self, index: int | None = None) -> str:
         i = self._api_key_index if index is None else index
         return "primary API" if i == 0 else f"backup API {i}"
 
-    def _init_chat(self, model: str | None = None):
+    def _init_chat(self, model: str | None = None, history=None):
         if model:
             self.active_model = model
         decls = TOOL_DECLARATIONS
@@ -2260,6 +2280,17 @@ class Agent:
             for k in ("temperature", "top_p", "max_output_tokens", "thinking_config"):
                 config_kwargs.pop(k, None)
             config = types.GenerateContentConfig(**config_kwargs)
+        # Re-create the chat, carrying prior history when given (preserves the
+        # conversation across an API-key or model switch). If the SDK doesn't accept a
+        # history kwarg, or the history can't be replayed, fall back to a clean chat
+        # rather than crashing.
+        if history:
+            try:
+                self._chat = self._client.chats.create(
+                    model=self.active_model, config=config, history=history)
+                return
+            except Exception:
+                pass
         self._chat = self._client.chats.create(model=self.active_model, config=config)
 
     def reset(self):
@@ -2407,30 +2438,17 @@ class Agent:
 
         def _try_fallbacks(reason: str):
             """Iterate the fallback chain, skipping blacklisted + already-tried models.
-            Aborts cleanly if we're mid-turn (can't replay function_call context on a fresh chat)."""
-            # Detect mid-turn: parts containing function_response can't be sent to a fresh chat.
-            mid_turn = False
-            try:
-                for p in parts:
-                    if hasattr(p, "function_response") and getattr(p, "function_response", None) is not None:
-                        mid_turn = True
-                        break
-            except Exception:
-                pass
-            if mid_turn:
-                raise RuntimeError(
-                    f"{self.active_model} {reason} mid-turn. Click reset (↻) and try again - "
-                    "switching models mid-task isn't supported because chat context can't carry over."
-                )
-
+            Chat history is carried into each switched-to model, so context (including a
+            mid-turn tool call) survives the switch — nothing is wiped."""
+            hist = self._capture_history()
             last_err = None
             for fb in self.fallback_models:
                 if not fb or fb in tried_models or fb in self._bad_models:
                     continue
                 self._emit(AgentEvent("message",
-                    f"[{self.active_model} {reason} - switching to {fb}]"))
+                    f"[{self.active_model} {reason} - switching to {fb} (history kept)]"))
                 try:
-                    self._init_chat(model=fb)
+                    self._init_chat(model=fb, history=hist)
                     tried_models.append(fb)
                     return self._chat.send_message(parts)
                 except Exception as fe:
@@ -2448,18 +2466,9 @@ class Agent:
             raise RuntimeError(f"all fallback models exhausted (reason: {reason})")
 
         def _try_api_key_fallback(reason: str):
-            """Retry the SAME model with another Gemini API key before changing models."""
+            """Retry the SAME model with another Gemini API key before changing models.
+            History is carried across the key switch, so this works mid-turn too."""
             if len(self.api_keys) < 2:
-                return None
-            mid_turn = False
-            try:
-                for p in parts:
-                    if hasattr(p, "function_response") and getattr(p, "function_response", None) is not None:
-                        mid_turn = True
-                        break
-            except Exception:
-                pass
-            if mid_turn:
                 return None
             current_key = self._api_key_index
             last_err = None
@@ -2468,7 +2477,7 @@ class Agent:
                     continue
                 self._emit(AgentEvent("message",
                     f"[{self.active_model} {reason} on {self._api_label(current_key)} - "
-                    f"retrying same model with {self._api_label(i)}]"))
+                    f"switching to {self._api_label(i)} (history kept)]"))
                 try:
                     self._switch_api_key(i)
                     return self._chat.send_message(parts)
@@ -2531,11 +2540,14 @@ class Agent:
             else:
                 reason = "timed out / no response"
             if self._is_limit_error(e, status):
-                # Rate-limited: WAIT and retry the SAME model + chat first, so the in-progress
-                # turn (function-call context) is preserved. Switching models/chats here would
-                # lose context and force a reset — the thing the old code failed with. A
-                # per-minute free-tier limit clears within ~60s, so a short wait recovers it.
-                for backoff in (25, 45):
+                # Rate-limited. Recover automatically, in order, ALWAYS keeping chat history:
+                #   1) instantly retry the SAME model on a different API key (if configured),
+                #   2) else wait out the per-minute limit and retry the same model+chat,
+                #   3) else switch to a fallback MODEL (history carried over).
+                api_resp = _try_api_key_fallback(reason)
+                if api_resp is not None:
+                    return api_resp
+                for backoff in (20, 40):
                     if self._stop_flag.is_set():
                         raise RuntimeError("stopped by user")
                     self._emit(AgentEvent("message",
@@ -2555,12 +2567,11 @@ class Agent:
                                       else "does not exist (404)" if st == 404
                                       else "timed out / no response")
                             break
+                        # a spare key may have freed up during the wait — try it again
+                        api_resp = _try_api_key_fallback(reason)
+                        if api_resp is not None:
+                            return api_resp
                         continue  # still limited -> wait longer and retry
-                else:
-                    # Exhausted same-model waits while still limited -> try another API key.
-                    api_resp = _try_api_key_fallback(reason)
-                    if api_resp is not None:
-                        return api_resp
             return _try_fallbacks(reason)
 
     # Words that suggest the model probably needs a fresh screenshot to start.

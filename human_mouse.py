@@ -196,9 +196,19 @@ def move(x, y, duration: float | None = None) -> bool:
             # ease the *timing* too: dwell a touch longer near the ends
             t = (i + 1) / len(path)
             time.sleep(per * (0.6 + 0.8 * math.sin(math.pi * t)))
+        # Land EXACTLY on target — never leave the pointer a rounded/jittered pixel off.
+        _snap(pg, x, y)
     finally:
         pg.PAUSE = saved_pause
     return True
+
+
+def _snap(pg, x, y) -> None:
+    """Place the pointer at the exact integer target with no animation/pause."""
+    try:
+        pg.moveTo(int(x), int(y), duration=0, _pause=False)
+    except TypeError:
+        pg.moveTo(int(x), int(y), duration=0)
 
 
 def click(x, y, button: str = "left", double: bool = False,
@@ -206,13 +216,21 @@ def click(x, y, button: str = "left", double: bool = False,
     pg = _pg()
     if pg is None:
         return False
+    x, y = int(x), int(y)
     if move_first:
         move(x, y)
+    _snap(pg, x, y)                              # guarantee exact position before pressing
     time.sleep(random.uniform(0.03, 0.09))      # tiny human pause before the press
+    # Press with EXPLICIT coordinates so the click lands on the exact target regardless
+    # of any humanized-travel rounding — accuracy first, realism second.
+    fn = pg.doubleClick if double else pg.click
     try:
-        (pg.doubleClick if double else pg.click)(button=button, _pause=False)
+        fn(x=x, y=y, button=button, _pause=False)
     except TypeError:
-        (pg.doubleClick if double else pg.click)(button=button)
+        try:
+            fn(x, y, button=button)
+        except TypeError:
+            fn(button=button)
     return True
 
 
@@ -221,20 +239,21 @@ def drag(from_x, from_y, to_x, to_y, button: str = "left",
     pg = _pg()
     if pg is None:
         return False
+    from_x, from_y, to_x, to_y = int(from_x), int(from_y), int(to_x), int(to_y)
     move(from_x, from_y)
-    time.sleep(random.uniform(0.04, 0.1))
     saved_pause = getattr(pg, "PAUSE", 0.0)
     try:
         pg.PAUSE = 0.0
+        _snap(pg, from_x, from_y)               # press down at the exact start point
+        time.sleep(random.uniform(0.04, 0.1))
         try:
             pg.mouseDown(button=button, _pause=False)
         except TypeError:
             pg.mouseDown(button=button)
         time.sleep(random.uniform(0.03, 0.08))
         # hold the button and trace a human path to the destination
-        prev_enabled = _OPTS["enabled"]
         move(to_x, to_y, duration=duration)
-        _OPTS["enabled"] = prev_enabled
+        _snap(pg, to_x, to_y)                    # release at the exact end point
         time.sleep(random.uniform(0.03, 0.08))
         try:
             pg.mouseUp(button=button, _pause=False)
