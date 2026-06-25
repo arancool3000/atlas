@@ -313,6 +313,7 @@ def load_settings() -> dict:
         "voice_chat_phrase_timeout": 8,
         "wake_word": True,            # always-on "hey ember" wake listening
         "glow_animation": True,       # Siri-style flowing glow while listening/thinking/speaking
+        "keep_running_in_background": True,  # closing the window hides to tray so wake word keeps working
         "ai_chat_titles": True,
         "dual_api_failover": True,
         "automation_enabled": True,
@@ -767,6 +768,20 @@ QLabel#typingDots {{
 }}
 QLabel {{ color: #f6f6f4; font-size: 13px; }}
 QLabel#meta {{ color: rgba(246, 246, 244, 160); font-size: 10px; font-weight: 650; }}
+QMenu {{
+    background-color: {bg_bubble};
+    border: 1px solid {edge_soft};
+    border-radius: 16px;
+    padding: 7px;
+}}
+QMenu::item {{
+    padding: 9px 18px 9px 16px;
+    border-radius: 11px;
+    margin: 1px 4px;
+    color: #f6f6f4;
+}}
+QMenu::item:selected {{ background-color: rgba(255, 255, 255, 30); }}
+QMenu::separator {{ height: 1px; background: {edge_soft}; margin: 6px 12px; }}
 QFrame#pillRoot {{
     background-color: {bg};
     border: 1px solid {edge};
@@ -1063,6 +1078,15 @@ QFrame#typingIndicator {
     margin: 4px 2px;
 }
 QLabel#typingDots { color: rgba(255,255,255,0.86); font-size: 14px; font-weight: bold; letter-spacing: 3px; }
+QMenu {
+    background-color: #161926;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 16px;
+    padding: 7px;
+}
+QMenu::item { padding: 9px 18px; border-radius: 11px; margin: 1px 4px; color: #e6e6ea; }
+QMenu::item:selected { background-color: rgba(255,255,255,0.10); }
+QMenu::separator { height: 1px; background: rgba(255,255,255,0.10); margin: 6px 12px; }
 
 QFrame#bubble {
     background-color: #161926;
@@ -1281,6 +1305,10 @@ class MiniPill(QWidget):
         self.hide()
 
     def _quit(self):
+        try:
+            self.parent_window._really_quit = True
+        except Exception:
+            pass
         self.parent_window.close()
         QApplication.instance().quit()
 
@@ -1810,6 +1838,14 @@ class SettingsDialog(QDialog):
             "Start Ember Link (phone control) automatically when Ember opens")
         self.remote_autostart_check.setChecked(bool(self.settings.get("remote_autostart", True)))
         layout.addRow(self.remote_autostart_check)
+
+        self.keep_bg_check = QCheckBox(
+            "Keep running in the background when closed (so “Hey Ember” still works)")
+        self.keep_bg_check.setChecked(bool(self.settings.get("keep_running_in_background", True)))
+        self.keep_bg_check.setToolTip(
+            "On: closing the window hides Ember to the menu-bar/tray icon and it keeps "
+            "listening for the wake word. Quit fully from the tray icon’s Quit.")
+        layout.addRow(self.keep_bg_check)
 
         self.auto_update_check = QCheckBox(
             "Automatically check for Ember updates on launch")
@@ -2699,6 +2735,8 @@ class SettingsDialog(QDialog):
             self.settings["ollama_model"] = self.ollama_model_input.text().strip()
         self.settings["auto_screenshot"] = self.auto_shot_check.isChecked()
         self.settings["remote_autostart"] = self.remote_autostart_check.isChecked()
+        if hasattr(self, "keep_bg_check"):
+            self.settings["keep_running_in_background"] = self.keep_bg_check.isChecked()
         self.settings["auto_update"] = self.auto_update_check.isChecked()
         self.settings["lean_tools"] = self.lean_tools_check.isChecked()
         if hasattr(self, "download_protect_check"):
@@ -2798,6 +2836,8 @@ class EmberWindow(QWidget):
         self.chat_history = load_chat_history()
         self.active_chat_id = self.chat_history.get("active_id")
         self._history_loading = False
+        self._really_quit = False     # set by _do_quit so closeEvent really exits
+        self._tray = None             # set by main() so closeEvent can post a tray message
         self.agent: Agent | None = None
         self._drag_pos: QPoint | None = None
         self._bridge = EventBridge()
@@ -3899,7 +3939,44 @@ class EmberWindow(QWidget):
         self.settings["window_x"] = self.x()
         self.settings["window_y"] = self.y()
         save_settings(self.settings)
+        # Keep running in the background (tray) so "Hey Ember" still wakes Ember after the
+        # window is closed. Real quit goes through _do_quit (tray ▸ Quit).
+        if (not getattr(self, "_really_quit", False)
+                and self.settings.get("keep_running_in_background", True)
+                and QSystemTrayIcon.isSystemTrayAvailable()):
+            e.ignore()
+            self.hide()
+            if not getattr(self, "_bg_notified", False):
+                self._bg_notified = True
+                tray = getattr(self, "_tray", None)
+                if tray is not None:
+                    try:
+                        tray.showMessage(
+                            "Ember is still listening",
+                            "Say “Hey Ember” to bring me back. Quit from the menu-bar icon.",
+                            QSystemTrayIcon.MessageIcon.Information, 4000)
+                    except Exception:
+                        pass
+            return
         super().closeEvent(e)
+        try:
+            QApplication.instance().quit()
+        except Exception:
+            pass
+
+    def _do_quit(self):
+        """Really quit Ember (tray ▸ Quit / explicit quit) — stops the background listeners."""
+        self._really_quit = True
+        for mod in ("wake_word",):
+            try:
+                __import__(mod).stop()
+            except Exception:
+                pass
+        self.close()
+        try:
+            QApplication.instance().quit()
+        except Exception:
+            pass
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -4113,35 +4190,35 @@ class EmberWindow(QWidget):
         frame.setObjectName("typingIndicator")
         h = QHBoxLayout(frame)
         h.setContentsMargins(10, 4, 10, 4)
-        h.setSpacing(8)
-        dot_label = QLabel("●")
-        dot_label.setObjectName("typingDots")
-        h.addWidget(dot_label)
+        h.setSpacing(10)
+        dots = None
+        try:
+            from siri_glow import ThinkingDots
+            dots = ThinkingDots(frame)
+            dots.start()
+            h.addWidget(dots)
+        except Exception:
+            # Fallback to a plain pulsing-text indicator if the widget can't load.
+            dl = QLabel("●")
+            dl.setObjectName("typingDots")
+            h.addWidget(dl)
         label = QLabel("Ember is thinking…")
         label.setStyleSheet("color: #565f89; font-size: 11px;")
         h.addWidget(label)
         h.addStretch()
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, frame)
         self._typing_frame = frame
-        self._typing_label = dot_label
-        self._typing_phase = 0
-
-        # Animate the dot label between 3 states: ● ●● ●●●
-        def tick():
-            if getattr(self, "_typing_label", None) is None:
-                return
-            self._typing_phase = (self._typing_phase + 1) % 3
-            self._typing_label.setText("●" + " ●" * self._typing_phase)
-        if not hasattr(self, "_typing_timer"):
-            self._typing_timer = QTimer(self)
-            self._typing_timer.timeout.connect(tick)
-        self._typing_timer.start(350)
-        self._fade_in(frame, 160)
+        self._typing_dots = dots
         QTimer.singleShot(45, self._scroll_to_bottom_smooth)
 
     def _hide_typing_indicator(self):
-        if getattr(self, "_typing_timer", None) is not None:
-            self._typing_timer.stop()
+        d = getattr(self, "_typing_dots", None)
+        if d is not None:
+            try:
+                d.stop()
+            except Exception:
+                pass
+        self._typing_dots = None
         f = getattr(self, "_typing_frame", None)
         if f is not None:
             f.setParent(None)
@@ -4789,7 +4866,15 @@ class EmberWindow(QWidget):
             print(f"[Wake word autostart failed: {e}]")
 
     def _on_wake_word(self):
-        """'Hey Ember' was heard (marshalled to the UI thread). Light up and start a turn."""
+        """'Hey Ember' was heard (marshalled to the UI thread). Bring Ember forward (it may be
+        hidden in the tray), light up, and start a turn."""
+        try:
+            if self.isHidden() or self.isMinimized():
+                self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception:
+            pass
         try:
             self._set_siri("listening")
             if not self.agent:
@@ -5377,8 +5462,13 @@ class EmberWindow(QWidget):
                 result = ev.payload["result"]
                 ok = result.get("ok", True)
                 summary = self._summarize_result(name, result)
-                kind = "tool" if ok else "error"
-                self._add_bubble(kind, summary, meta=f"← {name}")
+                if ok:
+                    # Completed steps update the live status, NOT the chat — keep the
+                    # conversation to real messages, not a wall of task activity.
+                    self._set_status(f"✓ {name}")
+                else:
+                    # Failures still surface so the user isn't left guessing.
+                    self._add_bubble("error", summary, meta=f"← {name}")
                 if _remote:
                     _remote.push_chat("tool" if ok else "system", f"{name}: {summary}")
             elif ev.kind == "confirm":
@@ -5572,7 +5662,9 @@ def main(instance_listener=None):
         pass
     app = QApplication(sys.argv)
     app.setApplicationName("Ember")
-    app.setQuitOnLastWindowClosed(True)
+    # Closing the window hides to tray (keeps the "Hey Ember" wake word + background
+    # monitors alive); real quit is the tray ▸ Quit action.
+    app.setQuitOnLastWindowClosed(False)
 
     # Tray
     tray = QSystemTrayIcon()
@@ -5597,6 +5689,7 @@ def main(instance_listener=None):
     tray.show()
 
     window = EmberWindow()
+    window._tray = tray
     window.show()
 
     # If another instance of Ember is started, it sends SUMMON through the lock socket.
@@ -5608,7 +5701,7 @@ def main(instance_listener=None):
             print(f"[summon listener failed: {e}]")
 
     show_action.triggered.connect(lambda: (window.showNormal(), window.raise_(), window.activateWindow()))
-    quit_action.triggered.connect(app.quit)
+    quit_action.triggered.connect(window._do_quit)
     tray.activated.connect(lambda r: (window.showNormal(), window.raise_(), window.activateWindow())
                            if r == QSystemTrayIcon.ActivationReason.Trigger else None)
 

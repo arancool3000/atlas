@@ -30,6 +30,25 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   offline launch, auto-update on launch (git pull for source / auto-install for the app),
   Ember-site links fixed to EmberAI.
 
+## 🆕 Shipped this session — background wake, quieter chat, animated UI
+- **"Hey Ember" works with the window closed** — `app.setQuitOnLastWindowClosed(False)`;
+  closing the window now hides Ember to the tray (one-time "still listening" notice) and
+  keeps the wake-word + monitors alive. Saying "Hey Ember" un-hides and focuses the window.
+  Real quit is the tray ▸ Quit (`_do_quit`, stops the listeners). Toggle:
+  `keep_running_in_background` (default on) in Settings → Performance. (True "process fully
+  quit" wake still needs an OS LaunchAgent — not done; tray/background covers reopen.)
+- **Completed tasks no longer clutter the chat** — successful tool results update the live
+  status line ("✓ <tool>") instead of posting a bubble; only failures still surface as
+  messages. The chat stays a real conversation.
+- **Glowing rearranging "thinking" dots** (`siri_glow.ThinkingDots`) — replaces the text-dot
+  indicator with a cluster of glowing dots that pulse and drift past each other (~60fps).
+- **Liquid menus** — rounded, padded, translucent QMenu styling with soft accent hover added
+  to both themes (menus previously used default Qt chrome).
+- Note: a full iOS-27 restyle (per-bubble slide/grow/fade + message glow) is iterative and
+  needs live tuning; per-bubble QGraphicsEffects are deliberately avoided here because they
+  previously broke chat-bubble width/word-wrap. Window fade, smooth scroll, the Siri edge
+  glow, and the thinking dots provide the motion now.
+
 ## 🆕 Shipped this session — the model decides when to look + smarter prompting
 - **Screenshots on demand, not on keywords** — removed the `_SCREEN_HINTS` heuristic that
   auto-attached a screenshot whenever a message merely mentioned "screen"/"click"/"open"
