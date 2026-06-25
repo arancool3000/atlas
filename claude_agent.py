@@ -91,27 +91,13 @@ class ClaudeAgent:
         t = threading.Thread(target=self._run_turn, args=(text,), daemon=True)
         t.start()
 
-    _SCREEN_HINTS = gemini_agent.Agent._SCREEN_HINTS
-
-    def _should_auto_screenshot(self, user_text: str) -> bool:
-        if not self.auto_screenshot:
-            return False
-        t = user_text.lower()
-        return any(h in t for h in self._SCREEN_HINTS)
-
     def _user_block(self, text: str) -> list:
-        blocks = [{"type": "text", "text": text}]
-        if self._should_auto_screenshot(text):
-            shot = tools.take_screenshot()
-            blocks.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/png", "data": shot["image_b64"]},
-            })
-            blocks[0]["text"] += (
-                f"\n[Attached screenshot: {shot['width']}x{shot['height']}, cursor "
-                f"({shot.get('cursor_x')},{shot.get('cursor_y')})]"
-            )
-        return blocks
+        # The model DECIDES when to look at the screen — it has take_screenshot and the system
+        # prompt tells it when to use it — so we never keyword-attach a capture up front.
+        if not getattr(self, "auto_screenshot", True):
+            text += ("\n# Screen viewing is OFF (user setting): do NOT take_screenshot / "
+                     "capture_window / read_screen_text; use the browser DOM, files, and shell.")
+        return [{"type": "text", "text": text}]
 
     def _compact_result(self, result: dict, max_str: int = 3000) -> dict:
         # Kept in sync with the Gemini backend's compaction limits (agent.py) so both

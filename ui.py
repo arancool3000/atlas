@@ -1798,8 +1798,12 @@ class SettingsDialog(QDialog):
         page = QWidget()
         layout = QFormLayout(page)
 
-        self.auto_shot_check = QCheckBox("Auto-attach screenshot when message mentions the screen")
+        self.auto_shot_check = QCheckBox("Let Ember view the screen when it decides it needs to")
         self.auto_shot_check.setChecked(bool(self.settings.get("auto_screenshot", True)))
+        self.auto_shot_check.setToolTip(
+            "On: Ember decides per task whether to take a screenshot (no more capturing just "
+            "because a message mentions the screen).\nOff: Ember never views the screen — it "
+            "uses the browser, files, and shell only.")
         layout.addRow(self.auto_shot_check)
 
         self.remote_autostart_check = QCheckBox(

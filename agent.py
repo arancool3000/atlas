@@ -86,6 +86,20 @@ attempt failed - you have many tools; rotate through them. Treat "I'll try a dif
 - Raw click(x,y) is a last resort for UNLABELED targets only (blank canvas, color swatch). Get the coordinate
   from read_screen_text or zoom_screenshot first - never eyeball it off the grid.
 
+# Deciding when to look at the screen (YOUR judgment, every turn)
+You do NOT get a screenshot automatically — capturing the screen is a deliberate choice you make. Before acting,
+ask "do I actually need to see pixels for THIS?" and pick:
+- SEE the desktop -> call take_screenshot (whole screen) or capture_window("App") first, THEN act. Do this for
+  clicking/reading on-screen UI, automating a desktop app, "what's on my screen?", or visually verifying a result.
+  To see AND read text in one step, issue take_screenshot + read_screen_text together (they run in parallel).
+- BROWSER work -> read the live DOM with browser_get_page instead of a screenshot — it's faster and exact. Only
+  screenshot a web page for a genuinely visual question the DOM can't answer.
+- NO screen needed -> general knowledge, math, writing, files, shell, scheduling, memory, API/data work: just do
+  it. Never screenshot "just in case" — a needless capture burns a model call and tells you nothing.
+Don't be triggered by the wording of the request (a message that merely says "screen" or "open" may not need a
+capture); be triggered by whether the NEXT action genuinely depends on current screen contents. After capturing,
+reason fully in one pass and only re-capture once the screen has actually changed.
+
 # Method hierarchy (pick the highest that fits)
 1. Browser task -> browser_* (DOM, not pixels): browser_open -> browser_dismiss_cookies(mode="reject") ->
    browser_get_page -> browser_click_text / browser_fill. CAPTCHA/anti-bot: browser_check_captcha then
@@ -118,9 +132,9 @@ keyboard Enter before giving up. Use zoom_screenshot/read_screen_text for small 
 - Batch deterministic steps with do_sequence (one API request). Include waits and a final assertion inside
   the same do_sequence whenever the next action is obvious. Don't screenshot between every action -
   screenshot/assert_text_visible once at the END to verify.
-- Understand the screen in ONE pass: an auto-attached screenshot also carries an [On-screen text (OCR)]
-  map - read it and reason fully BEFORE acting. Don't take a second screenshot just to re-read the same
-  screen; only re-capture after the screen actually changes. Think first, then act once.
+- Understand the screen in ONE pass: when you DO capture, batch take_screenshot with read_screen_text so you
+  get the image plus an exact word+coordinate map together - read it and reason fully BEFORE acting. Don't take
+  a second screenshot just to re-read the same screen; only re-capture after the screen actually changes.
 - A batch of read-only tools (read_screen_text, list_*, get_*, http_get, ...) runs concurrently - issue them
   together when gathering info.
 - paste_text beats type_text for anything over a few words.
@@ -129,10 +143,14 @@ keyboard Enter before giving up. Use zoom_screenshot/read_screen_text for small 
   visible labels, list_directory with a narrow path/pattern for files, and shell only when it gives a shorter
   answer than UI work.
 
-# Reasoning pattern
-Think quietly before acting: identify the user's real goal, the minimum evidence needed, the safest tool path,
-and how you will verify. Do not narrate this plan unless the user asks. Prefer reversible actions, preserve
-state, and remember durable preferences/paths only when they will help future work.
+# Reasoning pattern (think harder on anything non-trivial)
+Before acting, think quietly: restate the user's REAL goal (not just the literal words), the minimum evidence you
+need, the safest tool path, and exactly how you will verify success. For anything ambiguous or multi-step, form an
+ordered plan first and pursue it; when two readings are plausible, choose the most useful and proceed rather than
+asking. After each step, compare the result to what you expected and adapt — if something is surprising, find out
+why before continuing instead of plowing ahead. Prefer reversible actions, preserve state, and remember durable
+preferences/paths only when they will help future work. For genuinely hard reasoning or a stubborn blocker,
+escalate to ask_claude rather than guessing. Do not narrate this plan unless the user asks.
 
 # Self-recovery ladder (exhaust before pausing)
 smart_click -> read_screen_text to see exact labels -> find_ui_elements (try a partial match, scroll, or
@@ -2653,19 +2671,6 @@ class Agent:
                         continue  # still limited -> wait longer and retry
             return _try_fallbacks(reason)
 
-    # Words that suggest the model probably needs a fresh screenshot to start.
-    _SCREEN_HINTS = (
-        "screen", "screenshot", "see ", "look ", "what's on", "what is on", "show me",
-        "click", "press", "open ", "scroll", "drag", "window", "icon", "button",
-        "menu", "popup", "dialog", "tab ", "tabs", "fullscreen", "minimize",
-    )
-
-    def _should_auto_screenshot(self, user_text: str) -> bool:
-        if not self.auto_screenshot:
-            return False
-        t = user_text.lower()
-        return any(h in t for h in self._SCREEN_HINTS)
-
     def _run_turn(self, user_text: str):
         self._stop_flag.clear()
         self._fail_counts: dict[str, int] = {}  # tool name -> consecutive failures this turn
@@ -2676,29 +2681,18 @@ class Agent:
             directive = agent_profiles.run_mode_directive(getattr(self, "run_mode", None))
         except Exception:
             directive = ""
+        if not getattr(self, "auto_screenshot", True):
+            # Privacy control: user has turned screen viewing OFF.
+            directive += ("\n# Screen viewing is OFF (user setting): do NOT call take_screenshot, "
+                          "capture_window, zoom_screenshot, or read_screen_text. Use the browser DOM, "
+                          "files, and shell instead; if a task truly needs the screen, ask the user to "
+                          "re-enable screen viewing in Settings.\n")
         user_text = (directive + "\n" + user_text) if directive else user_text
         try:
-            parts = [user_text]
-            if self._should_auto_screenshot(user_text):
-                # Fast path: no grid + no cursor for the pre-message context.
-                # The AI can call take_screenshot(grid=True) when it actually needs to click.
-                shot = tools.take_screenshot(grid=False, show_cursor=False)
-                actual = tools.get_screen_size()
-                note = (f"\n[Screenshot: {shot['width']}x{shot['height']} of {actual['width']}x{actual['height']}]")
-                # Bundle an OCR text-map in the SAME message so the model understands the
-                # screen in one pass instead of taking a second screenshot to re-read it.
-                try:
-                    ocr = screen_vision.read_screen_text()
-                    txt = (ocr.get("full_text") or "").strip() if ocr.get("ok") else ""
-                    if txt:
-                        note += f"\n[On-screen text (OCR): {txt[:1500]}]"
-                except Exception:
-                    pass
-                parts = [user_text + note, self._image_part(
-                    base64.b64decode(shot["image_b64"]),
-                    mime_type=shot.get("mime_type", "image/jpeg"),
-                )]
-            response = self._send_with_retry(parts)
+            # No keyword auto-screenshot: the model DECIDES whether it needs to see the
+            # screen and calls take_screenshot / read_screen_text itself (per the system
+            # prompt), so we never waste a capture on a request that doesn't need pixels.
+            response = self._send_with_retry([user_text])
             self._process_response(response)
         except Exception as e:
             self._emit(AgentEvent("error", f"{type(e).__name__}: {str(e)[:600]}"))

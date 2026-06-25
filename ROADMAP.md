@@ -30,6 +30,21 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   offline launch, auto-update on launch (git pull for source / auto-install for the app),
   Ember-site links fixed to EmberAI.
 
+## 🆕 Shipped this session — the model decides when to look + smarter prompting
+- **Screenshots on demand, not on keywords** — removed the `_SCREEN_HINTS` heuristic that
+  auto-attached a screenshot whenever a message merely mentioned "screen"/"click"/"open"
+  (it even fired on browser tasks that should use the DOM). The model now DECIDES per turn
+  whether it needs to see pixels and calls `take_screenshot` / `read_screen_text` itself.
+  Applied to both the Gemini and Claude backends (claude_agent shared the removed heuristic,
+  which also fixes an import-time crash it would have hit).
+- **`auto_screenshot` is now a privacy control** — ON (default): Ember decides when to view
+  the screen; OFF: it never captures the screen (browser DOM / files / shell only), enforced
+  via a per-turn directive. Settings checkbox relabeled + tooltip.
+- **Smarter system prompt** — a new "Deciding when to look at the screen" section (see vs.
+  browser-DOM vs. no-capture), batch take_screenshot + read_screen_text for a one-pass read,
+  and a sharper reasoning directive (restate the real goal, plan multi-step work, self-check
+  each result, escalate hard reasoning to ask_claude instead of guessing).
+
 ## 🆕 Shipped this session — "Hey Ember" wake word + Siri-style glow
 - **Always-on wake word** (`wake_word.py`) — a background daemon keeps the mic open and
   fires when it hears "hey ember" (fuzzy match via rapidfuzz, so "hey amber"/"okay ember"
