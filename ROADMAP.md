@@ -30,6 +30,70 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   offline launch, auto-update on launch (git pull for source / auto-install for the app),
   Ember-site links fixed to EmberAI.
 
+## 🆕 Shipped this session — launch-at-login + message grow-in animation
+- **True always-on wake** (`autostart.py`) — optional login item so Ember starts at login
+  and relaunches on crash (macOS LaunchAgent / Windows Run key / Linux .desktop), so the
+  wake word works without manually opening the app. Pure plist/.desktop builders are
+  unit-tested (`test_autostart.py`). Toggle in Settings → Performance ("Launch Ember at
+  login"); default off (a login item shouldn't install without consent). A clean Quit stays
+  quit (KeepAlive only on abnormal exit).
+- **Message grow-in animation** — new chat bubbles animate height 0 → natural with an easing
+  curve, then release the cap. Deliberately layout-SAFE: no QGraphicsEffect (those regressed
+  bubble width/word-wrap before), the empty streaming bubble is skipped (so live text isn't
+  clipped), and the cap always ends unbounded so a bubble can never be left collapsed.
+  Toggle: `bubble_animation`.
+- Opened EmberAI PR for the whole post-#42 range so all of this reaches `main`/the app.
+
+## 🆕 Shipped this session — background wake, quieter chat, animated UI
+- **"Hey Ember" works with the window closed** — `app.setQuitOnLastWindowClosed(False)`;
+  closing the window now hides Ember to the tray (one-time "still listening" notice) and
+  keeps the wake-word + monitors alive. Saying "Hey Ember" un-hides and focuses the window.
+  Real quit is the tray ▸ Quit (`_do_quit`, stops the listeners). Toggle:
+  `keep_running_in_background` (default on) in Settings → Performance. (True "process fully
+  quit" wake still needs an OS LaunchAgent — not done; tray/background covers reopen.)
+- **Completed tasks no longer clutter the chat** — successful tool results update the live
+  status line ("✓ <tool>") instead of posting a bubble; only failures still surface as
+  messages. The chat stays a real conversation.
+- **Glowing rearranging "thinking" dots** (`siri_glow.ThinkingDots`) — replaces the text-dot
+  indicator with a cluster of glowing dots that pulse and drift past each other (~60fps).
+- **Liquid menus** — rounded, padded, translucent QMenu styling with soft accent hover added
+  to both themes (menus previously used default Qt chrome).
+- Note: a full iOS-27 restyle (per-bubble slide/grow/fade + message glow) is iterative and
+  needs live tuning; per-bubble QGraphicsEffects are deliberately avoided here because they
+  previously broke chat-bubble width/word-wrap. Window fade, smooth scroll, the Siri edge
+  glow, and the thinking dots provide the motion now.
+
+## 🆕 Shipped this session — the model decides when to look + smarter prompting
+- **Screenshots on demand, not on keywords** — removed the `_SCREEN_HINTS` heuristic that
+  auto-attached a screenshot whenever a message merely mentioned "screen"/"click"/"open"
+  (it even fired on browser tasks that should use the DOM). The model now DECIDES per turn
+  whether it needs to see pixels and calls `take_screenshot` / `read_screen_text` itself.
+  Applied to both the Gemini and Claude backends (claude_agent shared the removed heuristic,
+  which also fixes an import-time crash it would have hit).
+- **`auto_screenshot` is now a privacy control** — ON (default): Ember decides when to view
+  the screen; OFF: it never captures the screen (browser DOM / files / shell only), enforced
+  via a per-turn directive. Settings checkbox relabeled + tooltip.
+- **Smarter system prompt** — a new "Deciding when to look at the screen" section (see vs.
+  browser-DOM vs. no-capture), batch take_screenshot + read_screen_text for a one-pass read,
+  and a sharper reasoning directive (restate the real goal, plan multi-step work, self-check
+  each result, escalate hard reasoning to ask_claude instead of guessing).
+
+## 🆕 Shipped this session — "Hey Ember" wake word + Siri-style glow
+- **Always-on wake word** (`wake_word.py`) — a background daemon keeps the mic open and
+  fires when it hears "hey ember" (fuzzy match via rapidfuzz, so "hey amber"/"okay ember"
+  also trigger). Runs forever (restarts on hiccups), pauses only while a command is being
+  captured so it doesn't fight the command recogniser, and prefers offline PocketSphinx
+  (Google STT fallback). Default ON; toggle in Settings → Voice. Detection + lifecycle are
+  unit-tested with injected capture (`test_wake_word.py`, 7) — no audio needed.
+- **Siri "Golden Gate" glow** (`siri_glow.py`) — a click-through overlay that sweeps a
+  flowing, breathing band of light (warm-leaning rainbow conical gradient, multi-layer
+  bloom, ~60fps) around the window edge while Ember is **listening / thinking / speaking**,
+  each state tuned for speed + brightness. Wired into the voice + turn lifecycle (covers
+  typed turns too) and resizes with the window. Toggle in Settings → Voice.
+- Wiring: a `wake_detected` bridge signal marshals the wake to the UI thread →
+  starts a voice turn; glow shows on listen/think/speak and dims when idle; wake word
+  pauses/resumes around mic use so the two never collide.
+
 ## 🆕 Shipped this session — pixel-accurate mouse + rate-limit resilience
 - **Accurate mouse** (`human_mouse.py`) — humanized travel stays, but the pointer now
   **snaps to the exact integer target** at the end of every move, and clicks/presses are
