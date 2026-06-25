@@ -1,0 +1,51 @@
+name: Tests
+
+# Continuous integration: on every push and pull request, compile-check the whole
+# codebase and run the hermetic test suites (the ones that need no GUI, no network,
+# no API keys, and no heavy native deps). The UI / live-LLM paths (PyQt6, google-genai)
+# aren't import-tested here — but compileall catches syntax regressions in them, and the
+# pure-logic suites cover the security, agent, voice, and tooling layers.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test deps
+        # rapidfuzz exercises the real "Hey Ember" fuzzy wake-word path (the module
+        # falls back to substring matching without it, but CI should test the real one).
+        run: python -m pip install --upgrade pip rapidfuzz
+
+      - name: Compile-check all top-level modules
+        # -l = don't recurse into subdirs (plugins/, extension/, …). Catches syntax
+        # errors in agent.py / ui.py and friends without importing their heavy deps.
+        run: python -m compileall -q -l .
+
+      - name: Run hermetic test suites
+        run: |
+          set -e
+          for t in \
+            test_antivirus.py \
+            test_fileless_guard.py \
+            test_security_center.py \
+            test_agents.py \
+            test_tool_args.py \
+            test_integrations.py \
+            test_agent_scheduler.py \
+            test_wake_word.py \
+            test_human_mouse.py \
+            test_autostart.py; do
+              echo "::group::$t"
+              python "$t"
+              echo "::endgroup::"
+          done
