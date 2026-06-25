@@ -267,7 +267,8 @@ def _md_to_html(text: str) -> str:
     return s
 
 
-_VAULT_KEYS = ("gemini_api_key", "gemini_api_key_secondary", "anthropic_api_key")
+_VAULT_KEYS = ("gemini_api_key", "gemini_api_key_secondary", "gemini_api_key_3",
+               "gemini_api_key_4", "anthropic_api_key")
 
 
 def _hydrate_keys_from_vault(settings: dict) -> dict:
@@ -295,6 +296,8 @@ def load_settings() -> dict:
     return {
         "gemini_api_key": "",
         "gemini_api_key_secondary": "",
+        "gemini_api_key_3": "",
+        "gemini_api_key_4": "",
         "gemini_model": "gemini-3.1-flash-lite",
         "model_id": "gemini-3.1-flash-lite",
         "provider": "gemini",
@@ -1547,9 +1550,19 @@ class SettingsDialog(QDialog):
         self.gemini_key_secondary_input = QLineEdit(self.settings.get("gemini_api_key_secondary", ""))
         self.gemini_key_secondary_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.gemini_key_secondary_input.setPlaceholderText("Optional backup key for same-model failover")
-        layout.addRow("Backup Gemini key:", self.gemini_key_secondary_input)
+        layout.addRow("Backup Gemini key 1:", self.gemini_key_secondary_input)
 
-        self.dual_api_check = QCheckBox("If Gemini is rate-limited, retry the same model with the backup key")
+        self.gemini_key_3_input = QLineEdit(self.settings.get("gemini_api_key_3", ""))
+        self.gemini_key_3_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gemini_key_3_input.setPlaceholderText("Optional 2nd backup key")
+        layout.addRow("Backup Gemini key 2:", self.gemini_key_3_input)
+
+        self.gemini_key_4_input = QLineEdit(self.settings.get("gemini_api_key_4", ""))
+        self.gemini_key_4_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gemini_key_4_input.setPlaceholderText("Optional 3rd backup key")
+        layout.addRow("Backup Gemini key 3:", self.gemini_key_4_input)
+
+        self.dual_api_check = QCheckBox("If Gemini is rate-limited, rotate through the backup keys")
         self.dual_api_check.setChecked(bool(self.settings.get("dual_api_failover", True)))
         layout.addRow(self.dual_api_check)
 
@@ -2654,6 +2667,8 @@ class SettingsDialog(QDialog):
     def get_settings(self) -> dict:
         self.settings["gemini_api_key"] = self.gemini_key_input.text().strip()
         self.settings["gemini_api_key_secondary"] = self.gemini_key_secondary_input.text().strip()
+        self.settings["gemini_api_key_3"] = self.gemini_key_3_input.text().strip()
+        self.settings["gemini_api_key_4"] = self.gemini_key_4_input.text().strip()
         self.settings["dual_api_failover"] = self.dual_api_check.isChecked()
         self.settings["ai_chat_titles"] = self.ai_titles_check.isChecked()
         self.settings["anthropic_api_key"] = self.anthropic_key_input.text().strip()
@@ -3736,7 +3751,8 @@ class EmberWindow(QWidget):
             return
         if not bool(self.settings.get("ai_chat_titles", True)):
             return
-        key = (self.settings.get("gemini_api_key") or self.settings.get("gemini_api_key_secondary") or "").strip()
+        key = (self.settings.get("gemini_api_key") or self.settings.get("gemini_api_key_secondary")
+               or self.settings.get("gemini_api_key_3") or self.settings.get("gemini_api_key_4") or "").strip()
         if not key:
             return
         self._title_jobs.add(chat_id)
@@ -4999,6 +5015,7 @@ class EmberWindow(QWidget):
         # Snapshot the keys the agent / glass effect actually depend on, so we only rebuild
         # them when relevant — a font or appearance tweak shouldn't drop conversation state.
         agent_keys = ("model_id", "provider", "gemini_api_key", "gemini_api_key_secondary",
+                      "gemini_api_key_3", "gemini_api_key_4",
                       "anthropic_api_key", "anthropic_model", "gemini_model",
                       "auto_screenshot", "request_timeout_seconds", "dual_api_failover")
         glass_keys = ("liquid_glass", "glass_opacity", "accent_color")
@@ -5133,6 +5150,8 @@ class EmberWindow(QWidget):
                 self.agent = Agent(
                     api_key=self.settings["gemini_api_key"],
                     secondary_api_key=self.settings.get("gemini_api_key_secondary") or None,
+                    backup_api_keys=[self.settings.get("gemini_api_key_3") or "",
+                                     self.settings.get("gemini_api_key_4") or ""],
                     dual_api_failover=bool(self.settings.get("dual_api_failover", True)),
                     model_name=model_id,
                     anthropic_key=self.settings.get("anthropic_api_key") or None,

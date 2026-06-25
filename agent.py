@@ -2158,6 +2158,7 @@ class Agent:
 
     def __init__(self, api_key: str, model_name: str = "gemini-3.1-flash-lite",
                  secondary_api_key: str | None = None,
+                 backup_api_keys: list[str] | None = None,
                  dual_api_failover: bool = True,
                  anthropic_key: str | None = None,
                  anthropic_model: str = "claude-opus-4-8",
@@ -2168,12 +2169,24 @@ class Agent:
         self.lean_tools = bool(lean_tools)
         # Strip ALL whitespace from keys (incl. accidental newlines from a bad paste) so a key
         # can never become an illegal HTTP header value (LocalProtocolError).
-        self.api_key = "".join((api_key or "").split())
-        self.secondary_api_key = "".join((secondary_api_key or "").split()) or None
+        def _clean(k):
+            return "".join((k or "").split())
+        self.api_key = _clean(api_key)
+        self.secondary_api_key = _clean(secondary_api_key) or None
         self.dual_api_failover = bool(dual_api_failover)
+        # Build the ordered failover chain: primary first, then each backup key, de-duplicated
+        # and stripped of blanks. Supports a primary + up to several Gemini backup keys, so when
+        # one key is rate-limited Ember rotates to the next instead of stalling.
         self.api_keys = [self.api_key]
-        if self.dual_api_failover and self.secondary_api_key and self.secondary_api_key != self.api_key:
-            self.api_keys.append(self.secondary_api_key)
+        if self.dual_api_failover:
+            candidates = []
+            if self.secondary_api_key:
+                candidates.append(self.secondary_api_key)
+            for k in (backup_api_keys or []):
+                candidates.append(_clean(k))
+            for k in candidates:
+                if k and k not in self.api_keys:
+                    self.api_keys.append(k)
         self._api_key_index = 0
         self.model_name = model_name
         self.active_model = model_name
