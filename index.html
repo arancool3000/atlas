@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>SkyForge Flight Simulator</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+
+      <!-- Heads-up display overlay -->
+      <div id="hud" class="hud hidden">
+        <!-- Airspeed tape (left) -->
+        <div class="tape tape-left">
+          <div class="tape-label">KIAS</div>
+          <div class="tape-value" id="hud-airspeed">0</div>
+        </div>
+
+        <!-- Altitude tape (right) -->
+        <div class="tape tape-right">
+          <div class="tape-label">ALT ft</div>
+          <div class="tape-value" id="hud-altitude">0</div>
+        </div>
+
+        <!-- Artificial horizon / attitude indicator (center) -->
+        <canvas id="attitude" width="320" height="320"></canvas>
+
+        <!-- Heading tape (top) -->
+        <div class="heading-tape">
+          <div class="heading-pointer">▼</div>
+          <canvas id="heading" width="640" height="48"></canvas>
+        </div>
+
+        <!-- Lower data block -->
+        <div class="datablock">
+          <div><span>THR</span><b id="hud-throttle">0%</b></div>
+          <div><span>VS</span><b id="hud-vsi">0</b><i>fpm</i></div>
+          <div><span>HDG</span><b id="hud-heading">360</b></div>
+          <div><span>G</span><b id="hud-gload">1.0</b></div>
+          <div><span>AoA</span><b id="hud-aoa">0°</b></div>
+          <div><span>FLAP</span><b id="hud-flaps">0°</b></div>
+          <div><span>GEAR</span><b id="hud-gear">DN</b></div>
+        </div>
+
+        <div id="warn" class="warn hidden">STALL</div>
+        <div id="cam-label" class="cam-label">CHASE</div>
+      </div>
+
+      <!-- Start / pause menu -->
+      <div id="menu" class="menu">
+        <div class="menu-card">
+          <h1>SKY<span>FORGE</span></h1>
+          <p class="tagline">Physics-based flight. Procedural world. Built for macOS.</p>
+          <button id="btn-fly">FLY NOW</button>
+          <div class="controls-grid" id="controls-grid"></div>
+          <p class="hint">Tip: connect a gamepad for analog stick &amp; throttle control.</p>
+        </div>
+      </div>
+
+      <div id="loading" class="loading">Building world…</div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
