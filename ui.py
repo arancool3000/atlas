@@ -311,6 +311,8 @@ def load_settings() -> dict:
         "voice_chat_auto_send": True,
         "voice_chat_continue_after_silence": True,
         "voice_chat_phrase_timeout": 8,
+        "wake_word": True,            # always-on "hey ember" wake listening
+        "glow_animation": True,       # Siri-style flowing glow while listening/thinking/speaking
         "ai_chat_titles": True,
         "dual_api_failover": True,
         "automation_enabled": True,
@@ -1220,6 +1222,7 @@ class EventBridge(QObject):
     update_available = pyqtSignal(object)  # emitted from the background update-check thread
     notice = pyqtSignal(str)  # post a one-line system bubble from a background thread
     source_updated = pyqtSignal(str)  # a git source checkout fast-forwarded to a new version
+    wake_detected = pyqtSignal()  # the "hey ember" wake word was heard (from the wake thread)
 
 
 class MiniPill(QWidget):
@@ -1753,6 +1756,14 @@ class SettingsDialog(QDialog):
     def _build_voice_tab(self):
         page = QWidget()
         layout = QFormLayout(page)
+
+        self.wake_word_check = QCheckBox('Always listen for "Hey Ember" (hands-free wake word)')
+        self.wake_word_check.setChecked(bool(self.settings.get("wake_word", True)))
+        layout.addRow(self.wake_word_check)
+
+        self.glow_anim_check = QCheckBox("Siri-style glow animation while listening / thinking / speaking")
+        self.glow_anim_check.setChecked(bool(self.settings.get("glow_animation", True)))
+        layout.addRow(self.glow_anim_check)
 
         self.voice_check = QCheckBox("Speak assistant replies aloud")
         self.voice_check.setChecked(bool(self.settings.get("voice_output", False)))
@@ -2690,6 +2701,10 @@ class SettingsDialog(QDialog):
             self.settings["download_protection"] = self.download_protect_check.isChecked()
         if hasattr(self, "vault_check"):
             self.settings["use_key_vault"] = self.vault_check.isChecked()
+        if hasattr(self, "wake_word_check"):
+            self.settings["wake_word"] = self.wake_word_check.isChecked()
+        if hasattr(self, "glow_anim_check"):
+            self.settings["glow_animation"] = self.glow_anim_check.isChecked()
         self.settings["voice_output"] = self.voice_check.isChecked()
         self.settings["voice_chat_spoken_replies"] = self.voice_chat_reply_check.isChecked()
         self.settings["voice_chat_auto_send"] = self.voice_auto_send_check.isChecked()
@@ -2791,6 +2806,7 @@ class EmberWindow(QWidget):
         self._bridge.update_available.connect(self._on_update_available)
         self._bridge.notice.connect(lambda m: self._add_bubble("system", m))
         self._bridge.source_updated.connect(self._on_source_updated)
+        self._bridge.wake_detected.connect(self._on_wake_word)
         self._pending_update: dict | None = None
         # macOS never auto-prompts for Accessibility — explicitly request it shortly after launch.
         if not _SAFE_MODE:
@@ -2832,6 +2848,9 @@ class EmberWindow(QWidget):
         if self.settings.get("agent_scheduler", True) and not _SAFE_MODE:
             # Background agent scheduler: runs saved agents on their schedules.
             QTimer.singleShot(3000, self._autostart_agent_scheduler)
+        if self.settings.get("wake_word", True) and not _SAFE_MODE:
+            # Always-on "Hey Ember" wake word — starts listening shortly after launch.
+            QTimer.singleShot(2400, self._autostart_wake_word)
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
@@ -3103,6 +3122,13 @@ class EmberWindow(QWidget):
             pass
         self._update_voice_chat_ui("Voice idle")
         self._set_status(status)
+        # Hands back the mic to the wake word and dims the glow.
+        self._set_siri(None)
+        try:
+            import wake_word
+            wake_word.resume()
+        except Exception:
+            pass
 
     def _update_voice_chat_ui(self, hint: str | None = None):
         btn = getattr(self, "voice_chat_btn", None)
@@ -3144,6 +3170,14 @@ class EmberWindow(QWidget):
             return
         self._listening = True
         self._listening_mode = mode
+        # The mic is ours now — pause the wake-word loop so it doesn't fight for it,
+        # and light up the listening glow.
+        try:
+            import wake_word
+            wake_word.pause()
+        except Exception:
+            pass
+        self._set_siri("listening")
         self.mic_btn.setText("●")
         self.mic_btn.setStyleSheet("color: #f7768e;")
         self.mic_btn.setToolTip("Listening... speak now")
@@ -3176,6 +3210,13 @@ class EmberWindow(QWidget):
         if mode == "voice_chat":
             self._handle_voice_chat_transcript(text, err)
             return
+        # Dictation is one-shot: hand the mic back to the wake word and dim the glow.
+        try:
+            import wake_word
+            wake_word.resume()
+        except Exception:
+            pass
+        self._set_siri(None)
         if err:
             self._set_status(f"Mic: {err}")
             return
@@ -4004,6 +4045,12 @@ class EmberWindow(QWidget):
         once after a drag-resize settles instead of on every intermediate event."""
         super().resizeEvent(e)
         self._position_size_grip()
+        siri = getattr(self, "_siri", None)
+        if siri is not None:
+            try:
+                siri.cover()
+            except Exception:
+                pass
         if not hasattr(self, "_clamp_timer"):
             self._clamp_timer = QTimer(self)
             self._clamp_timer.setSingleShot(True)
@@ -4054,6 +4101,8 @@ class EmberWindow(QWidget):
 
     def _show_typing_indicator(self):
         """Pulsing dots that appear while the agent is thinking. Removed when first text arrives."""
+        # Light the Siri glow while Ember is working (covers typed + voice turns).
+        self._set_siri("thinking")
         if getattr(self, "_typing_frame", None) is not None:
             return
         frame = QFrame()
@@ -4725,6 +4774,61 @@ class EmberWindow(QWidget):
         except Exception as e:
             print(f"[Agent scheduler autostart failed: {e}]")
 
+    def _autostart_wake_word(self):
+        """Start always-on 'Hey Ember' wake-word listening. Failure-silent."""
+        try:
+            import wake_word
+            wake_word.start(on_wake=lambda: self._bridge.wake_detected.emit())
+            print("[Wake word on: listening for 'Hey Ember']" if wake_word.is_running()
+                  else "[Wake word: mic unavailable]")
+        except Exception as e:
+            print(f"[Wake word autostart failed: {e}]")
+
+    def _on_wake_word(self):
+        """'Hey Ember' was heard (marshalled to the UI thread). Light up and start a turn."""
+        try:
+            self._set_siri("listening")
+            if not self.agent:
+                # Nothing to talk to yet — just acknowledge with the glow + a chime of TTS.
+                self._speak_reply("Add your API key to start.")
+                return
+            if not self._voice_chat_enabled:
+                self._toggle_voice_chat()      # enables voice chat + starts listening
+            elif not self._listening:
+                self._start_voice_listen(mode="voice_chat")
+        except Exception:
+            pass
+
+    # --- Siri-style glow ------------------------------------------------------
+    def _ensure_siri(self):
+        if getattr(self, "_siri", None) is None:
+            try:
+                from siri_glow import SiriGlow
+                self._siri = SiriGlow(self._root)
+            except Exception:
+                self._siri = None
+        if getattr(self, "_siri", None) is not None:
+            try:
+                self._siri.cover()
+            except Exception:
+                pass
+        return getattr(self, "_siri", None)
+
+    def _set_siri(self, state):
+        """Drive the glow: state in {'listening','thinking','speaking'} or None to hide."""
+        try:
+            if not self.settings.get("glow_animation", True):
+                return
+            glow = self._ensure_siri()
+            if glow is None:
+                return
+            if state:
+                glow.start(state)
+            else:
+                glow.stop()
+        except Exception:
+            pass
+
     def _autostart_remote_control(self):
         """Bring Ember Link up automatically at launch — no modal, just a status note.
         Best-effort: a bind failure (e.g. port already in use) is reported quietly and
@@ -5190,6 +5294,7 @@ class EmberWindow(QWidget):
             spoken = (text or "").replace("*", "").replace("`", "")
             spoken = re.sub(r"\[[^\]]+\]", "", spoken).strip()
             if spoken:
+                self._set_siri("speaking")
                 voice.speak(spoken[:700])
         except Exception:
             pass
@@ -5305,6 +5410,14 @@ class EmberWindow(QWidget):
                     self._voice_waiting_for_reply = False
                     self._update_voice_chat_ui("Listening again")
                     QTimer.singleShot(650, lambda: self._start_voice_listen(mode="voice_chat"))
+                elif not self._listening:
+                    # Fully idle: stop the glow and let the wake word listen again.
+                    self._set_siri(None)
+                    try:
+                        import wake_word
+                        wake_word.resume()
+                    except Exception:
+                        pass
                 if _remote:
                     _remote.push_chat("system", "Done.")
         except Exception:

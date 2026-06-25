@@ -30,6 +30,22 @@ A running memory of what's shipped and what's next, so ideas aren't lost between
   offline launch, auto-update on launch (git pull for source / auto-install for the app),
   Ember-site links fixed to EmberAI.
 
+## 🆕 Shipped this session — "Hey Ember" wake word + Siri-style glow
+- **Always-on wake word** (`wake_word.py`) — a background daemon keeps the mic open and
+  fires when it hears "hey ember" (fuzzy match via rapidfuzz, so "hey amber"/"okay ember"
+  also trigger). Runs forever (restarts on hiccups), pauses only while a command is being
+  captured so it doesn't fight the command recogniser, and prefers offline PocketSphinx
+  (Google STT fallback). Default ON; toggle in Settings → Voice. Detection + lifecycle are
+  unit-tested with injected capture (`test_wake_word.py`, 7) — no audio needed.
+- **Siri "Golden Gate" glow** (`siri_glow.py`) — a click-through overlay that sweeps a
+  flowing, breathing band of light (warm-leaning rainbow conical gradient, multi-layer
+  bloom, ~60fps) around the window edge while Ember is **listening / thinking / speaking**,
+  each state tuned for speed + brightness. Wired into the voice + turn lifecycle (covers
+  typed turns too) and resizes with the window. Toggle in Settings → Voice.
+- Wiring: a `wake_detected` bridge signal marshals the wake to the UI thread →
+  starts a voice turn; glow shows on listen/think/speak and dims when idle; wake word
+  pauses/resumes around mic use so the two never collide.
+
 ## 🆕 Shipped this session — pixel-accurate mouse + rate-limit resilience
 - **Accurate mouse** (`human_mouse.py`) — humanized travel stays, but the pointer now
   **snaps to the exact integer target** at the end of every move, and clicks/presses are

@@ -10,3 +10,9 @@
 #
 # Voice OUTPUT (text-to-speech) and everything else in Ember work WITHOUT this.
 pyaudio>=0.2.14
+
+# Optional: offline wake-word ("Hey Ember"). PocketSphinx runs the always-on wake
+# listener locally (cheap + private). Without it Ember falls back to online Google
+# Web Speech for wake detection, which works but makes a network call per listen.
+pocketsphinx>=5.0.0
+
