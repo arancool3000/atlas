@@ -124,24 +124,32 @@ use the built-in double-click controls: smart_click(..., double=true), click(...
 browser_click_text(..., mode="double"). If the first click does not activate the target, try double-click or
 keyboard Enter before giving up. Use zoom_screenshot/read_screen_text for small or ambiguous controls.
 
-# Speed
-- Spend model calls like a scarce resource: the free tier allows only ~15 PER MINUTE, and every step you take
-  is one call. Do the maximum useful work per step. Aim for one observe call, one batched action call, and one
-  final verification. Request multiple INDEPENDENT tool calls together in a single step rather than one at a
-  time. If a tool result already answers the user, answer immediately instead of gathering more.
-- Batch deterministic steps with do_sequence (one API request). Include waits and a final assertion inside
+# Speed — every step costs ONE model API call, so minimize steps (THIS IS A HARD RULE)
+- The free tier allows only ~15 calls PER MINUTE. Each round-trip of tool calls is one call. Many small
+  one-tool-at-a-time rounds is the single biggest waste. Treat 1-2 tool steps as the target for a normal turn,
+  4-5 as a lot, and anything beyond that as a sign you are over-investigating.
+- BATCH every independent read into ONE step. If you need to look at 3 files, list a folder, and search text,
+  request read_file + read_file + read_file + list_directory + grep_files TOGETHER in a single response - they
+  run concurrently as one call. NEVER fetch them one per round. Before you emit a step, ask: "what is every
+  piece of info I could possibly need next?" and request it all now.
+- Use the DEDICATED read tools, never shell for reading. read_file (not run_shell cat/head/tail),
+  grep_files (not run_shell grep/rg), list_directory/folder_tree (not run_shell ls/find), count_lines, json_query.
+  These dedicated tools batch concurrently; run_shell does NOT batch and burns a whole call each time, so a
+  "cat then grep then ls" sequence is 3 wasted calls when one batched read step would do it. Reserve run_shell
+  for things with no dedicated tool (e.g. running a build), and even then combine commands with && in ONE call.
+- STOP as soon as you can act or answer. Do not gather "just in case" context. If a tool result already answers
+  the user, reply immediately - do not take another look. Verification is ONE final check, not a habit between
+  every action.
+- Batch deterministic UI steps with do_sequence (one API request). Include waits and a final assertion inside
   the same do_sequence whenever the next action is obvious. Don't screenshot between every action -
   screenshot/assert_text_visible once at the END to verify.
 - Understand the screen in ONE pass: when you DO capture, batch take_screenshot with read_screen_text so you
   get the image plus an exact word+coordinate map together - read it and reason fully BEFORE acting. Don't take
   a second screenshot just to re-read the same screen; only re-capture after the screen actually changes.
-- A batch of read-only tools (read_screen_text, list_*, get_*, http_get, ...) runs concurrently - issue them
-  together when gathering info.
 - paste_text beats type_text for anything over a few words.
 - Never repeat an identical failing call. Change tool, args, or tactic.
 - Prefer high-signal tools over broad ones: browser_get_page for webpages, read_screen_text(query=...) for
-  visible labels, list_directory with a narrow path/pattern for files, and shell only when it gives a shorter
-  answer than UI work.
+  visible labels, list_directory with a narrow path/pattern for files.
 
 # Reasoning pattern (think harder on anything non-trivial)
 Before acting, think quietly: restate the user's REAL goal (not just the literal words), the minimum evidence you
@@ -2821,6 +2829,7 @@ class Agent:
     def _process_response(self, response):
         max_steps = 12
         steps = 0
+        _econ_nudged = False  # only inject the "wrap it up" hint once per turn
         while steps < max_steps and not self._stop_flag.is_set():
             steps += 1
             # Usage dashboard: record every model response's token usage (free-tier headroom).
@@ -2887,6 +2896,18 @@ class Agent:
                         attach_image_mime = result.get("mime_type", "image/jpeg")
             if attach_image:
                 parts_to_send.append(self._image_part(attach_image, mime_type=attach_image_mime))
+
+            # Step-economy nudge: if this turn is burning many model calls, remind the model
+            # ONCE to batch any remaining reads and converge instead of one-tool-per-round.
+            if steps >= 5 and not _econ_nudged and not self._stop_flag.is_set():
+                _econ_nudged = True
+                parts_to_send.append(types.Part.from_text(
+                    text=(f"[step-economy: you have used {steps} model calls on this turn. Each extra step "
+                          "is another API call. Batch ALL remaining independent reads into ONE step "
+                          "(read_file/grep_files/list_directory run concurrently; don't use run_shell to "
+                          "read), then answer or act. Stop gathering context unless it is strictly required "
+                          "to finish.]")
+                ))
 
             try:
                 response = self._send_with_retry(parts_to_send)
