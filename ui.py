@@ -247,6 +247,7 @@ FEATURE_CATALOG = [
     ]),
     ("Voice & hands-free", [
         ("🎙️", "Voice chat", "Talk to Ember hands-free — it listens, acts, and speaks back.", ("open", "__voice_chat__")),
+        ("🗣️", "Natural voice (Live API)", "Real-time full-duplex voice that hears your tone/accent & replies naturally (Gemini Live). Enable in Settings ▸ Voice.", ("settings", "Voice")),
         ("👋", "“Hey Ember” wake word", "Always-on wake word so you can summon it by voice. Toggle in Settings ▸ Voice.", ("settings", "Voice")),
         ("🔊", "Spoken replies", "Have Ember read its answers aloud. Settings ▸ Voice.", ("settings", "Voice")),
     ]),
@@ -398,6 +399,8 @@ def load_settings() -> dict:
         "tts_engine": "system",       # read-aloud engine: system | gemini | soundtools
         "gemini_tts_voice": "Kore",
         "soundtools_api_key": "",
+        "live_voice_enabled": False,  # use the Gemini Live API for real-time natural voice chat
+        "live_voice_voice": "Zephyr", # Live API prebuilt voice name
         "wake_word": True,            # always-on "hey ember" wake listening
         "glow_animation": True,       # Siri-style flowing glow while listening/thinking/speaking
         "bubble_animation": True,     # grow-in animation for new chat bubbles
@@ -614,6 +617,7 @@ class EventBridge(QObject):
     source_updated = pyqtSignal(str)  # a git source checkout fast-forwarded to a new version
     wake_detected = pyqtSignal()  # the "hey ember" wake word was heard (from the wake thread)
     download_alert = pyqtSignal(object)  # a downloaded file was a threat / cautionary executable
+    live_voice_event = pyqtSignal(str, str)  # (kind, text) from the Live API voice thread
 
 
 class MiniPill(QWidget):
@@ -1239,6 +1243,20 @@ class SettingsDialog(QDialog):
         self.soundtools_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.soundtools_key_input.setPlaceholderText("Soundtools.io API key (optional)")
         layout.addRow("Soundtools key:", self.soundtools_key_input)
+
+        # --- Natural voice (Gemini Live API, real-time full-duplex) ---
+        self.live_voice_check = QCheckBox(
+            "Natural voice for Voice Chat (Gemini Live API — real-time, understands tone/accent)")
+        self.live_voice_check.setChecked(bool(self.settings.get("live_voice_enabled", False)))
+        self.live_voice_check.setToolTip(
+            "Streams a live conversation instead of record→transcribe→speak: it hears HOW you "
+            "talk, replies in a natural neural voice, supports barge-in, and isn't capped by the "
+            "per-message rate limit. Needs a Gemini key + pyaudio.")
+        layout.addRow(self.live_voice_check)
+
+        self.live_voice_voice_input = QLineEdit(self.settings.get("live_voice_voice", "Zephyr"))
+        self.live_voice_voice_input.setPlaceholderText("Live voice name, e.g. Zephyr, Puck, Charon, Kore, Aoede")
+        layout.addRow("Natural voice name:", self.live_voice_voice_input)
 
         self.voice_chat_reply_check = QCheckBox("Voice chat always speaks replies")
         self.voice_chat_reply_check.setChecked(bool(self.settings.get("voice_chat_spoken_replies", True)))
@@ -2217,6 +2235,9 @@ class SettingsDialog(QDialog):
             self.settings["tts_engine"] = self.tts_engine_combo.currentData() or "system"
             self.settings["gemini_tts_voice"] = self.gemini_voice_input.text().strip() or "Kore"
             self.settings["soundtools_api_key"] = self.soundtools_key_input.text().strip()
+        if hasattr(self, "live_voice_check"):
+            self.settings["live_voice_enabled"] = self.live_voice_check.isChecked()
+            self.settings["live_voice_voice"] = self.live_voice_voice_input.text().strip() or "Zephyr"
         self.settings["voice_chat_spoken_replies"] = self.voice_chat_reply_check.isChecked()
         self.settings["voice_chat_auto_send"] = self.voice_auto_send_check.isChecked()
         self.settings["voice_chat_continue_after_silence"] = self.voice_continue_check.isChecked()
@@ -2893,6 +2914,7 @@ class EmberWindow(QWidget):
         self._bridge.source_updated.connect(self._on_source_updated)
         self._bridge.wake_detected.connect(self._on_wake_word)
         self._bridge.download_alert.connect(self._on_download_alert)
+        self._bridge.live_voice_event.connect(self._on_live_voice_event)
         self._pending_update: dict | None = None
         # macOS never auto-prompts for Accessibility — explicitly request it shortly after launch.
         if not _SAFE_MODE:
@@ -2901,6 +2923,9 @@ class EmberWindow(QWidget):
         self._voice_chat_enabled = False
         self._voice_waiting_for_reply = False
         self._voice_turns = 0
+        self._live_voice = None          # active LiveVoice session (natural voice), if any
+        self._lv_user_buf = ""           # accumulates the user's live transcript for the turn
+        self._lv_ember_buf = ""          # accumulates Ember's live transcript for the turn
         self._title_jobs: set[str] = set()
         self._build_ui()
         self._restore_position()
@@ -3181,6 +3206,10 @@ class EmberWindow(QWidget):
         self._start_voice_listen(mode="dictation")
 
     def _toggle_voice_chat(self):
+        # A running Live (natural) voice session toggles off here too.
+        if getattr(self, "_live_voice", None) is not None and self._live_voice.is_running():
+            self._stop_live_voice("Voice chat off")
+            return
         if self._voice_chat_enabled:
             self._stop_voice_chat("Voice chat off")
             return
@@ -3188,6 +3217,18 @@ class EmberWindow(QWidget):
             QMessageBox.warning(self, "No API key", "Open settings (gear) and add your Gemini API key first.")
             self._open_settings()
             return
+        # Natural voice (Gemini Live API) — real-time, full-duplex — when enabled + available.
+        if self.settings.get("live_voice_enabled") and (self.settings.get("gemini_api_key") or "").strip():
+            try:
+                import live_voice
+                if live_voice.available():
+                    self._start_live_voice()
+                    return
+                self._add_bubble("system",
+                    "Natural voice needs the google-genai SDK + pyaudio installed — "
+                    "falling back to standard voice chat.")
+            except Exception:
+                pass
         try:
             import voice
         except ImportError:
@@ -3227,6 +3268,134 @@ class EmberWindow(QWidget):
             wake_word.resume()
         except Exception:
             pass
+
+    # --- Natural voice (Gemini Live API) --------------------------------------
+    def _live_voice_system_instruction(self) -> str:
+        return ("You are Ember, a friendly voice assistant that can control the user's computer. "
+                "Keep spoken replies short, natural and conversational. If asked to do a task on "
+                "the computer, acknowledge briefly and describe what you'll do.")
+
+    def _start_live_voice(self):
+        import live_voice
+        try:
+            import wake_word
+            wake_word.pause()   # the Live session owns the mic continuously
+        except Exception:
+            pass
+        self._lv_user_buf = ""
+        self._lv_ember_buf = ""
+        b = self._bridge
+        self._live_voice = live_voice.LiveVoice(
+            (self.settings.get("gemini_api_key") or ""),
+            model=self.settings.get("live_voice_model") or live_voice.DEFAULT_MODEL,
+            voice=self.settings.get("live_voice_voice") or live_voice.DEFAULT_VOICE,
+            api_version=self.settings.get("live_voice_api_version") or live_voice.DEFAULT_API_VERSION,
+            system_instruction=self._live_voice_system_instruction(),
+            on_user_text=lambda t: b.live_voice_event.emit("user", t),
+            on_ember_text=lambda t: b.live_voice_event.emit("ember", t),
+            on_state=lambda s: b.live_voice_event.emit("state", s),
+            on_turn_complete=lambda: b.live_voice_event.emit("turn", ""),
+            on_interrupted=lambda: b.live_voice_event.emit("state", "listening"),
+            on_error=lambda e: b.live_voice_event.emit("error", e),
+        )
+        r = self._live_voice.start()
+        if not r.get("ok"):
+            self._add_bubble("system", "Natural voice: " + r.get("error", "could not start"))
+            self._live_voice = None
+            try:
+                import wake_word
+                wake_word.resume()
+            except Exception:
+                pass
+            return
+        orb = self._ensure_orb()
+        if orb:
+            orb.popup("listening")
+            orb.set_caption("Natural voice on — just talk.")
+        self._set_siri("listening")
+        self._add_bubble("system",
+            "🎙️ Natural voice (Gemini Live) is on — just talk, no button presses. "
+            "Click Voice Chat again (or say “stop voice chat”) to end.")
+        self._set_status("Natural voice listening…")
+        self._update_live_voice_btn(True)
+
+    def _stop_live_voice(self, status: str = "Voice chat off"):
+        lv = getattr(self, "_live_voice", None)
+        self._live_voice = None
+        if lv is not None:
+            try:
+                lv.stop()
+            except Exception:
+                pass
+        # Flush any partial Ember reply so it isn't lost.
+        if getattr(self, "_lv_ember_buf", "").strip():
+            self._add_bubble("assistant", self._lv_ember_buf.strip())
+            self._append_history("assistant", self._lv_ember_buf.strip())
+        self._lv_user_buf = ""
+        self._lv_ember_buf = ""
+        self._set_siri(None)
+        orb = self._ensure_orb()
+        if orb:
+            orb.dismiss_after(1200)
+        try:
+            import wake_word
+            wake_word.resume()
+        except Exception:
+            pass
+        self._set_status(status)
+        self._update_live_voice_btn(False)
+
+    def _update_live_voice_btn(self, on: bool):
+        btn = getattr(self, "voice_chat_btn", None)
+        if btn is None:
+            return
+        btn.setText("Voice On" if on else "Voice Chat")
+        btn.setObjectName("voiceToggleOn" if on else "voiceToggle")
+        try:
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        except Exception:
+            pass
+
+    def _on_live_voice_event(self, kind: str, text: str):
+        """Marshal Live API callbacks (fired on the asyncio thread) onto the UI thread."""
+        if kind == "user":
+            self._lv_user_buf += text
+            low = self._lv_user_buf.lower()
+            if "stop voice chat" in low or "stop the voice chat" in low:
+                self._stop_live_voice("Voice chat off")
+                return
+            self._set_status("🎙️ " + self._lv_user_buf.strip()[-60:])
+        elif kind == "ember":
+            # The user's turn is done once Ember starts replying — commit it to the chat.
+            if self._lv_user_buf.strip():
+                u = self._lv_user_buf.strip()
+                self._lv_user_buf = ""
+                self._add_bubble("user", u)
+                self._append_history("user", u)
+            self._lv_ember_buf += text
+            orb = self._ensure_orb()
+            if orb:
+                orb.set_state("speaking")
+                orb.set_caption(self._lv_ember_buf.strip()[-200:])
+        elif kind == "turn":
+            if self._lv_ember_buf.strip():
+                e = self._lv_ember_buf.strip()
+                self._lv_ember_buf = ""
+                self._add_bubble("assistant", e)
+                self._append_history("assistant", e)
+            self._set_status("Natural voice listening…")
+        elif kind == "state":
+            if text == "idle":
+                if getattr(self, "_live_voice", None) is not None:
+                    self._stop_live_voice("Natural voice ended")
+            elif text in ("listening", "thinking", "speaking"):
+                self._set_siri(text)
+                orb = self._ensure_orb()
+                if orb and text in ("listening", "speaking"):
+                    orb.set_state(text)
+        elif kind == "error":
+            self._set_status("Natural voice: " + (text or "")[:80])
 
     def _update_voice_chat_ui(self, hint: str | None = None):
         btn = getattr(self, "voice_chat_btn", None)
@@ -4064,6 +4233,13 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
     def _do_quit(self):
         """Really quit Ember (tray ▸ Quit / explicit quit) — stops the background listeners."""
         self._really_quit = True
+        lv = getattr(self, "_live_voice", None)
+        if lv is not None:
+            try:
+                lv.stop()
+            except Exception:
+                pass
+            self._live_voice = None
         for mod in ("wake_word",):
             try:
                 __import__(mod).stop()

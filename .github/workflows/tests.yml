@@ -48,7 +48,8 @@ jobs:
             test_custom_tools.py \
             test_adblock.py \
             test_audio_level.py \
-            test_browser_extensions.py; do
+            test_browser_extensions.py \
+            test_live_voice.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"
