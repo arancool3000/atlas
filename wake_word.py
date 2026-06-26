@@ -111,42 +111,72 @@ def _recognize(rec, audio) -> str:
         return ""
 
 
+class _MicCapture:
+    """A capture() that keeps ONE mic stream open across listens, so macOS's orange
+    "mic in use" indicator stays steady instead of FLASHING on every ~3s chunk (which
+    happens if you open/close the stream each time). The stream is released on pause()
+    (via release()) so an active voice/dictation turn can take the mic, and reopened on
+    resume. Shares voice.MIC_LOCK so it never fights a voice turn for the device."""
+
+    def __init__(self, sr):
+        self._sr = sr
+        self._rec = sr.Recognizer()
+        self._rec.dynamic_energy_threshold = True
+        self._mic = sr.Microphone()
+        self._source = None
+        try:
+            from voice import MIC_LOCK
+        except Exception:
+            MIC_LOCK = threading.RLock()
+        self._lock = MIC_LOCK
+
+    def _ensure_open(self):
+        if self._source is None:
+            self._source = self._mic.__enter__()
+            self._rec.adjust_for_ambient_noise(self._source, duration=0.3)
+
+    def release(self):
+        """Close the mic stream (called when paused) so it stops showing as in-use and
+        another consumer can open it."""
+        if self._source is not None:
+            try:
+                self._mic.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._source = None
+
+    def __call__(self) -> str:
+        try:
+            with self._lock:
+                if _paused:
+                    self.release()
+                    return ""
+                self._ensure_open()
+                try:
+                    audio = self._rec.listen(self._source, timeout=_LISTEN_TIMEOUT,
+                                             phrase_time_limit=_PHRASE_LIMIT)
+                except self._sr.WaitTimeoutError:
+                    return ""
+                except Exception:
+                    self.release()
+                    time.sleep(0.4)
+                    return ""
+            return _recognize(self._rec, audio)
+        except Exception:
+            return ""
+
+
 def _real_capture_factory():
-    """Build a capture() that listens once on the default mic. Returns None if the
-    mic / speech stack is unavailable (so the loop degrades to a no-op, not a crash)."""
+    """Persistent-stream mic capture. Returns None if the speech stack is unavailable
+    (so the loop degrades to a no-op, not a crash)."""
     try:
         import speech_recognition as sr
     except Exception:
         return None
     try:
-        rec = sr.Recognizer()
-        rec.dynamic_energy_threshold = True
-        mic = sr.Microphone()
-        with mic as source:
-            rec.adjust_for_ambient_noise(source, duration=0.4)
+        return _MicCapture(sr)
     except Exception:
         return None
-
-    # Share the process-wide mic lock with voice.listen_once so the always-on loop
-    # and an active voice/dictation turn never open competing input streams.
-    try:
-        from voice import MIC_LOCK
-    except Exception:
-        MIC_LOCK = threading.RLock()
-
-    def _capture() -> str:
-        try:
-            with MIC_LOCK:
-                with mic as source:
-                    audio = rec.listen(source, timeout=_LISTEN_TIMEOUT, phrase_time_limit=_PHRASE_LIMIT)
-        except sr.WaitTimeoutError:
-            return ""
-        except Exception:
-            time.sleep(0.4)
-            return ""
-        return _recognize(rec, audio)
-
-    return _capture
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +198,14 @@ def _loop(stop: "threading.Event") -> None:
         return
     while not stop.is_set():
         if _paused:
+            # Release the held mic stream so a voice turn can take the device + the OS
+            # "mic in use" indicator goes off while we're not actively listening.
+            rel = getattr(capture, "release", None)
+            if rel:
+                try:
+                    rel()
+                except Exception:
+                    pass
             stop.wait(0.3)
             continue
         try:
@@ -191,6 +229,13 @@ def _loop(stop: "threading.Event") -> None:
                 except Exception:
                     pass
             stop.wait(_COOLDOWN)  # don't re-trigger on the tail of the same phrase
+    # Loop is stopping — release the mic stream so it doesn't linger as "in use".
+    rel = getattr(capture, "release", None)
+    if rel:
+        try:
+            rel()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

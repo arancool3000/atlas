@@ -1,6 +1,8 @@
 """Speech recognition (microphone in) and text-to-speech (assistant out)."""
 from __future__ import annotations
 
+import subprocess
+import sys
 import threading
 from typing import Callable
 
@@ -8,6 +10,31 @@ from typing import Callable
 _tts_engine = None
 _tts_lock = threading.Lock()
 _tts_thread: threading.Thread | None = None
+_say_proc = None            # current macOS `say` subprocess (so stop_speaking can kill it)
+_mac_voice = None           # cached best macOS voice name ("" = system default, None = unprobed)
+
+
+def _best_mac_voice() -> str:
+    """Pick the highest-quality installed macOS voice. The default pyttsx3/NSSpeech voice
+    sounds robotic; the modern Premium/Enhanced Siri-class voices are dramatically better."""
+    global _mac_voice
+    if _mac_voice is not None:
+        return _mac_voice
+    try:
+        out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        _mac_voice = ""
+        return _mac_voice
+    # Best → acceptable. Premium/Enhanced are the natural-sounding neural voices.
+    prefs = ["Ava (Premium)", "Zoe (Premium)", "Evan (Premium)", "Nathan (Premium)",
+             "Joelle (Premium)", "Ava (Enhanced)", "Samantha (Enhanced)", "Allison (Enhanced)",
+             "Tom (Enhanced)", "Samantha", "Ava", "Allison", "Tom", "Daniel", "Serena"]
+    for p in prefs:
+        if p in out:
+            _mac_voice = p
+            return _mac_voice
+    _mac_voice = ""   # fall back to the user's system default voice
+    return _mac_voice
 
 # A SINGLE process-wide lock guarding the microphone. Both this module's
 # listen_once() AND the always-on wake-word loop (wake_word.py) acquire it before
@@ -60,8 +87,12 @@ def _ensure_tts():
 
 
 def speak(text: str):
-    """Speak `text` aloud in a background thread. Safe to call repeatedly; queues."""
+    """Speak `text` aloud. On macOS uses the native `say` engine with the best installed
+    voice (far more natural than pyttsx3); elsewhere uses pyttsx3 in a background thread."""
     if not text or not text.strip():
+        return
+    if sys.platform == "darwin":
+        _mac_say(text)
         return
 
     def _run():
@@ -76,8 +107,29 @@ def speak(text: str):
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _mac_say(text: str):
+    """Speak via macOS `say` with the best voice, interruptible (tracked in _say_proc)."""
+    global _say_proc
+    stop_speaking()
+    try:
+        voice = _best_mac_voice()
+        cmd = ["say", "-r", "190"]
+        if voice:
+            cmd += ["-v", voice]
+        _say_proc = subprocess.Popen(cmd + [text],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 def stop_speaking():
-    global _tts_engine
+    global _tts_engine, _say_proc
+    if _say_proc is not None:
+        try:
+            _say_proc.terminate()
+        except Exception:
+            pass
+        _say_proc = None
     if _tts_engine:
         try:
             _tts_engine.stop()

@@ -619,20 +619,27 @@ class EmberBrowser(QWidget):
         v = self._cur()
         if v is None:
             return
-        self._ai_out.append("<b>AI check:</b> analyzing page text…")
+        self._ai_out.append("<b>AI check:</b> analyzing this page (URL + content)…")
+        url = v.url().toString()
 
-        def got(text):
-            try:
-                import ai_detect
-                r = ai_detect.detect_text(text or "")
-            except Exception as e:
-                r = {"ok": False, "error": str(e)}
-            if r.get("ok"):
-                self._ai_result.emit(f"🔎 AI-content check: <b>{r['verdict']}</b> "
-                                     f"({r['ai_likelihood']}% AI-likelihood). {r.get('note','')}")
-            else:
-                self._ai_result.emit(f"AI check: {r.get('error', 'could not analyze')}")
-        v.page().toPlainText(got)
+        # Grab HTML (for builder/provenance fingerprints) AND text (for the heuristic), then
+        # run the whole-page detector off-thread — so e.g. a *.base44.app site is caught.
+        def with_html(page_html):
+            def with_text(text):
+                def work():
+                    try:
+                        import ai_detect
+                        r = ai_detect.detect_page(url=url, html=page_html or "", text=text or "")
+                    except Exception as e:
+                        r = {"ok": False, "error": str(e)}
+                    if r.get("ok"):
+                        self._ai_result.emit(f"🔎 AI-content check: <b>{r['verdict']}</b> "
+                                             f"({r['ai_likelihood']}% AI-likelihood). {r.get('note', '')}")
+                    else:
+                        self._ai_result.emit(f"AI check: {r.get('error', 'could not analyze')}")
+                threading.Thread(target=work, daemon=True).start()
+            v.page().toPlainText(with_text)
+        v.page().toHtml(with_html)
 
     def _page_prompt(self, question, page_text):
         url = self._cur().url().toString() if self._cur() else ""
