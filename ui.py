@@ -3291,7 +3291,17 @@ class EmberWindow(QWidget):
                 phrase_timeout = float(self.settings.get("voice_chat_phrase_timeout", 8))
             except Exception:
                 phrase_timeout = 8.0
-        voice.listen_once(_cb, phrase_timeout=phrase_timeout, listen_timeout=max(8.0, phrase_timeout + 2.0))
+        listen_timeout = max(8.0, phrase_timeout + 2.0)
+        started = False
+        try:
+            import audio_level
+            # Metered capture publishes the live mic level so the glow/orb pulse with your voice.
+            started = audio_level.listen_metered(_cb, phrase_timeout=phrase_timeout,
+                                                 listen_timeout=listen_timeout)
+        except Exception:
+            started = False
+        if not started:
+            voice.listen_once(_cb, phrase_timeout=phrase_timeout, listen_timeout=listen_timeout)
 
     def _on_transcript(self, text: str, err: str):
         mode = getattr(self, "_listening_mode", "dictation")
@@ -5143,6 +5153,11 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             try:
                 from siri_glow import SiriOrb
                 self._orb = SiriOrb()
+                try:
+                    import audio_level
+                    self._orb.set_level_provider(audio_level.get_level)  # pulse with the voice
+                except Exception:
+                    pass
             except Exception:
                 self._orb = None
         return getattr(self, "_orb", None)
@@ -5225,7 +5240,15 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             self._bridge.transcript.emit(text or "", err or "")
         try:
             import voice
-            voice.listen_once(_cb, phrase_timeout=8.0, listen_timeout=10.0)
+            started = False
+            try:
+                import audio_level
+                # Metered capture publishes the live mic level so the orb pulses with your voice.
+                started = audio_level.listen_metered(_cb, phrase_timeout=8.0, listen_timeout=10.0)
+            except Exception:
+                started = False
+            if not started:
+                voice.listen_once(_cb, phrase_timeout=8.0, listen_timeout=10.0)
         except Exception:
             self._listening = False
             self._orb_active = False
@@ -5270,6 +5293,11 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             try:
                 from siri_glow import SiriGlow
                 self._siri = SiriGlow(self._root)
+                try:
+                    import audio_level
+                    self._siri.set_level_provider(audio_level.get_level)  # band moves with the voice
+                except Exception:
+                    pass
             except Exception:
                 self._siri = None
         if getattr(self, "_siri", None) is not None:

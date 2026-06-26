@@ -46,7 +46,8 @@ jobs:
             test_human_mouse.py \
             test_autostart.py \
             test_custom_tools.py \
-            test_adblock.py; do
+            test_adblock.py \
+            test_audio_level.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"
