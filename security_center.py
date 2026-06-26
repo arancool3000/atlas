@@ -207,6 +207,33 @@ def _bad_ips() -> set:
         return set()
 
 
+_OWN_PIDS_CACHE: "set | None" = None
+_OWN_PIDS_AT = 0.0
+
+
+def _own_pids() -> set:
+    """Ember's own process tree — so the interpreter-with-a-connection heuristic doesn't flag
+    Ember's OWN python (talking to the Gemini/Claude API) as a reverse shell. Cached 30s."""
+    global _OWN_PIDS_CACHE, _OWN_PIDS_AT
+    now = time.time()
+    if _OWN_PIDS_CACHE is not None and now - _OWN_PIDS_AT < 30:
+        return _OWN_PIDS_CACHE
+    pids = {os.getpid()}
+    try:
+        pids.add(os.getppid())
+    except Exception:
+        pass
+    try:
+        import psutil
+        cur = psutil.Process(os.getpid())
+        for rel in (cur.parents() + cur.children(recursive=True)):
+            pids.add(rel.pid)
+    except Exception:
+        pass
+    _OWN_PIDS_CACHE, _OWN_PIDS_AT = pids, now
+    return pids
+
+
 def _evaluate_connection(c: dict, bad_ips: set) -> tuple[str, str]:
     """Return (severity, detail). severity in clean|suspicious|malicious."""
     status = (c.get("status") or "").upper()
@@ -220,7 +247,8 @@ def _evaluate_connection(c: dict, bad_ips: set) -> tuple[str, str]:
     if "LISTEN" in status and lport in _BACKDOOR_PORTS:
         return "suspicious", f"process is listening on backdoor port {lport} ({name or 'unknown'})"
     if status.startswith("ESTAB"):
-        if name in _NET_SHELLS:
+        # Don't flag Ember's OWN python (it talks to the Gemini/Claude API) as a reverse shell.
+        if name in _NET_SHELLS and c.get("pid") not in _own_pids():
             return "suspicious", (f"interpreter '{name}' has an active connection to "
                                   f"{raddr or '?'} (possible reverse shell / C2)")
         if rport in _MINER_PORTS:

@@ -208,10 +208,11 @@ def translate_text(text: str, target_lang: str = "en", source_lang: str = "auto"
 # Email
 # ---------------------------------------------------------------------------
 def send_email(to: str, subject: str, body: str, smtp_host: str | None = None,
-               smtp_port: int = 587, smtp_user: str | None = None,
+               smtp_port: int | None = None, smtp_user: str | None = None,
                smtp_password: str | None = None, html: bool = False) -> dict:
     """Send via SMTP. Credentials come from settings.json (email_smtp_* keys) if omitted.
-    For Gmail: smtp.gmail.com:587, use an App Password (not your normal one)."""
+    For Gmail: smtp.gmail.com:587, use an App Password (not your normal one). Port 465 uses
+    implicit TLS (SMTP_SSL); 587/other use STARTTLS."""
     import smtplib
 
     try:
@@ -220,9 +221,11 @@ def send_email(to: str, subject: str, body: str, smtp_host: str | None = None,
         smtp_host = smtp_host or st.get("email_smtp_host", "")
         smtp_user = smtp_user or st.get("email_smtp_user", "")
         smtp_password = smtp_password or st.get("email_smtp_password", "")
-        smtp_port = smtp_port or int(st.get("email_smtp_port", 587))
+        # The configured port was previously IGNORED (the param defaulted to 587, which is
+        # truthy, so `587 or <setting>` never read the setting). Resolve it properly now.
+        smtp_port = smtp_port or int(st.get("email_smtp_port") or 587)
     except Exception:
-        pass
+        smtp_port = smtp_port or 587
 
     if not (smtp_host and smtp_user and smtp_password):
         return {"ok": False, "error": "SMTP not configured - set email_smtp_host/user/password in Settings"}
@@ -233,10 +236,15 @@ def send_email(to: str, subject: str, body: str, smtp_host: str | None = None,
         msg["From"] = smtp_user
         msg["To"] = to
         msg.attach(MIMEText(body, "html" if html else "plain"))
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
-            s.starttls()
-            s.login(smtp_user, smtp_password)
-            s.sendmail(smtp_user, [to], msg.as_string())
+        if int(smtp_port) == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30) as s:
+                s.login(smtp_user, smtp_password)
+                s.sendmail(smtp_user, [to], msg.as_string())
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as s:
+                s.starttls()
+                s.login(smtp_user, smtp_password)
+                s.sendmail(smtp_user, [to], msg.as_string())
         return {"ok": True, "to": to, "subject": subject}
     except Exception as e:
         return {"ok": False, "error": str(e)}

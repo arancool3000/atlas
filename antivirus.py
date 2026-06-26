@@ -84,6 +84,7 @@ DEFAULT_CONFIG: dict = {
     "scan_downloads": True,        # scan files as they finish downloading
     "scan_before_open": True,      # scan files before opening them
     "block_suspicious_open": True, # also block "suspicious" (not just "malicious") on open
+    "block_on_scan_error": True,   # if a file can't be scanned, refuse to open it (fail CLOSED)
     "vt_api_key": "",              # falls back to env VIRUSTOTAL_API_KEY / VT_API_KEY
     "vt_hash_lookup": True,        # query VirusTotal by SHA-256 (only the hash leaves)
     "vt_upload_unknown": True,     # upload unknown files to VirusTotal for full scanning
@@ -281,7 +282,8 @@ def _static_scan(path: Path, cfg: dict | None = None) -> tuple[int, list[str], d
     ext = path.suffix.lower()
 
     # EICAR test signature -> hard malicious signal (caller promotes to malicious).
-    if EICAR_SIG in head:
+    # Scan the whole sampled window, not just the first 8 KB, so it can't be hidden by padding.
+    if EICAR_SIG in sample:
         return 100, ["EICAR anti-malware test signature present"], {"eicar": True}
 
     # Detect executable / native code content.
@@ -721,7 +723,11 @@ def _scan_clamav(path: Path) -> dict | None:
             return {"engine": "clamav", "malicious": True, "detail": sig[:300]}
         if res.returncode == 0:
             return {"engine": "clamav", "malicious": False}
-        return None
+        # rc == 2 (or anything else) = clamscan ERRORED (unreadable / encrypted / password-
+        # protected archive, libclamav failure). That is NOT "clean" — surface it as an error
+        # so the file isn't reported clean on the strength of a failed scan.
+        detail = ((res.stderr or res.stdout or "").strip() or "clamscan error")[:300]
+        return {"engine": "clamav", "malicious": False, "error": detail, "scan_error": True}
     except Exception:
         return None
 
@@ -1057,7 +1063,16 @@ def restore_quarantined(id: str, destination: str = "") -> dict:
             if not stored.exists():
                 return {"ok": False, "error": "quarantined payload is missing"}
             target = Path(destination).expanduser() if destination else Path(entry["original_path"])
+            if target.is_dir():
+                target = target / Path(entry["original_path"]).name
             target.parent.mkdir(parents=True, exist_ok=True)
+            # Never silently clobber a file that now lives at the restore path.
+            if target.exists():
+                stem, suf = target.stem, target.suffix
+                i = 1
+                while target.exists():
+                    target = target.with_name(f"{stem} (restored {i}){suf}")
+                    i += 1
             try:
                 os.chmod(stored, stat.S_IRUSR | stat.S_IWUSR)
             except Exception:
@@ -1166,8 +1181,12 @@ def gate_open(path: str) -> dict:
         return {"ok": True, "allowed": True, "scanned": False, "verdict": "n/a"}
     scan = scan_file(str(p), deep=True)
     if not scan.get("ok"):
-        return {"ok": True, "allowed": True, "scanned": False, "verdict": "unknown",
-                "error": scan.get("error")}
+        # A file we COULDN'T scan must not be silently allowed through (fail-open bypass).
+        blocked = cfg.get("block_on_scan_error", True)
+        return {"ok": True, "scanned": False, "verdict": "unknown",
+                "allowed": not blocked, "blocked": blocked, "error": scan.get("error"),
+                "message": ("Blocked: this file could not be scanned, so it isn't trusted."
+                            if blocked else None)}
     verdict = scan["verdict"]
     result = {"ok": True, "scanned": True, "verdict": verdict,
               "reasons": scan["reasons"], "engines": scan["engines"]}

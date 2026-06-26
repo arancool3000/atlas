@@ -358,9 +358,29 @@ def _handle(ev: dict, allow_terminate: bool = True) -> None:
             action = "alerted (Ember's own process — not terminated)"
         elif not corroborated:
             action = "alerted (single indicator — not auto-terminated)"
+        elif not _pid_still_matches(pid, ev.get("name")):
+            # PID-recycle TOCTOU guard: the pid no longer maps to the process we flagged,
+            # so killing it could hit an innocent, newly-spawned process. Don't.
+            action = "alerted (process changed before terminate — skipped)"
         else:
             action = "terminated" if _terminate(pid) else "terminate_failed"
     _record(ev, action)
+
+
+def _pid_still_matches(pid, expected_name) -> bool:
+    """True if `pid` still refers to the SAME process we flagged (guards against PID reuse).
+    If we can't tell (no psutil), be conservative and allow the kill only when there's a name."""
+    if not expected_name:
+        return False
+    try:
+        import psutil
+        try:
+            cur = psutil.Process(int(pid)).name() or ""
+        except Exception:
+            return False
+        return os.path.basename(cur).lower() == str(expected_name).lower()
+    except Exception:
+        return True   # no psutil -> can't verify; the other guards still gate the kill
 
 
 # ---------------------------------------------------------------------------

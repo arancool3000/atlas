@@ -164,6 +164,28 @@ def test_prose_with_ioc_words_not_flagged():
     assert r["verdict"] == "clean", r
 
 
+def test_eicar_detected_past_first_8kb():
+    # EICAR hidden after 8KB of padding must still be caught (was only scanned in head).
+    body = (b"A" * 20000) + antivirus.EICAR_SIG
+    p = _write("padded.bin", body)
+    r = antivirus.scan_file(str(p), deep=False)
+    assert r["verdict"] == "malicious", r
+
+
+def test_restore_does_not_overwrite_existing():
+    import os
+    p = _write("victim.exe", antivirus.EICAR_SIG)
+    q = antivirus.quarantine_file(str(p))
+    assert q["ok"], q
+    # Something else now occupies the original path.
+    _write("victim.exe", b"a different, innocent file")
+    r = antivirus.restore_quarantined(q["id"])
+    assert r["ok"], r
+    # The innocent file must be untouched; the restore lands at a non-clobbering name.
+    assert os.path.exists(str(Path(_TMP) / "victim.exe"))
+    assert Path(r["restored_to"]).name != "victim.exe" or r["restored_to"] != str(Path(_TMP) / "victim.exe")
+
+
 def test_compressed_container_not_flagged_on_entropy():
     # A high-entropy .dmg (every installer) must NOT be 'suspicious' just for entropy.
     import os

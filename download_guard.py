@@ -90,7 +90,9 @@ def _do_scan(path: str) -> dict:
     scanner = _SCANNER
     if scanner is None:
         import antivirus  # lazy: keeps module import light + testable
-        scanner = antivirus.scan_file
+        # deep=False: LOCAL scan only. The real-time watcher must NOT upload every new
+        # download to VirusTotal (privacy) or block on a network call for each file.
+        return antivirus.scan_file(path, deep=False)
     return scanner(path)
 
 
