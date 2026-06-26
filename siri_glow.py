@@ -12,10 +12,12 @@ never take down the app.
 from __future__ import annotations
 
 import math
+import sys
 
-from PyQt6.QtCore import Qt, QRectF, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QConicalGradient, QPainterPath
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtCore import Qt, QRectF, QTimer, QPointF
+from PyQt6.QtGui import (QColor, QPainter, QPen, QBrush, QConicalGradient, QPainterPath,
+                         QRadialGradient, QLinearGradient)
+from PyQt6.QtWidgets import QWidget, QLabel, QVBoxLayout
 
 
 # Vibrant spectral flow in the spirit of Apple's 2019 "wonderful things" / "By
@@ -52,6 +54,9 @@ class SiriGlow(QWidget):
         self._corner = 22
         self._inset = 5
         self._layers = 5
+        self._state = "listening"
+        self._level = 0.0          # smoothed audio-reactive amplitude (0..1)
+        self._level_provider = None  # optional () -> 0..1|None pulled each frame (live mic)
         self._speed, self._breath, self._min_a, self._max_a, self._stroke = _STATES["listening"]
         self._timer = QTimer(self)
         self._timer.setInterval(16)   # ~60fps
@@ -68,7 +73,44 @@ class SiriGlow(QWidget):
     def set_state(self, state: str):
         cfg = _STATES.get(state)
         if cfg:
+            self._state = state
             self._speed, self._breath, self._min_a, self._max_a, self._stroke = cfg
+
+    def set_level_provider(self, fn):
+        """Install a callable () -> 0..1 (or None) sampled every frame so the band swells
+        and brightens with live sound (the user's voice while listening)."""
+        self._level_provider = fn
+
+    def set_level(self, v):
+        """Push an audio level (0..1) directly (alternative to a provider)."""
+        try:
+            self._level = max(0.0, min(1.0, float(v)))
+        except Exception:
+            pass
+
+    def _update_level(self):
+        """Pull the live level (or synthesise a speech-like one while speaking) and ease
+        toward it — snappy on the way up, smooth on the way down."""
+        target = None
+        if self._level_provider is not None:
+            try:
+                target = self._level_provider()
+            except Exception:
+                target = None
+        if target is None and self._state == "speaking":
+            # No live mic while Ember talks -> a syllable-cadence envelope so the band
+            # still visibly moves "with its voice".
+            env = (0.45 + 0.30 * math.sin(self._t * 7.1)
+                   + 0.18 * math.sin(self._t * 11.7 + 1.3)
+                   + 0.07 * math.sin(self._t * 19.3))
+            target = max(0.0, min(1.0, env))
+        if target is None:
+            target = 0.0
+        target = max(0.0, min(1.0, float(target)))
+        if target > self._level:
+            self._level += (target - self._level) * 0.55
+        else:
+            self._level += (target - self._level) * 0.16
 
     def start(self, state: str = "listening"):
         self.set_state(state)
@@ -97,8 +139,10 @@ class SiriGlow(QWidget):
                 self._timer.stop()
             self.hide()
             return
-        self._phase = (self._phase + self._speed) % 1.0
         self._t += 0.016
+        self._update_level()
+        # Louder sound -> the band spins a touch faster, so it reads as energetic.
+        self._phase = (self._phase + self._speed * (1.0 + 0.8 * self._level)) % 1.0
         try:
             self.update()
         except Exception:
@@ -124,11 +168,15 @@ class SiriGlow(QWidget):
                 return
             cx, cy = w / 2.0, h / 2.0
             angle = self._phase * 360.0
+            # Audio level deepens the breath so the band visibly pulses with the voice.
             breathe = 0.5 + 0.5 * math.sin(self._t * self._breath)
+            breathe = min(1.0, breathe * (1.0 + 0.45 * self._level) + 0.30 * self._level)
             # The global intensity envelope scales everything so the band fades in/out.
             base_alpha = (self._min_a + (self._max_a - self._min_a) * breathe) * 255.0 * self._intensity
             if base_alpha < 1.0:
                 return
+            # Louder -> a thicker, brighter band.
+            stroke = self._stroke * (1.0 + 0.7 * self._level)
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
             inset = self._inset
@@ -137,7 +185,7 @@ class SiriGlow(QWidget):
             path.addRoundedRect(rect, self._corner, self._corner)
             # Widest + faintest layer first, brightest thin core last -> soft bloom.
             for layer in range(self._layers, 0, -1):
-                width = self._stroke * (0.7 + layer)
+                width = stroke * (0.7 + layer)
                 alpha = base_alpha * (0.85 / layer)
                 pen = QPen(QBrush(self._ring_gradient(cx, cy, angle + layer * 6, alpha)), width)
                 pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -210,5 +258,257 @@ class ThinkingDots(QWidget):
                     rr = r * ring
                     p.drawEllipse(QRectF(x - rr, cy - rr, 2 * rr, 2 * rr))
             p.end()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Floating Siri-style orb (a small, FOCUS-PRESERVING listener that appears on
+# "Hey Ember" instead of yanking the whole window forward over your current app).
+# ---------------------------------------------------------------------------
+
+class _Orb(QWidget):
+    """The animated sphere itself: a dark glossy ball with a flowing iridescent light
+    streak (the macOS-15 'Siri' look), breathing with the active state."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setFixedSize(150, 150)
+        self._t = 0.0
+        self._palette = [QColor(h) for h in ("#ffd23f", "#ff5e3a", "#ff2d55",
+                                             "#bf5af2", "#5e5ce6", "#0a84ff", "#36d2c3")]
+        self._speed, self._breath = 0.020, 3.2     # tuned per state
+        self._state = "listening"
+        self._level = 0.0          # smoothed audio-reactive amplitude (0..1)
+        self._level_provider = None
+        self._timer = QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._tick)
+
+    def set_state(self, state):
+        self._state = state
+        self._speed, self._breath = {
+            "listening": (0.024, 3.6), "thinking": (0.012, 1.8), "speaking": (0.020, 5.2),
+        }.get(state, (0.020, 3.2))
+
+    def set_level_provider(self, fn):
+        self._level_provider = fn
+
+    def set_level(self, v):
+        try:
+            self._level = max(0.0, min(1.0, float(v)))
+        except Exception:
+            pass
+
+    def _update_level(self):
+        target = None
+        if self._level_provider is not None:
+            try:
+                target = self._level_provider()
+            except Exception:
+                target = None
+        if target is None and self._state == "speaking":
+            env = (0.45 + 0.30 * math.sin(self._t * 7.1)
+                   + 0.18 * math.sin(self._t * 11.7 + 1.3)
+                   + 0.07 * math.sin(self._t * 19.3))
+            target = max(0.0, min(1.0, env))
+        if target is None:
+            target = 0.0
+        target = max(0.0, min(1.0, float(target)))
+        if target > self._level:
+            self._level += (target - self._level) * 0.55
+        else:
+            self._level += (target - self._level) * 0.16
+
+    def start(self):
+        if not self._timer.isActive():
+            self._timer.start()
+
+    def stop(self):
+        if self._timer.isActive():
+            self._timer.stop()
+
+    def _tick(self):
+        self._t += 0.016
+        self._update_level()
+        try:
+            self.update()
+        except Exception:
+            pass
+
+    def paintEvent(self, _ev):
+        try:
+            w, h = self.width(), self.height()
+            lvl = self._level
+            # The whole sphere swells a little with the voice, and the light beam surges.
+            r = (min(w, h) / 2.0 - 4) * (0.93 + 0.07 * lvl)
+            cx, cy = w / 2.0, h / 2.0
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            breathe = 0.5 + 0.5 * math.sin(self._t * self._breath)
+            breathe = min(1.0, breathe * (1.0 + 0.4 * lvl) + 0.25 * lvl)
+
+            # 1. Dark glossy sphere base.
+            sphere = QRadialGradient(QPointF(cx - r * 0.25, cy - r * 0.3), r * 1.5)
+            sphere.setColorAt(0.0, QColor(58, 60, 74))
+            sphere.setColorAt(0.55, QColor(24, 25, 34))
+            sphere.setColorAt(1.0, QColor(10, 10, 16))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(sphere))
+            p.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+
+            # 2. A refined horizontal LIGHT BEAM across the middle — mostly silver-white with a
+            # faint iridescent tint (more premium/Siri-like than a rainbow band).
+            p.setClipPath(self._circle_path(cx, cy, r))
+            ang = (self._t * self._speed * 360.0) % 360.0
+            # subtle spectral wash underneath
+            grad = QConicalGradient(cx, cy, ang)
+            n = len(self._palette)
+            for i, base in enumerate(self._palette + [self._palette[0]]):
+                c = QColor(base)
+                c.setAlpha(int(70 + 55 * breathe))
+                grad.setColorAt(min(1.0, i / n), c)
+            wash_h = r * (0.5 + 0.16 * breathe + 0.22 * lvl)
+            p.setBrush(QBrush(grad))
+            p.drawEllipse(QRectF(cx - r * 1.05, cy - wash_h / 2, 2 * r * 1.05, wash_h))
+            # bright white core beam on top — surges with the voice level.
+            beam_h = r * (0.26 + 0.10 * breathe + 0.30 * lvl)
+            core = QLinearGradient(cx - r, cy, cx + r, cy)
+            core.setColorAt(0.0, QColor(255, 255, 255, 0))
+            core.setColorAt(0.5, QColor(255, 255, 255, int(min(255, 180 + 60 * breathe + 40 * lvl))))
+            core.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.setBrush(QBrush(core))
+            p.drawEllipse(QRectF(cx - r, cy - beam_h / 2, 2 * r, beam_h))
+            # dark veil top & bottom so it reads as a contained beam, not a glowing disc
+            veil = QLinearGradient(0, cy - r, 0, cy + r)
+            veil.setColorAt(0.0, QColor(9, 9, 14, 235))
+            veil.setColorAt(0.5, QColor(9, 9, 14, 0))
+            veil.setColorAt(1.0, QColor(9, 9, 14, 235))
+            p.setBrush(QBrush(veil))
+            p.drawRect(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+            p.setClipping(False)
+
+            # 3. Specular highlight + bright rim.
+            hi = QRadialGradient(QPointF(cx - r * 0.35, cy - r * 0.45), r * 0.7)
+            hi.setColorAt(0.0, QColor(255, 255, 255, 120))
+            hi.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.setBrush(QBrush(hi))
+            p.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+            pen = QPen(QColor(255, 255, 255, int(70 + 60 * breathe)), 2.0)
+            p.setPen(pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+            p.end()
+        except Exception:
+            pass
+
+    def _circle_path(self, cx, cy, r):
+        path = QPainterPath()
+        path.addEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
+        return path
+
+
+class SiriOrb(QWidget):
+    """A floating, FOCUS-PRESERVING Siri orb window. It appears over whatever app you're
+    using (it never steals focus or switches apps), shows the orb + a caption, and is
+    click-through. Driven by the host: popup(state) / set_caption(text) / dismiss()."""
+
+    def __init__(self):
+        super().__init__(None)
+        # NB: deliberately NOT Qt.Tool — on macOS a Tool window auto-hides whenever the app
+        # isn't frontmost, which is exactly when the orb needs to be visible (you're in
+        # another app). Frameless + stays-on-top + does-not-accept-focus keeps it floating
+        # over other apps without stealing focus.
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)  # keep current app focused
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 14)
+        lay.setSpacing(8)
+        self._orb = _Orb(self)
+        lay.addWidget(self._orb, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._caption = QLabel("")
+        self._caption.setWordWrap(True)
+        self._caption.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self._caption.setFixedWidth(300)
+        self._caption.setStyleSheet(
+            "color:#f2f3f8; font:14px -apple-system,'Segoe UI',sans-serif;"
+            "background:rgba(18,19,26,205); border:1px solid rgba(255,255,255,28);"
+            "border-radius:14px; padding:9px 13px;")
+        self._caption.setVisible(False)
+        lay.addWidget(self._caption, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.setFixedWidth(332)
+        self._dismiss_timer = QTimer(self)
+        self._dismiss_timer.setSingleShot(True)
+        self._dismiss_timer.timeout.connect(self.dismiss)
+
+    def popup(self, state: str = "listening"):
+        self._dismiss_timer.stop()
+        self._orb.set_state(state)
+        self._orb.start()
+        self._reposition()
+        self.show()
+        self.raise_()          # on top, but WA_ShowWithoutActivating means focus stays put
+        self._elevate()        # float over ALL apps / spaces / fullscreen (macOS)
+
+    def _elevate(self):
+        """macOS: raise the orb above every app and make it visible on all Spaces + over
+        fullscreen apps, so it's a true system-wide overlay (best-effort)."""
+        if sys.platform != "darwin":
+            return
+        try:
+            import objc
+            from ctypes import c_void_p
+            win = objc.objc_object(c_void_p=int(self.winId())).window()
+            if win is None:
+                return
+            win.setLevel_(25)   # NSStatusWindowLevel — above normal app windows
+            # canJoinAllSpaces | stationary | fullScreenAuxiliary
+            win.setCollectionBehavior_((1 << 0) | (1 << 4) | (1 << 8))
+        except Exception:
+            pass
+
+    def set_state(self, state: str):
+        self._orb.set_state(state)
+
+    def set_level_provider(self, fn):
+        """Feed the orb a live audio level so it pulses with the user's voice."""
+        self._orb.set_level_provider(fn)
+
+    def set_level(self, v):
+        self._orb.set_level(v)
+
+    def set_caption(self, text: str):
+        text = (text or "").strip()
+        if not text:
+            self._caption.setVisible(False)
+        else:
+            self._caption.setText(text[:400])
+            self._caption.setVisible(True)
+        self._reposition()
+
+    def dismiss_after(self, ms: int):
+        self._dismiss_timer.start(max(500, int(ms)))
+
+    def dismiss(self):
+        self._orb.stop()
+        self.hide()
+        self._caption.setVisible(False)
+
+    def _reposition(self):
+        """Sit near the bottom-centre of the primary screen (like the macOS Siri orb)."""
+        try:
+            from PyQt6.QtWidgets import QApplication
+            self.adjustSize()
+            scr = QApplication.primaryScreen().availableGeometry()
+            x = scr.x() + (scr.width() - self.width()) // 2
+            y = scr.y() + scr.height() - self.height() - 70
+            self.move(x, y)
         except Exception:
             pass

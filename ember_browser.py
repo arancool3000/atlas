@@ -10,6 +10,8 @@ AI-first (uses your Gemini or Claude key from Ember Settings):
 - ✨ AI panel: Summarize / Ask about the page.
 - 🔎 AI Check: estimate whether the page's text is AI-generated.
 - "ai <question>" or a trailing "?" in the address bar asks without a URL.
+- 🧩 AI extension maker: describe what you want ("hide the comments") and Ember's AI
+  writes a userscript that's injected into matching pages (see browser_extensions.py).
 
 Plus: tabs, bookmarks, find-in-page (Ctrl+F), zoom (Ctrl+ +/-), Ctrl+T/W/L.
 
@@ -24,11 +26,12 @@ import threading
 from pathlib import Path
 from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 
-from PyQt6.QtCore import Qt, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QUrl, pyqtSignal, QPropertyAnimation, QEasingCurve, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton,
                              QTabWidget, QLabel, QTextBrowser, QSplitter, QSizePolicy, QMenu,
-                             QInputDialog, QMessageBox, QLineEdit as _QLE)
+                             QInputDialog, QMessageBox, QProgressBar, QGraphicsOpacityEffect,
+                             QLineEdit as _QLE)
 
 try:
     from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -148,6 +151,21 @@ def _ddg(query: str):
         return []
 
 
+def _fetch_page_text(url: str, limit: int = 3500) -> str:
+    """Best-effort fetch + strip of a result page's readable text (for grounding the AI
+    answer in CURRENT web content instead of the model's training data)."""
+    try:
+        import re
+        import requests
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (EmberBrowser)"}, timeout=8)
+        t = re.sub(r"(?is)<(script|style|noscript|svg|header|footer|nav).*?</\1>", " ", r.text)
+        t = re.sub(r"(?s)<[^>]+>", " ", t)
+        t = re.sub(r"\s+", " ", _html.unescape(t)).strip()
+        return t[:limit]
+    except Exception:
+        return ""
+
+
 def _instant_answer(query: str):
     """Compute a quick local answer for arithmetic queries (e.g. '12*8+3')."""
     import re
@@ -163,6 +181,7 @@ def _instant_answer(query: str):
 class EmberBrowser(QWidget):
     _ai_result = pyqtSignal(str)
     _search_result = pyqtSignal(str, str)
+    _ext_made = pyqtSignal(str, str, str, str)   # name, match, description, js
 
     def __init__(self, settings: dict | None = None):
         super().__init__()
@@ -173,6 +192,7 @@ class EmberBrowser(QWidget):
         self.setStyleSheet(BROWSER_QSS)
         self._ai_result.connect(self._show_ai_result)
         self._search_result.connect(self._load_search_results)
+        self._ext_made.connect(self._on_ext_made)
         self._bookmarks = self._load_bookmarks()
         self._history = self._load_history()
 
@@ -203,10 +223,27 @@ class EmberBrowser(QWidget):
             b.clicked.connect(fn)
             return b
 
-        bar.addWidget(_btn("←", "Back", lambda: self._cur() and self._cur().back()))
-        bar.addWidget(_btn("→", "Forward", lambda: self._cur() and self._cur().forward()))
-        bar.addWidget(_btn("⟳", "Reload", lambda: self._cur() and self._cur().reload()))
-        bar.addWidget(_btn("⌂", "Ember Search home", lambda: self._go_home()))
+        def _ibtn(icon_name, fallback, tip, fn, w=34):
+            """A toolbar button using Ember's own icon set, falling back to text/emoji if
+            the SVG icon can't be rendered — so the bar never ends up blank."""
+            b = _btn("", tip, fn, w)
+            try:
+                import icons
+                from PyQt6.QtCore import QSize
+                ic = icons.qicon(icon_name, size=18, color="#cdd1db")
+                if ic is not None and not ic.isNull():
+                    b.setIcon(ic)
+                    b.setIconSize(QSize(18, 18))
+                    return b
+            except Exception:
+                pass
+            b.setText(fallback)
+            return b
+
+        bar.addWidget(_ibtn("back", "←", "Back", lambda: self._cur() and self._cur().back()))
+        bar.addWidget(_ibtn("forward", "→", "Forward", lambda: self._cur() and self._cur().forward()))
+        bar.addWidget(_ibtn("reload", "⟳", "Reload", lambda: self._cur() and self._cur().reload()))
+        bar.addWidget(_ibtn("home", "⌂", "Ember Search home", lambda: self._go_home()))
         self._lock = QLabel("🔒")
         bar.addWidget(self._lock)
         self.address = QLineEdit()
@@ -215,17 +252,29 @@ class EmberBrowser(QWidget):
         self.address.returnPressed.connect(self._navigate_from_bar)
         self.address.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         bar.addWidget(self.address, 1)
-        bar.addWidget(_btn("★", "Bookmark this page", self._bookmark_current))
-        bar.addWidget(_btn("📑", "Bookmarks", self._show_bookmarks_menu))
-        bar.addWidget(_btn("📜", "History", self._show_history_menu))
-        bar.addWidget(_btn("📖", "Reader mode", self._reader_mode))
-        bar.addWidget(_btn("🌙", "Dark mode for this site", self._toggle_dark))
-        bar.addWidget(_btn("🔎", "Find on page (Ctrl+F)", self._toggle_find))
+        bar.addWidget(_ibtn("star", "★", "Bookmark this page", self._bookmark_current))
+        bar.addWidget(_ibtn("bookmark", "📑", "Bookmarks", self._show_bookmarks_menu))
+        bar.addWidget(_ibtn("history", "📜", "History", self._show_history_menu))
+        bar.addWidget(_ibtn("book", "📖", "Reader mode", self._reader_mode))
+        bar.addWidget(_ibtn("moon", "🌙", "Dark mode for this site", self._toggle_dark))
+        bar.addWidget(_ibtn("search", "🔎", "Find on page (Ctrl+F)", self._toggle_find))
         bar.addWidget(_btn("✓AI", "Check if the page text is AI-generated", self._ai_check_page, w=50))
-        bar.addWidget(_btn("🔑", "Passwords (save / fill / manage logins)", self._show_password_menu))
-        bar.addWidget(_btn("+", "New tab", lambda: self._new_tab()))
-        bar.addWidget(_btn("✨", "AI panel", self._toggle_ai))
+        bar.addWidget(_ibtn("key", "🔑", "Passwords (save / fill / manage logins)", self._show_password_menu))
+        bar.addWidget(_ibtn("puzzle", "🧩", "Extensions — let Ember's AI build one for you", self._show_extensions_menu))
+        bar.addWidget(_ibtn("plus", "+", "New tab", lambda: self._new_tab()))
+        bar.addWidget(_ibtn("sparkle", "✨", "AI panel", self._toggle_ai))
         outer.addLayout(bar)
+
+        # Slim page-load progress line (animates as pages load, fades out when done).
+        self._loadbar = QProgressBar()
+        self._loadbar.setTextVisible(False)
+        self._loadbar.setRange(0, 100)
+        self._loadbar.setFixedHeight(3)
+        self._loadbar.setStyleSheet(
+            "QProgressBar{background:transparent;border:none;}"
+            "QProgressBar::chunk{background:#e2562a;}")
+        self._loadbar.setVisible(False)
+        outer.addWidget(self._loadbar)
 
         # find bar (hidden until Ctrl+F)
         self._find_bar = QWidget()
@@ -293,6 +342,8 @@ class EmberBrowser(QWidget):
         view.urlChanged.connect(lambda u, v=view: self._on_url_changed(v, u))
         view.titleChanged.connect(lambda t, v=view: self._on_title(v, t))
         view.loadFinished.connect(lambda ok, v=view: self._on_load_finished(v, ok))
+        view.loadStarted.connect(lambda v=view: self._on_load_progress(v, 0))
+        view.loadProgress.connect(lambda pct, v=view: self._on_load_progress(v, pct))
         idx = self.tabs.addTab(view, "New tab")
         self.tabs.setCurrentIndex(idx)
         if url:
@@ -339,8 +390,8 @@ class EmberBrowser(QWidget):
         low = text.lower()
         if low.startswith("ai ") or text.endswith("?"):
             q = text[3:].strip() if low.startswith("ai ") else text
-            self._ai_panel.setVisible(True)
-            self._ask_ai(q)
+            self._set_ai_panel_visible(True)
+            self._ask_web(q)
             return
         url = self._to_url(text)
         if url:
@@ -386,7 +437,24 @@ class EmberBrowser(QWidget):
         self._status.setText(f"🛡 {self._guard.blocked} trackers blocked this session"
                              f"   ·   {len(self._bookmarks)} bookmarks")
 
+    def _on_load_progress(self, view, pct: int):
+        """Drive the slim top progress line as the CURRENT tab loads (ignore background tabs)."""
+        bar = getattr(self, "_loadbar", None)
+        if bar is None or view is not self._cur():
+            return
+        try:
+            if pct < 100:
+                if not bar.isVisible():
+                    bar.setVisible(True)
+                bar.setValue(pct)
+            else:
+                bar.setValue(100)
+                QTimer.singleShot(280, lambda: bar.setVisible(False) if bar.value() >= 100 else None)
+        except Exception:
+            pass
+
     def _on_load_finished(self, view, ok):
+        self._on_load_progress(view, 100)
         self._refresh_status()
         if not ok:
             return
@@ -400,6 +468,20 @@ class EmberBrowser(QWidget):
             if login:
                 self._status.setText(f"🔑 Saved login for {login['domain']} — click the 🔑 button to fill")
                 self._pending_autofill_domain = login["domain"]
+        except Exception:
+            pass
+        # Inject any enabled, matching AI-built extensions (userscripts) for this page.
+        try:
+            import browser_extensions
+            url = view.url().toString()
+            if url.startswith("http"):
+                scripts = browser_extensions.scripts_for_url(url)
+                for ext in scripts:
+                    view.page().runJavaScript(
+                        browser_extensions.wrap_for_injection(ext.get("js", "")))
+                if scripts:
+                    names = ", ".join(e.get("name", "?") for e in scripts)
+                    self._status.setText(f"🧩 Ran extension(s): {names}")
         except Exception:
             pass
 
@@ -480,6 +562,129 @@ class EmberBrowser(QWidget):
                 browser_passwords.delete_login(dom)
                 self._status.setText(f"Deleted saved login for {dom}")
 
+    # ---- AI-built extensions (userscripts) ----
+    def _show_extensions_menu(self):
+        import browser_extensions
+        menu = QMenu(self)
+        make = menu.addAction("✨ Make an extension with AI…")
+        menu.addSeparator()
+        action_map = {}
+        exts = browser_extensions.list_extensions()
+        if exts:
+            for e in exts:
+                mark = "●" if e.get("enabled", True) else "○"
+                sub = menu.addMenu(f"{mark} {e.get('name', 'Untitled')}")
+                action_map[sub.addAction("Run on this page now")] = ("run", e)
+                action_map[sub.addAction("Disable" if e.get("enabled", True) else "Enable")] = ("toggle", e)
+                action_map[sub.addAction("Edit JavaScript…")] = ("edit", e)
+                action_map[sub.addAction("Delete")] = ("delete", e)
+        else:
+            none = menu.addAction("(no extensions yet — make one!)")
+            none.setEnabled(False)
+        from PyQt6.QtGui import QCursor
+        chosen = menu.exec(QCursor.pos())
+        if chosen is None:
+            return
+        if chosen is make:
+            self._make_extension_ai()
+            return
+        kind_ext = action_map.get(chosen)
+        if not kind_ext:
+            return
+        kind, e = kind_ext
+        if kind == "run":
+            self._run_extension_now(e)
+        elif kind == "toggle":
+            new_state = not e.get("enabled", True)
+            browser_extensions.set_enabled(e["id"], new_state)
+            self._status.setText(("Enabled " if new_state else "Disabled ") + e.get("name", ""))
+        elif kind == "edit":
+            self._edit_extension(e)
+        elif kind == "delete":
+            if QMessageBox.question(self, "Delete extension",
+                                    f"Delete “{e.get('name', '')}”?") == QMessageBox.StandardButton.Yes:
+                browser_extensions.delete_extension(e["id"])
+                self._status.setText("Deleted extension")
+
+    def _make_extension_ai(self):
+        import browser_extensions
+        desc, ok = QInputDialog.getMultiLineText(
+            self, "Make an extension",
+            "Describe what it should do — Ember's AI writes the JavaScript:\n"
+            "(e.g. “hide the comments section”, “give every page a dark background”)", "")
+        if not ok or not desc.strip():
+            return
+        v = self._cur()
+        cur_url = v.url().toString() if v is not None else ""
+        try:
+            default_match = urlparse(cur_url).netloc or "*"
+        except Exception:
+            default_match = "*"
+        match, ok = QInputDialog.getText(
+            self, "Where should it run?",
+            "URL match — a domain (youtube.com), a glob (*.example.com/*), or * for every site:",
+            _QLE.EchoMode.Normal, default_match)
+        if not ok:
+            return
+        match = match.strip() or "*"
+        name, ok = QInputDialog.getText(self, "Name it", "Extension name:",
+                                        _QLE.EchoMode.Normal, desc.strip()[:40])
+        if not ok:
+            return
+        name = name.strip() or "Untitled"
+        self._status.setText("🧩 Ember is writing your extension…")
+
+        def work():
+            out = self._model_text(browser_extensions.build_userscript_prompt(desc, cur_url))
+            self._ext_made.emit(name, match, desc.strip(), browser_extensions.extract_js(out))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_ext_made(self, name, match, desc, js):
+        import browser_extensions
+        if not js.strip() or js.lstrip().startswith(("AI error", "Add a Gemini", "Add an Anthropic")):
+            QMessageBox.warning(self, "Extension",
+                                js.strip() or "The AI didn't return any JavaScript. Try rephrasing.")
+            self._status.setText("Extension not created")
+            return
+        # It's code that will run on real pages — let the user review/edit before saving.
+        reviewed, ok = QInputDialog.getMultiLineText(
+            self, f"Review “{name}”",
+            "Ember wrote this JavaScript. Review/edit it, then OK to save & enable:", js)
+        if not ok:
+            self._status.setText("Extension discarded")
+            return
+        ext = browser_extensions.save_extension(name, match, reviewed, description=desc)
+        self._status.setText(f"🧩 Saved “{name}” — runs on {match}")
+        self._run_extension_now(ext)
+
+    def _run_extension_now(self, ext):
+        import browser_extensions
+        v = self._cur()
+        if v is None:
+            return
+        url = v.url().toString()
+        if not browser_extensions.match_url(ext.get("match", "*"), url):
+            self._status.setText(
+                f"“{ext.get('name', '')}” is scoped to {ext.get('match', '*')} — not this page")
+            return
+        try:
+            v.page().runJavaScript(browser_extensions.wrap_for_injection(ext.get("js", "")))
+            self._status.setText(f"🧩 Ran “{ext.get('name', '')}”")
+        except Exception as e:
+            self._status.setText(f"Extension error: {e}")
+
+    def _edit_extension(self, ext):
+        import browser_extensions
+        js, ok = QInputDialog.getMultiLineText(
+            self, f"Edit “{ext.get('name', '')}”", "JavaScript:", ext.get("js", ""))
+        if not ok:
+            return
+        browser_extensions.save_extension(
+            ext.get("name", ""), ext.get("match", "*"), js,
+            description=ext.get("description", ""), ext_id=ext.get("id"),
+            enabled=ext.get("enabled", True))
+        self._status.setText("Updated extension")
+
     # ---- tab groups ----
     _GROUP_COLORS = [("Red", "#f7768e"), ("Amber", "#e0af68"), ("Green", "#9ece6a"),
                      ("Blue", "#7aa2f7"), ("Purple", "#bb9af7"), ("Cyan", "#7dcfff")]
@@ -531,14 +736,31 @@ class EmberBrowser(QWidget):
                   QUrl(f"https://{SEARCH_HOST}/"))
         threading.Thread(target=self._search_thread, args=(query,), daemon=True).start()
 
+    def _grounded_answer(self, query: str, results):
+        """Answer a query GROUNDED in live web content: pull text from the top results and
+        have the model answer from THAT (with citations) rather than its training data."""
+        context = ""
+        for i, (title, href) in enumerate(results[:3], 1):
+            snippet = _fetch_page_text(href)
+            if snippet:
+                context += f"\n\n[{i}] {title} — {href}\n{snippet}"
+        if not context:
+            return self._model_text(
+                "Answer this concisely and factually. If it needs current data you may not "
+                "have, say so.\n\nQuery: " + query)
+        return self._model_text(
+            "You are Ember's web search. Answer the user's query using ONLY the live web "
+            "results below (they are current — prefer them over your own memory). Be concise "
+            "and cite sources inline as [1], [2], [3] matching the numbering. If the results "
+            "don't answer it, say so.\n\n"
+            f"WEB RESULTS:{context}\n\nQUERY: {query}")
+
     def _search_thread(self, query: str):
-        answer = self._model_text(
-            "Answer this search query concisely and factually in 2-4 sentences. "
-            "If it needs current data you may not have, say so briefly.\n\nQuery: " + query)
+        results = _ddg(query)
+        answer = self._grounded_answer(query, results)
         inst = _instant_answer(query)
         if inst:
             answer = f"{inst}\n\n{answer}"
-        results = _ddg(query)
         self._search_result.emit(query, self._search_results_html(query, answer, results))
 
     def _search_results_html(self, query, answer, results):
@@ -585,25 +807,78 @@ class EmberBrowser(QWidget):
         sb.clicked.connect(lambda: self._ask_ai("Summarize this page in a few clear bullet points."))
         cb = QPushButton("AI-check page")
         cb.clicked.connect(self._ai_check_page)
+        wb = QPushButton("🌐 Web")
+        wb.setToolTip("Search the live web to answer what's in the box")
+        wb.clicked.connect(lambda: self._ask_web(self._ai_in.text().strip()))
         row.addWidget(sb)
         row.addWidget(cb)
+        row.addWidget(wb)
         lay.addLayout(row)
         self._ai_out = QTextBrowser()
         self._ai_out.setOpenExternalLinks(True)
         lay.addWidget(self._ai_out, 1)
         self._ai_in = QLineEdit()
-        self._ai_in.setPlaceholderText("Ask about this page…")
+        self._ai_in.setPlaceholderText("Ask about this page  ·  or click 🌐 Web to search the internet")
+        # Enter = ask about the current page; 🌐 Web = search the internet.
         self._ai_in.returnPressed.connect(lambda: self._ask_ai(self._ai_in.text().strip()))
         lay.addWidget(self._ai_in)
         return panel
 
     def _toggle_ai(self):
-        self._ai_panel.setVisible(not self._ai_panel.isVisible())
+        self._set_ai_panel_visible(not self._ai_panel.isVisible())
+
+    def _set_ai_panel_visible(self, show: bool):
+        """Show/hide the AI side panel with a quick opacity fade (it's a plain QWidget, so
+        an opacity effect is safe here — unlike the native web view)."""
+        panel = self._ai_panel
+        if show == panel.isVisible() and show:
+            return
+        try:
+            eff = panel.graphicsEffect()
+            if not isinstance(eff, QGraphicsOpacityEffect):
+                eff = QGraphicsOpacityEffect(panel)
+                panel.setGraphicsEffect(eff)
+            anim = QPropertyAnimation(eff, b"opacity", self)
+            anim.setDuration(160)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            if show:
+                panel.setVisible(True)
+                eff.setOpacity(0.0)
+                anim.setStartValue(0.0)
+                anim.setEndValue(1.0)
+            else:
+                anim.setStartValue(1.0)
+                anim.setEndValue(0.0)
+                anim.finished.connect(lambda: panel.setVisible(False))
+            anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+            self._panel_anim = anim   # keep a ref so it isn't GC'd mid-flight
+        except Exception:
+            panel.setVisible(show)
+
+    def _ask_web(self, question: str):
+        """Answer a general question by SEARCHING THE WEB (live results), not just the model's
+        memory. Used for address-bar 'ai …' / '?' queries and the AI panel's 🌐 Web button."""
+        if not question:
+            return
+        self._set_ai_panel_visible(True)
+        self._ai_in.clear()
+        self._ai_out.append(f"<b>You:</b> {_html.escape(question)}")
+        self._ai_out.append("<i>🌐 Searching the web…</i>")
+
+        def work():
+            results = _ddg(question)
+            ans = self._grounded_answer(question, results)
+            if results:
+                src = "<br>".join(f"[{i}] <a href='{_html.escape(h)}'>{_html.escape(t)}</a>"
+                                  for i, (t, h) in enumerate(results[:3], 1))
+                ans = ans + "\n\n<b>Sources:</b><br>" + src
+            self._ai_result.emit(ans)
+        threading.Thread(target=work, daemon=True).start()
 
     def _ask_ai(self, question: str):
         if not question:
             return
-        self._ai_panel.setVisible(True)
+        self._set_ai_panel_visible(True)
         self._ai_in.clear()
         self._ai_out.append(f"<b>You:</b> {_html.escape(question)}")
         v = self._cur()
@@ -615,24 +890,31 @@ class EmberBrowser(QWidget):
             daemon=True).start())
 
     def _ai_check_page(self):
-        self._ai_panel.setVisible(True)
+        self._set_ai_panel_visible(True)
         v = self._cur()
         if v is None:
             return
-        self._ai_out.append("<b>AI check:</b> analyzing page text…")
+        self._ai_out.append("<b>AI check:</b> analyzing this page (URL + content)…")
+        url = v.url().toString()
 
-        def got(text):
-            try:
-                import ai_detect
-                r = ai_detect.detect_text(text or "")
-            except Exception as e:
-                r = {"ok": False, "error": str(e)}
-            if r.get("ok"):
-                self._ai_result.emit(f"🔎 AI-content check: <b>{r['verdict']}</b> "
-                                     f"({r['ai_likelihood']}% AI-likelihood). {r.get('note','')}")
-            else:
-                self._ai_result.emit(f"AI check: {r.get('error', 'could not analyze')}")
-        v.page().toPlainText(got)
+        # Grab HTML (for builder/provenance fingerprints) AND text (for the heuristic), then
+        # run the whole-page detector off-thread — so e.g. a *.base44.app site is caught.
+        def with_html(page_html):
+            def with_text(text):
+                def work():
+                    try:
+                        import ai_detect
+                        r = ai_detect.detect_page(url=url, html=page_html or "", text=text or "")
+                    except Exception as e:
+                        r = {"ok": False, "error": str(e)}
+                    if r.get("ok"):
+                        self._ai_result.emit(f"🔎 AI-content check: <b>{r['verdict']}</b> "
+                                             f"({r['ai_likelihood']}% AI-likelihood). {r.get('note', '')}")
+                    else:
+                        self._ai_result.emit(f"AI check: {r.get('error', 'could not analyze')}")
+                threading.Thread(target=work, daemon=True).start()
+            v.page().toPlainText(with_text)
+        v.page().toHtml(with_html)
 
     def _page_prompt(self, question, page_text):
         url = self._cur().url().toString() if self._cur() else ""

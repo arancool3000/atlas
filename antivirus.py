@@ -75,12 +75,16 @@ def _quarantine_dir() -> Path:
 
 
 _CONFIG_LOCK = threading.RLock()
+# Serializes every quarantine-index read-modify-write so concurrent quarantines can't
+# clobber each other (which orphaned malware on disk with no index entry).
+_INDEX_LOCK = threading.RLock()
 
 DEFAULT_CONFIG: dict = {
     "enabled": True,
     "scan_downloads": True,        # scan files as they finish downloading
     "scan_before_open": True,      # scan files before opening them
     "block_suspicious_open": True, # also block "suspicious" (not just "malicious") on open
+    "block_on_scan_error": True,   # if a file can't be scanned, refuse to open it (fail CLOSED)
     "vt_api_key": "",              # falls back to env VIRUSTOTAL_API_KEY / VT_API_KEY
     "vt_hash_lookup": True,        # query VirusTotal by SHA-256 (only the hash leaves)
     "vt_upload_unknown": True,     # upload unknown files to VirusTotal for full scanning
@@ -207,6 +211,98 @@ _BENIGN_LOOKING_EXTS = {
     ".mp3", ".mp4", ".mov", ".csv", ".html", ".htm", ".md", ".json", ".xml",
 }
 
+# Inherently high-entropy CONTAINERS / compressed media. Their entropy is ALWAYS ~8 bits/byte,
+# so "high entropy" means nothing here — scanning it just produced false positives on every
+# .dmg / .zip installer. Excluded from the entropy heuristic.
+_COMPRESSED_EXTS = {
+    ".dmg", ".pkg", ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".7z", ".rar",
+    ".jar", ".apk", ".iso", ".cab", ".lz", ".lzma", ".br", ".whl", ".egg",
+    ".mp4", ".mov", ".mkv", ".avi", ".webm", ".mp3", ".m4a", ".aac", ".flac", ".ogg",
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic", ".pdf", ".woff", ".woff2", ".ttf",
+}
+
+# Only these file types are scanned for script/IOC malware indicators. Scanning prose/data
+# (.md/.txt/.pdf) or binaries for indicator STRINGS just flagged security docs and the
+# scanner's own signature database — a huge false-positive source.
+_SCRIPT_EXTS = {
+    ".ps1", ".psm1", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh",
+    ".hta", ".sh", ".bash", ".zsh", ".command", ".py", ".pyw", ".pl", ".rb", ".php",
+    ".scpt", ".reg", ".lnk",
+}
+
+
+# AI second-opinion hook: callable(items) -> list[bool] (True = could cause REAL harm).
+# Set by the UI; lets a heuristic "suspicious" flag be cleared by the model so we don't
+# falsely flag source code / installers / docs.
+_AI_JUDGE = None
+
+
+def set_ai_judge(fn) -> None:
+    global _AI_JUDGE
+    _AI_JUDGE = fn
+
+
+def ai_review_flagged(flagged: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Second-opinion pass over flagged files. ONLY heuristic 'suspicious' items are reviewed
+    (definitive 'malicious' — EICAR / signature / AV / VT — are NEVER downgraded). The AI judge
+    reads a text excerpt of each and decides if it could cause REAL harm; items judged harmless
+    are returned as `cleared` (false positives) — the caller drops them and un-quarantines any
+    that were auto-quarantined. Returns (kept, cleared). One batched call, so it's rate-cheap."""
+    judge = _AI_JUDGE
+    review = [f for f in flagged if f.get("verdict") == "suspicious"]
+    definite = [f for f in flagged if f.get("verdict") != "suspicious"]
+    if not judge or not review:
+        return flagged, []
+    items = []
+    for f in review:
+        excerpt = ""
+        try:
+            excerpt = Path(f["path"]).read_bytes()[:4000].decode("utf-8", "replace")
+        except Exception:
+            pass
+        items.append({"name": Path(f["path"]).name, "reasons": f.get("reasons", []),
+                      "excerpt": excerpt})
+    try:
+        verdicts = judge(items)
+    except Exception:
+        return flagged, []
+    kept, cleared = [], []
+    for f, harmful in zip(review, verdicts):
+        (kept if harmful else cleared).append(f)
+    # Anything unjudged (short list) stays flagged, to be safe.
+    kept += review[len(verdicts):]
+    return definite + kept, cleared
+
+
+def _ember_own_dirs() -> list:
+    """Directories that ARE Ember itself — never flag our own code/signature DB/tests
+    (that's why antivirus.py, test_*.py, README, etc. lit up as 'malware')."""
+    dirs = []
+    try:
+        dirs.append(Path(__file__).resolve().parent)
+    except Exception:
+        pass
+    try:
+        if getattr(sys, "frozen", False):
+            dirs.append(Path(sys.executable).resolve().parent)
+    except Exception:
+        pass
+    return dirs
+
+
+def _is_ember_own(p: Path) -> bool:
+    try:
+        rp = p.resolve()
+        for d in _ember_own_dirs():
+            try:
+                rp.relative_to(d)
+                return True
+            except ValueError:
+                continue
+    except Exception:
+        pass
+    return False
+
 _MACRO_EXTS = {".docm", ".xlsm", ".pptm", ".dotm", ".xltm", ".potm"}
 
 
@@ -229,7 +325,8 @@ def _static_scan(path: Path, cfg: dict | None = None) -> tuple[int, list[str], d
     ext = path.suffix.lower()
 
     # EICAR test signature -> hard malicious signal (caller promotes to malicious).
-    if EICAR_SIG in head:
+    # Scan the whole sampled window, not just the first 8 KB, so it can't be hidden by padding.
+    if EICAR_SIG in sample:
         return 100, ["EICAR anti-malware test signature present"], {"eicar": True}
 
     # Detect executable / native code content.
@@ -279,8 +376,11 @@ def _static_scan(path: Path, cfg: dict | None = None) -> tuple[int, list[str], d
     except Exception:
         pass
 
-    # Entropy: packed / encrypted executable payloads stand out sharply.
-    if cfg.get("entropy_scan", True) and (exec_kind or is_script or ext in _DANGEROUS_EXTS):
+    # Entropy: packed / encrypted executable payloads stand out sharply — but NOT for
+    # compressed containers/media (.dmg/.zip/.png…), which are always ~8 bits/byte and were
+    # the source of "Affinity.dmg is suspicious" false positives.
+    if (cfg.get("entropy_scan", True) and (exec_kind or is_script or ext in _DANGEROUS_EXTS)
+            and ext not in _COMPRESSED_EXTS):
         body = sample[512:] if len(sample) > 2048 else sample
         ent = shannon_entropy(body)
         info["entropy"] = round(ent, 2)
@@ -288,17 +388,25 @@ def _static_scan(path: Path, cfg: dict | None = None) -> tuple[int, list[str], d
             score += 25
             reasons.append(f"very high entropy ({ent:.2f} bits/byte) — likely packed/encrypted code")
 
-    # IOC / fileless content signatures (download-exec, reverse shells, LOLBins…).
-    if cfg.get("ioc_scan", True):
+    # IOC / fileless content signatures (download-exec, reverse shells, LOLBins…). Restricted
+    # to actual SCRIPT files — scanning prose/source for indicator strings flagged security
+    # docs and our own signature DB. And a single low/medium hit no longer flags a file: only
+    # a HIGH-severity technique or 2+ distinct categories raises it to 'suspicious'.
+    if cfg.get("ioc_scan", True) and (is_script or ext in _SCRIPT_EXTS):
         text = sample.decode("utf-8", "ignore")
         ioc_score, ioc_hits = scan_text_iocs(text)
         if ioc_hits:
-            info["ioc_categories"] = sorted({h["category"] for h in ioc_hits})
+            cats = {h["category"] for h in ioc_hits}
+            has_high = any(h["severity"] == "high" for h in ioc_hits)
+            info["ioc_categories"] = sorted(cats)
             info["ioc_max_severity"] = max((h["severity"] for h in ioc_hits),
                                            key=lambda s: _SEV_RANK.get(s, 0))
-            score += min(ioc_score, 75)
             for h in ioc_hits[:6]:
                 reasons.append(f"malware indicator: {h['label']} [{h['category']}]")
+            if has_high or len(cats) >= 2:
+                score += min(ioc_score, 75)      # strong / corroborated -> can flag
+            else:
+                score += min(ioc_score, 20)      # lone weak hint -> note it, rarely enough alone
 
     return min(score, 100), reasons, info
 
@@ -342,10 +450,15 @@ def _scan_archive(path: Path, cfg: dict) -> dict | None:
             for info in zf.infolist():
                 if scanned >= max_members:
                     break
-                if info.is_dir() or info.file_size > member_cap:
+                if info.is_dir():
                     continue
+                # Read a BOUNDED prefix via streaming rather than skipping large members:
+                # skipping on declared size let an attacker pad a member past the cap to evade
+                # the in-archive EICAR/signature/IOC checks (false negative). zf.open + a capped
+                # read still bounds decompression so a zip bomb can't blow up memory.
                 try:
-                    data = zf.read(info.filename)[:member_cap]
+                    with zf.open(info.filename) as fh:
+                        data = fh.read(member_cap + 1)[:member_cap]
                 except Exception:
                     continue
                 scanned += 1
@@ -653,7 +766,11 @@ def _scan_clamav(path: Path) -> dict | None:
             return {"engine": "clamav", "malicious": True, "detail": sig[:300]}
         if res.returncode == 0:
             return {"engine": "clamav", "malicious": False}
-        return None
+        # rc == 2 (or anything else) = clamscan ERRORED (unreadable / encrypted / password-
+        # protected archive, libclamav failure). That is NOT "clean" — surface it as an error
+        # so the file isn't reported clean on the strength of a failed scan.
+        detail = ((res.stderr or res.stdout or "").strip() or "clamscan error")[:300]
+        return {"engine": "clamav", "malicious": False, "error": detail, "scan_error": True}
     except Exception:
         return None
 
@@ -745,6 +862,12 @@ def scan_file(path: str, deep: bool = True) -> dict:
             return {"ok": False, "error": f"not a file: {path}"}
         cfg = get_config()
         size = p.stat().st_size
+        # Never flag Ember's own code / signature DB / tests (they legitimately CONTAIN the
+        # very indicator strings the scanner looks for).
+        if _is_ember_own(p):
+            return {"ok": True, "path": str(p), "sha256": "", "verdict": "clean", "score": 0,
+                    "reasons": ["Ember's own component (trusted, excluded from scanning)"],
+                    "engines": ["self-exclude"], "size": size}
         reasons: list[str] = []
         engines: list[str] = []
         verdict = "clean"
@@ -767,8 +890,10 @@ def scan_file(path: str, deep: bool = True) -> dict:
         elif score >= _SUSPICIOUS_SCORE:
             _raise("suspicious")
 
-        # 2) Hash + known-bad list (built-in + extensible signature DB).
-        sha = sha256_file(p, max_bytes=None) if size <= cfg["max_scan_bytes"] else sha256_file(p, cfg["max_scan_bytes"])
+        # 2) Hash + known-bad list (built-in + extensible signature DB). Always the FULL-file
+        # digest — a truncated hash of a >max_scan_bytes file can never match a known-bad/VT
+        # hash, silently defeating hash detection on large payloads.
+        sha = sha256_file(p)
         if sha in KNOWN_BAD_SHA256 or sha in _signature_db().get("hashes", set()):
             _raise("malicious")
             reasons.append("matches a known-malicious file hash")
@@ -812,9 +937,10 @@ def scan_file(path: str, deep: bool = True) -> dict:
         return {"ok": False, "error": f"scan failed: {e}", "verdict": "unknown"}
 
 
-def scan_directory(path: str, deep: bool = False, max_files: int = 2000) -> dict:
+def scan_directory(path: str, deep: bool = False, max_files: int = 2000, progress=None) -> dict:
     """Recursively scan a folder (Pro 'deep scan'). Confirmed-malicious files are
-    quarantined; suspicious files are reported. deep=True also consults VirusTotal."""
+    quarantined; suspicious files are reported. deep=True also consults VirusTotal.
+    `progress(scanned, flagged, current_path)` is called periodically for a live UI bar."""
     try:
         import plan
         if deep and plan.require("deep_directory_scan"):
@@ -835,6 +961,8 @@ def scan_directory(path: str, deep: bool = False, max_files: int = 2000) -> dict
                     continue
             except OSError:
                 continue
+            if _is_ember_own(p):
+                continue   # don't scan / count Ember's own files
             scanned += 1
             r = scan_file(str(p), deep=deep)
             if r.get("verdict") in ("suspicious", "malicious"):
@@ -842,6 +970,11 @@ def scan_directory(path: str, deep: bool = False, max_files: int = 2000) -> dict
                 if r["verdict"] == "malicious":
                     item["handled"] = _handle_malicious(str(p), r)
                 flagged.append(item)
+            if progress is not None and scanned % 25 == 0:
+                try:
+                    progress(scanned, len(flagged), str(p))
+                except Exception:
+                    pass
         return {"ok": True, "root": str(root), "scanned": scanned,
                 "flagged_count": len(flagged), "flagged": flagged[:200],
                 "reached_limit": scanned >= max_files}
@@ -858,20 +991,34 @@ def _index_path() -> Path:
 
 
 def _load_index() -> list[dict]:
+    """Always return a list of dict entries; a corrupt/old-format file degrades to [] rather
+    than crashing callers (list_quarantine/purge/restore/delete)."""
     try:
         p = _index_path()
         if p.exists():
-            return json.loads(p.read_text("utf-8"))
+            data = json.loads(p.read_text("utf-8"))
+            if isinstance(data, list):
+                return [e for e in data if isinstance(e, dict)]
     except Exception:
         pass
     return []
 
 
-def _save_index(entries: list[dict]) -> None:
+def _save_index(entries: list[dict]) -> bool:
+    """Atomically persist the index (temp file + os.replace) so an interrupted write can't
+    corrupt or truncate the quarantine vault. Returns True on success."""
     try:
-        _index_path().write_text(json.dumps(entries, indent=2), "utf-8")
+        p = _index_path()
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(entries, indent=2), "utf-8")
+        os.replace(tmp, p)   # atomic on POSIX & Windows (same directory)
+        return True
     except Exception:
-        pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
 
 
 def quarantine_file(path: str, reasons: list[str] | None = None, sha256: str = "") -> dict:
@@ -882,14 +1029,9 @@ def quarantine_file(path: str, reasons: list[str] | None = None, sha256: str = "
         if not p.exists():
             return {"ok": False, "error": f"file not found: {path}"}
         cfg = get_config()
-        sha = sha256 or sha256_file(p, cfg["max_scan_bytes"])
+        sha = sha256 or sha256_file(p)   # full-file digest (identity / known-bad / VT)
         qid = f"{int(time.time())}_{sha[:8]}"
         stored = _quarantine_dir() / f"{qid}_{p.name}.quarantine"
-        shutil.move(str(p), str(stored))
-        try:
-            os.chmod(stored, stat.S_IRUSR)  # owner read-only; strip all execute bits
-        except Exception:
-            pass
         now = time.time()
         entry = {
             "id": qid,
@@ -901,9 +1043,26 @@ def quarantine_file(path: str, reasons: list[str] | None = None, sha256: str = "
             "delete_after": (now + cfg["autodelete_days"] * 86400
                              if cfg["on_malware"] == "quarantine_autodelete" else None),
         }
-        entries = _load_index()
-        entries.append(entry)
-        _save_index(entries)
+        with _INDEX_LOCK:
+            shutil.move(str(p), str(stored))
+            try:
+                os.chmod(stored, stat.S_IRUSR)  # owner read-only; strip all execute bits
+            except Exception:
+                pass
+            entries = _load_index()
+            entries.append(entry)
+            if not _save_index(entries):
+                # Index write failed — don't leave the file orphaned in the vault with no
+                # record. Roll it back to where it came from.
+                try:
+                    os.chmod(stored, stat.S_IRUSR | stat.S_IWUSR)
+                except Exception:
+                    pass
+                try:
+                    shutil.move(str(stored), str(p))
+                except Exception:
+                    pass
+                return {"ok": False, "error": "could not write the quarantine index (file left in place)"}
         return {"ok": True, "quarantined": True, "id": qid, "stored_path": str(stored),
                 "original_path": str(p), "delete_after": entry["delete_after"]}
     except Exception as e:
@@ -911,18 +1070,26 @@ def quarantine_file(path: str, reasons: list[str] | None = None, sha256: str = "
 
 
 def list_quarantine() -> dict:
-    """List everything currently in quarantine (purges anything past its grace period first)."""
+    """List everything currently in quarantine (purges anything past its grace period first).
+    A single malformed/old-format entry can never crash the whole listing."""
     purge_expired()
-    entries = _load_index()
-    items = [{
-        "id": e["id"],
-        "original_path": e["original_path"],
-        "sha256": e.get("sha256", ""),
-        "reasons": e.get("reasons", []),
-        "quarantined_at": time.strftime("%Y-%m-%d %H:%M", time.localtime(e["quarantined_at"])),
-        "deletes_on": (time.strftime("%Y-%m-%d %H:%M", time.localtime(e["delete_after"]))
-                       if e.get("delete_after") else "never"),
-    } for e in entries]
+    items = []
+    for e in _load_index():
+        try:
+            if not e.get("id"):
+                continue
+            qa = e.get("quarantined_at")
+            items.append({
+                "id": e["id"],
+                "original_path": e.get("original_path", "?"),
+                "sha256": e.get("sha256", ""),
+                "reasons": e.get("reasons", []),
+                "quarantined_at": (time.strftime("%Y-%m-%d %H:%M", time.localtime(qa)) if qa else "?"),
+                "deletes_on": (time.strftime("%Y-%m-%d %H:%M", time.localtime(e["delete_after"]))
+                               if e.get("delete_after") else "never"),
+            })
+        except Exception:
+            continue
     return {"ok": True, "count": len(items), "items": items}
 
 
@@ -930,21 +1097,31 @@ def restore_quarantined(id: str, destination: str = "") -> dict:
     """Move a quarantined file back to its original location (or `destination`).
     This re-arms a file you previously deemed dangerous, so callers should confirm."""
     try:
-        entries = _load_index()
-        entry = next((e for e in entries if e["id"] == id), None)
-        if not entry:
-            return {"ok": False, "error": f"no quarantine entry with id {id}"}
-        stored = Path(entry["stored_path"])
-        if not stored.exists():
-            return {"ok": False, "error": "quarantined payload is missing"}
-        target = Path(destination).expanduser() if destination else Path(entry["original_path"])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.chmod(stored, stat.S_IRUSR | stat.S_IWUSR)
-        except Exception:
-            pass
-        shutil.move(str(stored), str(target))
-        _save_index([e for e in entries if e["id"] != id])
+        with _INDEX_LOCK:
+            entries = _load_index()
+            entry = next((e for e in entries if e.get("id") == id), None)
+            if not entry:
+                return {"ok": False, "error": f"no quarantine entry with id {id}"}
+            stored = Path(entry["stored_path"])
+            if not stored.exists():
+                return {"ok": False, "error": "quarantined payload is missing"}
+            target = Path(destination).expanduser() if destination else Path(entry["original_path"])
+            if target.is_dir():
+                target = target / Path(entry["original_path"]).name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Never silently clobber a file that now lives at the restore path.
+            if target.exists():
+                stem, suf = target.stem, target.suffix
+                i = 1
+                while target.exists():
+                    target = target.with_name(f"{stem} (restored {i}){suf}")
+                    i += 1
+            try:
+                os.chmod(stored, stat.S_IRUSR | stat.S_IWUSR)
+            except Exception:
+                pass
+            shutil.move(str(stored), str(target))
+            _save_index([e for e in entries if e.get("id") != id])
         return {"ok": True, "restored_to": str(target), "id": id}
     except Exception as e:
         return {"ok": False, "error": f"restore failed: {e}"}
@@ -953,37 +1130,49 @@ def restore_quarantined(id: str, destination: str = "") -> dict:
 def delete_quarantined(id: str) -> dict:
     """Permanently delete a single quarantined file."""
     try:
-        entries = _load_index()
-        entry = next((e for e in entries if e["id"] == id), None)
-        if not entry:
-            return {"ok": False, "error": f"no quarantine entry with id {id}"}
-        try:
-            Path(entry["stored_path"]).unlink(missing_ok=True)
-        except Exception:
-            pass
-        _save_index([e for e in entries if e["id"] != id])
+        with _INDEX_LOCK:
+            entries = _load_index()
+            entry = next((e for e in entries if e.get("id") == id), None)
+            if not entry:
+                return {"ok": False, "error": f"no quarantine entry with id {id}"}
+            try:
+                Path(entry["stored_path"]).unlink(missing_ok=True)
+            except Exception:
+                pass
+            _save_index([e for e in entries if e.get("id") != id])
         return {"ok": True, "deleted": id}
     except Exception as e:
         return {"ok": False, "error": f"delete failed: {e}"}
 
 
 def purge_expired() -> dict:
-    """Delete quarantined files whose grace period has elapsed (the 7-day auto-delete)."""
+    """Delete quarantined files whose grace period has elapsed (the 7-day auto-delete).
+    An entry is dropped ONLY once its file is confirmed gone — otherwise it's kept so a
+    later run retries (never leave orphaned malware on disk with no index record)."""
     now = time.time()
-    entries = _load_index()
-    kept, removed = [], []
-    for e in entries:
-        if e.get("delete_after") and now >= e["delete_after"]:
-            try:
-                Path(e["stored_path"]).unlink(missing_ok=True)
-            except Exception:
-                pass
-            removed.append(e["id"])
-        else:
-            kept.append(e)
-    if removed:
-        _save_index(kept)
-    return {"ok": True, "purged": removed, "remaining": len(kept)}
+    with _INDEX_LOCK:
+        entries = _load_index()
+        kept, removed, failed = [], [], []
+        for e in entries:
+            if e.get("delete_after") and now >= e["delete_after"]:
+                stored = Path(e.get("stored_path", ""))
+                try:
+                    try:
+                        os.chmod(stored, stat.S_IWUSR | stat.S_IRUSR)
+                    except Exception:
+                        pass
+                    stored.unlink()
+                    removed.append(e.get("id"))
+                except FileNotFoundError:
+                    removed.append(e.get("id"))     # already gone == success
+                except Exception as ex:
+                    kept.append(e)                  # keep so the next purge retries
+                    failed.append({"id": e.get("id"), "error": str(ex)})
+            else:
+                kept.append(e)
+        if removed:
+            _save_index(kept)
+    return {"ok": True, "purged": removed, "remaining": len(kept), "failed": failed}
 
 
 # ---------------------------------------------------------------------------
@@ -1035,8 +1224,12 @@ def gate_open(path: str) -> dict:
         return {"ok": True, "allowed": True, "scanned": False, "verdict": "n/a"}
     scan = scan_file(str(p), deep=True)
     if not scan.get("ok"):
-        return {"ok": True, "allowed": True, "scanned": False, "verdict": "unknown",
-                "error": scan.get("error")}
+        # A file we COULDN'T scan must not be silently allowed through (fail-open bypass).
+        blocked = cfg.get("block_on_scan_error", True)
+        return {"ok": True, "scanned": False, "verdict": "unknown",
+                "allowed": not blocked, "blocked": blocked, "error": scan.get("error"),
+                "message": ("Blocked: this file could not be scanned, so it isn't trusted."
+                            if blocked else None)}
     verdict = scan["verdict"]
     result = {"ok": True, "scanned": True, "verdict": verdict,
               "reasons": scan["reasons"], "engines": scan["engines"]}
@@ -1133,7 +1326,20 @@ def _native_command(p: Path, args: list[str]) -> list[str]:
 
 
 def _run_native_sandbox(p: Path, args: list[str], timeout: int) -> dict:
-    cmd = _native_command(p, args)
+    # Stage a COPY in a throwaway temp dir and run THAT — never chmod (+x) or execute
+    # the user's original file in place. Mutating the host file's permissions, or running
+    # it from its real location, are both side effects a sandbox must not have.
+    import tempfile
+    tmpdir = None
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="ember_sbx_")
+        run_path = Path(tmpdir) / (p.name or "sample")  # keep the suffix: _native_command keys on it
+        shutil.copy2(p, run_path)
+    except Exception as e:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        return {"ok": False, "sandbox": "native", "error": f"could not stage file for sandbox: {e}"}
+    cmd = _native_command(run_path, args)
     try:
         if sys.platform == "darwin":
             full = ["/usr/bin/sandbox-exec", "-p", _MAC_SANDBOX_PROFILE, *cmd]
@@ -1145,8 +1351,12 @@ def _run_native_sandbox(p: Path, args: list[str], timeout: int) -> dict:
                 full = [runas, "/trustlevel:0x20000", subprocess.list2cmdline(cmd)]
                 iso = "limited (Windows basic-user restricted token)"
             else:
-                full = cmd
-                iso = "minimal (timeout-confined only)"
+                # NEVER run an untrusted file unconfined — that defeats the entire purpose of
+                # a sandbox. Refuse (mirrors the Linux 'no sandbox' branch) instead of executing
+                # it with the user's full privileges/filesystem/network.
+                return {"ok": False, "sandbox": "none",
+                        "error": "no sandbox available on this Windows host (install Docker "
+                                 "Desktop to run untrusted files safely)"}
         else:
             fj = _which("firejail") or _which("bwrap")
             if fj and fj.endswith("firejail"):
@@ -1159,7 +1369,7 @@ def _run_native_sandbox(p: Path, args: list[str], timeout: int) -> dict:
                 return {"ok": False, "sandbox": "none",
                         "error": "no sandbox available (install Docker or firejail to run untrusted files safely)"}
         try:
-            os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
+            os.chmod(run_path, os.stat(run_path).st_mode | stat.S_IXUSR)  # the copy, not the original
         except Exception:
             pass
         r = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
@@ -1171,6 +1381,9 @@ def _run_native_sandbox(p: Path, args: list[str], timeout: int) -> dict:
                 "note": f"killed after {timeout}s — long-running or hung"}
     except Exception as e:
         return {"ok": False, "sandbox": "native", "error": str(e)}
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def run_in_sandbox(path: str, args: list[str] | None = None, timeout: int = 30) -> dict:

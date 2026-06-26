@@ -36,9 +36,28 @@ _POLL_SECONDS = 2.0           # how often the watcher scans the folder
 _EVENTS_MAXLEN = 200          # bounded history of scan events
 _IN_PROGRESS_EXTS = {".crdownload", ".part", ".download", ".tmp"}
 
+# Executable / script types that warrant a heads-up the moment they land in Downloads —
+# even if the content looks benign, a freshly-downloaded executable is worth flagging.
+_DANGEROUS_DL_EXTS = {
+    ".exe", ".msi", ".scr", ".com", ".pif", ".bat", ".cmd", ".vbs", ".vbe",
+    ".js", ".jse", ".wsf", ".wsh", ".hta", ".ps1", ".psm1", ".lnk", ".jar",
+    ".app", ".pkg", ".dmg", ".command", ".sh", ".bash", ".zsh", ".scpt", ".reg", ".apk",
+}
+
 # Injection point for tests: a callable(path: str) -> dict shaped like
 # antivirus.scan_file (i.e. with a "verdict" key). Default None -> use antivirus.
 _SCANNER = None
+
+# UI hook: callable(alert: dict) fired when a download is a threat or a cautionary
+# executable, so the app can toast/quarantine. dict = {level, path, name, detail}.
+_ON_THREAT = None
+
+
+def set_on_threat(cb) -> None:
+    """Register a callback the watcher fires (on its thread) for threat/caution downloads.
+    The UI marshals this to the main thread to show an alert + offer quarantine."""
+    global _ON_THREAT
+    _ON_THREAT = cb
 
 # ---------------------------------------------------------------------------
 # Module-level state (all guarded by _LOCK)
@@ -71,7 +90,9 @@ def _do_scan(path: str) -> dict:
     scanner = _SCANNER
     if scanner is None:
         import antivirus  # lazy: keeps module import light + testable
-        scanner = antivirus.scan_file
+        # deep=False: LOCAL scan only. The real-time watcher must NOT upload every new
+        # download to VirusTotal (privacy) or block on a network call for each file.
+        return antivirus.scan_file(path, deep=False)
     return scanner(path)
 
 
@@ -139,11 +160,23 @@ def _list_files(folder: Path) -> dict[str, int]:
     return out
 
 
+def _identity(path: str) -> str:
+    """A content-identity key (path + size + mtime). Keying _seen on this — rather than the
+    path alone — means a RE-downloaded or overwritten file at the same path is treated as
+    new and re-scanned (the old code skipped it forever)."""
+    try:
+        st = os.stat(path)
+        return f"{path}|{st.st_size}|{int(st.st_mtime)}"
+    except OSError:
+        return path
+
+
 def _watch_loop(folder: Path, stop: threading.Event) -> None:
     """Poll the folder; scan files that are NEW and have stopped growing.
 
     A file is scanned only once both:
-      * it is not already in `_seen` (so only new arrivals after start), and
+      * its (path,size,mtime) identity isn't already in `_seen` (so new arrivals AND
+        re-downloads/overwrites are caught), and
       * its size is identical across two consecutive polls (settled / complete).
     """
     pending: dict[str, int] = {}  # path -> size observed last poll, not yet scanned
@@ -151,8 +184,9 @@ def _watch_loop(folder: Path, stop: threading.Event) -> None:
         try:
             current = _list_files(folder)
             for path, size in current.items():
+                key = _identity(path)
                 with _LOCK:
-                    already = path in _seen
+                    already = key in _seen
                 if already:
                     continue
                 prev = pending.get(path)
@@ -160,13 +194,37 @@ def _watch_loop(folder: Path, stop: threading.Event) -> None:
                     # Size stable across two polls -> finished writing -> scan.
                     pending.pop(path, None)
                     with _LOCK:
-                        _seen.add(path)
+                        _seen.add(key)
                     try:
                         result = _do_scan(path)
                         status, detail = _classify(result)
                     except Exception as e:  # never let a scan crash the thread
                         status, detail = "error", f"scan raised: {e}"
+                    ext = os.path.splitext(path)[1].lower()
+                    # A clean-but-EXECUTABLE download still deserves a heads-up (this is the
+                    # 'virus.vbs slipped through' case — benign content, dangerous type).
+                    if status == "clean" and ext in _DANGEROUS_DL_EXTS:
+                        status = "caution"
+                        detail = (f"Downloaded an executable file ({ext}). Don't open it unless "
+                                  "you trust the source.")
                     _record(path, status, detail)
+                    # ACT on it: auto-quarantine confirmed malware; alert on threat/caution.
+                    if status in ("threat", "caution"):
+                        if status == "threat" and "malicious" in detail.lower():
+                            try:
+                                import antivirus
+                                qr = antivirus.quarantine_file(path, reasons=[detail])
+                                if qr.get("ok"):
+                                    detail += " — auto-quarantined"
+                            except Exception:
+                                pass
+                        cb = _ON_THREAT
+                        if cb:
+                            try:
+                                cb({"level": status, "path": path,
+                                    "name": os.path.basename(path), "detail": detail})
+                            except Exception:
+                                pass
                 else:
                     # First sighting, or still growing: remember its size.
                     pending[path] = size
@@ -203,7 +261,7 @@ def download_guard_start(folder: str = "") -> dict:
             # Prime the seen-set so existing files are NOT treated as new arrivals.
             _seen.clear()
             existing = _list_files(target)
-            _seen.update(existing.keys())
+            _seen.update(_identity(pth) for pth in existing.keys())
             _watched_folder = target
             _stop_event = threading.Event()
             stop = _stop_event

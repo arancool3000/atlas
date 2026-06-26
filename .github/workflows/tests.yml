@@ -45,7 +45,13 @@ jobs:
             test_wake_word.py \
             test_human_mouse.py \
             test_autostart.py \
-            test_custom_tools.py; do
+            test_custom_tools.py \
+            test_adblock.py \
+            test_audio_level.py \
+            test_browser_extensions.py \
+            test_live_voice.py \
+            test_hotkey_daemon.py \
+            test_icons.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"

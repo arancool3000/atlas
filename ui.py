@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QSizePolicy, QSystemTrayIcon, QMenu,
     QComboBox, QCheckBox, QTabWidget, QListWidget, QListWidgetItem,
     QInputDialog, QFileDialog, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
-    QSlider, QLayout, QGroupBox,
+    QSlider, QLayout, QGroupBox, QProgressBar,
 )
 
 import models as model_catalog
@@ -72,6 +72,8 @@ SLASH_COMMANDS = {
     "/link": "__remote__",
     "/browser": "__browser_app__",
     "/manual": "__manual__",
+    "/antivirus": "__antivirus__",
+    "/adblock": "__adblock__",
     "/features": "__features__",
     "/help": "__help__",
     "/clear": "__clear__",
@@ -177,7 +179,8 @@ COMMAND_CENTER_GROUPS = [
     ("Apps & tools", [
         ("📱 Phone Link",     "__remote__",      "Control this Mac from your phone (Ember Link)"),
         ("🌐 Ember Browser",  "__browser_app__", "Open the secure AI browser — tab groups + password manager"),
-        ("🛡 Antivirus",      "__scan_folder__", "Scan a folder for malware"),
+        ("🛡 Antivirus",      "__antivirus__",   "Open the Antivirus app — scan, quarantine, real-time protection"),
+        ("🚫 Ad blocker",     "__adblock__",     "Block ads & trackers system-wide (every app, not just the browser)"),
         ("📦 Sandbox",        "__sandbox__",     "Run a file safely in an isolated sandbox"),
         ("🔐 Passwords",      "__passwords__",   "Saved website logins (encrypted)"),
         ("🌍 VPN",            "__vpn__",         "Connect / disconnect your WireGuard VPN"),
@@ -229,6 +232,7 @@ FEATURE_CATALOG = [
     ]),
     ("Web & research", [
         ("🌐", "Ember Browser", "A real built-in browser Ember can read and drive (tab groups + passwords).", ("open", "__browser_app__")),
+        ("🧩", "AI extension maker", "In Ember Browser, describe what you want and AI writes a userscript that runs on matching pages (🧩 button).", ("open", "__browser_app__")),
         ("🕸️", "Automate a website", "Open a page and fill forms / click / scrape via the DevTools browser.", ("open", "/web")),
         ("🔎", "Research a topic", "Browse multiple sources, compare, and report back.", ("open", "/research")),
         ("📸", "Screenshot the screen", "Capture the screen so Ember can see and act on it.", ("open", "/shot")),
@@ -243,11 +247,13 @@ FEATURE_CATALOG = [
     ]),
     ("Voice & hands-free", [
         ("🎙️", "Voice chat", "Talk to Ember hands-free — it listens, acts, and speaks back.", ("open", "__voice_chat__")),
+        ("🗣️", "Natural voice (Live API)", "Real-time full-duplex voice that hears your tone/accent & replies naturally (Gemini Live). Enable in Settings ▸ Voice.", ("settings", "Voice")),
         ("👋", "“Hey Ember” wake word", "Always-on wake word so you can summon it by voice. Toggle in Settings ▸ Voice.", ("settings", "Voice")),
         ("🔊", "Spoken replies", "Have Ember read its answers aloud. Settings ▸ Voice.", ("settings", "Voice")),
     ]),
     ("Security & privacy", [
-        ("🛡️", "Antivirus scan", "Scan a folder for malware (entropy + IOC + signatures).", ("open", "__scan_folder__")),
+        ("🛡️", "Antivirus", "Scan, manage quarantine, and toggle real-time protection.", ("open", "__antivirus__")),
+        ("🚫", "Ad blocker", "Block ads & trackers for EVERY app (system-wide hosts sinkhole).", ("open", "__adblock__")),
         ("📦", "Sandbox a file", "Run a risky file in an isolated sandbox.", ("open", "__sandbox__")),
         ("🔒", "Real-time protection", "Always-on download, fileless & Security-Center scanning. Settings ▸ Security.", ("settings", "Security")),
         ("🌍", "VPN", "Connect/disconnect your WireGuard VPN.", ("open", "__vpn__")),
@@ -390,6 +396,11 @@ def load_settings() -> dict:
         "voice_chat_auto_send": True,
         "voice_chat_continue_after_silence": True,
         "voice_chat_phrase_timeout": 8,
+        "tts_engine": "system",       # read-aloud engine: system | gemini | soundtools
+        "gemini_tts_voice": "Kore",
+        "soundtools_api_key": "",
+        "live_voice_enabled": False,  # use the Gemini Live API for real-time natural voice chat
+        "live_voice_voice": "Zephyr", # Live API prebuilt voice name
         "wake_word": True,            # always-on "hey ember" wake listening
         "glow_animation": True,       # Siri-style flowing glow while listening/thinking/speaking
         "bubble_animation": True,     # grow-in animation for new chat bubbles
@@ -403,6 +414,7 @@ def load_settings() -> dict:
         "auto_update": True,
         "lean_tools": True,
         "hotkey": "ctrl+shift+space",
+        "hotkey_daemon": False,       # always-on login helper so the hotkey works even when quit
         "request_timeout_seconds": 15,
         "animations_enabled": True,
         "glow_enabled": True,
@@ -605,6 +617,8 @@ class EventBridge(QObject):
     notice = pyqtSignal(str)  # post a one-line system bubble from a background thread
     source_updated = pyqtSignal(str)  # a git source checkout fast-forwarded to a new version
     wake_detected = pyqtSignal()  # the "hey ember" wake word was heard (from the wake thread)
+    download_alert = pyqtSignal(object)  # a downloaded file was a threat / cautionary executable
+    live_voice_event = pyqtSignal(str, str)  # (kind, text) from the Live API voice thread
 
 
 class MiniPill(QWidget):
@@ -1124,12 +1138,21 @@ class SettingsDialog(QDialog):
             lambda v: self.glass_opacity_value.setText(_blur_word(v))
         )
         row_g = QHBoxLayout()
-        row_g.addWidget(QLabel("See-through:"))
+        self._glass_seethru_label = QLabel("See-through:")
+        row_g.addWidget(self._glass_seethru_label)
         row_g.addWidget(self.glass_opacity_slider, 1)
         row_g.addWidget(self.glass_opacity_value)
         wrap_g = QWidget()
         wrap_g.setLayout(row_g)
         layout.addRow("  Glass opacity:", wrap_g)
+
+        # The glass slider only does anything when Liquid Glass is ON — grey it out otherwise
+        # (so it's clearly inert instead of "pointlessly" moving with no effect).
+        def _sync_glass_enabled(on):
+            for w in (self.glass_opacity_slider, self.glass_opacity_value, self._glass_seethru_label):
+                w.setEnabled(bool(on))
+        self.liquid_glass_check.toggled.connect(_sync_glass_enabled)
+        _sync_glass_enabled(self.liquid_glass_check.isChecked())
 
         self.accent_combo = QComboBox()
         accents = [
@@ -1200,6 +1223,41 @@ class SettingsDialog(QDialog):
         self.voice_check = QCheckBox("Speak assistant replies aloud")
         self.voice_check.setChecked(bool(self.settings.get("voice_output", False)))
         layout.addRow(self.voice_check)
+
+        # --- Text-to-speech voice/engine ---
+        self.tts_engine_combo = QComboBox()
+        for label, val in (("System voice (free, built-in)", "system"),
+                           ("Gemini TTS — most natural (uses your Gemini key; rate-limited)", "gemini"),
+                           ("Soundtools.io (configure key below)", "soundtools")):
+            self.tts_engine_combo.addItem(label, userData=val)
+        cur_tts = self.settings.get("tts_engine", "system")
+        for i in range(self.tts_engine_combo.count()):
+            if self.tts_engine_combo.itemData(i) == cur_tts:
+                self.tts_engine_combo.setCurrentIndex(i)
+        layout.addRow("Read-aloud voice:", self.tts_engine_combo)
+
+        self.gemini_voice_input = QLineEdit(self.settings.get("gemini_tts_voice", "Kore"))
+        self.gemini_voice_input.setPlaceholderText("Gemini voice name, e.g. Kore, Puck, Charon, Aoede")
+        layout.addRow("Gemini voice:", self.gemini_voice_input)
+
+        self.soundtools_key_input = QLineEdit(self.settings.get("soundtools_api_key", ""))
+        self.soundtools_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.soundtools_key_input.setPlaceholderText("Soundtools.io API key (optional)")
+        layout.addRow("Soundtools key:", self.soundtools_key_input)
+
+        # --- Natural voice (Gemini Live API, real-time full-duplex) ---
+        self.live_voice_check = QCheckBox(
+            "Natural voice for Voice Chat (Gemini Live API — real-time, understands tone/accent)")
+        self.live_voice_check.setChecked(bool(self.settings.get("live_voice_enabled", False)))
+        self.live_voice_check.setToolTip(
+            "Streams a live conversation instead of record→transcribe→speak: it hears HOW you "
+            "talk, replies in a natural neural voice, supports barge-in, and isn't capped by the "
+            "per-message rate limit. Needs a Gemini key + pyaudio.")
+        layout.addRow(self.live_voice_check)
+
+        self.live_voice_voice_input = QLineEdit(self.settings.get("live_voice_voice", "Zephyr"))
+        self.live_voice_voice_input.setPlaceholderText("Live voice name, e.g. Zephyr, Puck, Charon, Kore, Aoede")
+        layout.addRow("Natural voice name:", self.live_voice_voice_input)
 
         self.voice_chat_reply_check = QCheckBox("Voice chat always speaks replies")
         self.voice_chat_reply_check.setChecked(bool(self.settings.get("voice_chat_spoken_replies", True)))
@@ -1273,6 +1331,20 @@ class SettingsDialog(QDialog):
         self.hotkey_input = QLineEdit(self.settings.get("hotkey", "ctrl+shift+space"))
         self.hotkey_input.setPlaceholderText("e.g. ctrl+alt+a, ctrl+shift+space")
         layout.addRow("Global summon hotkey:", self.hotkey_input)
+
+        self.hotkey_daemon_check = QCheckBox(
+            "Make the hotkey work even when Ember is fully quit")
+        try:
+            import hotkey_daemon
+            self.hotkey_daemon_check.setChecked(hotkey_daemon.is_installed())
+        except Exception:
+            self.hotkey_daemon_check.setChecked(bool(self.settings.get("hotkey_daemon", False)))
+        self.hotkey_daemon_check.setToolTip(
+            "Installs a tiny always-on login helper that listens for the shortcut and brings "
+            "Ember forward (launching it if needed) — so the hotkey works after you Quit, not "
+            "just while Ember is open. macOS needs Input Monitoring permission for the helper.")
+        self.hotkey_daemon_check.stateChanged.connect(self._toggle_hotkey_daemon)
+        layout.addRow(self.hotkey_daemon_check)
 
         self.timeout_input = QLineEdit(str(self.settings.get("request_timeout_seconds", 15)))
         self.timeout_input.setPlaceholderText("seconds, 10-60 (lower = faster failover)")
@@ -1948,6 +2020,21 @@ class SettingsDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Launch at login", str(e))
 
+    def _toggle_hotkey_daemon(self, state):
+        on = bool(state)
+        self.settings["hotkey_daemon"] = on
+        combo = (self.hotkey_input.text().strip() if hasattr(self, "hotkey_input") else "") or \
+            self.settings.get("hotkey", "ctrl+shift+space")
+        try:
+            import hotkey_daemon
+            r = hotkey_daemon.set_enabled(on, combo)
+            if not r.get("ok"):
+                QMessageBox.warning(self, "Global hotkey helper", r.get("error", "failed"))
+            elif on:
+                self._set_status("Global hotkey helper installed — works even when Ember is quit.")
+        except Exception as e:
+            QMessageBox.warning(self, "Global hotkey helper", str(e))
+
     def _refresh_security_center_lbl(self):
         try:
             self._sec_center_lbl.setText(self._security_center_summary())
@@ -2174,6 +2261,13 @@ class SettingsDialog(QDialog):
         if hasattr(self, "glow_anim_check"):
             self.settings["glow_animation"] = self.glow_anim_check.isChecked()
         self.settings["voice_output"] = self.voice_check.isChecked()
+        if hasattr(self, "tts_engine_combo"):
+            self.settings["tts_engine"] = self.tts_engine_combo.currentData() or "system"
+            self.settings["gemini_tts_voice"] = self.gemini_voice_input.text().strip() or "Kore"
+            self.settings["soundtools_api_key"] = self.soundtools_key_input.text().strip()
+        if hasattr(self, "live_voice_check"):
+            self.settings["live_voice_enabled"] = self.live_voice_check.isChecked()
+            self.settings["live_voice_voice"] = self.live_voice_voice_input.text().strip() or "Zephyr"
         self.settings["voice_chat_spoken_replies"] = self.voice_chat_reply_check.isChecked()
         self.settings["voice_chat_auto_send"] = self.voice_auto_send_check.isChecked()
         self.settings["voice_chat_continue_after_silence"] = self.voice_continue_check.isChecked()
@@ -2182,6 +2276,13 @@ class SettingsDialog(QDialog):
         except ValueError:
             self.settings["voice_chat_phrase_timeout"] = 8
         self.settings["hotkey"] = self.hotkey_input.text().strip() or "ctrl+shift+space"
+        # If the quit-proof hotkey helper is installed, refresh it with the (possibly new) combo.
+        try:
+            import hotkey_daemon
+            if hotkey_daemon.is_installed():
+                hotkey_daemon.install(self.settings["hotkey"])
+        except Exception:
+            pass
         try:
             self.settings["request_timeout_seconds"] = max(10, min(60, int(self.timeout_input.text().strip() or 15)))
         except ValueError:
@@ -2403,6 +2504,430 @@ class FeaturesDialog(QDialog):
             sec.setVisible(True if not q else any(r.isVisible() for r in rows))
 
 
+class AntivirusDialog(QDialog):
+    """A standalone graphical Antivirus app: scan, quarantine management, real-time
+    protection toggles, process scan and sandbox — all in one window instead of buried in
+    Settings. Scans run off the UI thread and report back via _scan_done."""
+    _scan_done = pyqtSignal(dict)
+    _progress_sig = pyqtSignal(int, int, str)
+    _reviewed_sig = pyqtSignal(object, object)   # (kept, cleared) after AI false-positive review
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        import antivirus
+        self._av = antivirus
+        self._settings = getattr(parent, "settings", {}) or {}
+        self._last_flagged = []   # threats from the latest scan (for the actions panel)
+        self.setWindowTitle("Ember Antivirus")
+        self.setMinimumSize(720, 720)
+        self._scan_done.connect(self._on_scan_done)
+        self._progress_sig.connect(self._on_progress)
+        self._reviewed_sig.connect(self._on_reviewed)
+        # AI second opinion: clears heuristic false positives (source code, installers, docs).
+        try:
+            self._av.set_ai_judge(self._ai_judge)
+        except Exception:
+            pass
+
+        v = QVBoxLayout(self)
+        title = QLabel("🛡  Ember Antivirus")
+        title.setObjectName("title")
+        v.addWidget(title)
+        self._status = QLabel("")
+        self._status.setStyleSheet("color:#9aa0b5; font-size:12px;")
+        self._status.setWordWrap(True)
+        v.addWidget(self._status)
+
+        scan_row = QHBoxLayout()
+        for label, fn, primary in (("🔍  Scan a folder…", self._scan_folder, True),
+                                   ("⚡  Quick scan", self._quick_scan, False),
+                                   ("🧠  Scan processes", self._scan_processes, False),
+                                   ("📦  Sandbox a file…", self._sandbox, False)):
+            b = QPushButton(label)
+            if primary:
+                b.setObjectName("send")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(fn)
+            scan_row.addWidget(b)
+        v.addLayout(scan_row)
+
+        self._progress = QLabel("")
+        self._progress.setStyleSheet("color:#e0af68; font-size:12px;")
+        v.addWidget(self._progress)
+        self._bar = QProgressBar()
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(6)
+        self._bar.setVisible(False)
+        v.addWidget(self._bar)
+
+        # --- Threats found (Norton-style: per-item Quarantine / Delete / Ignore) ---
+        th = QLabel("Threats found")
+        th.setObjectName("sectionTitle")
+        th.setStyleSheet("color:#ff6b6b; font-weight:600; margin-top:8px;")
+        v.addWidget(th)
+        self._threats_list = QListWidget()
+        self._threats_list.setMaximumHeight(150)
+        v.addWidget(self._threats_list)
+        trow = QHBoxLayout()
+        qb = QPushButton("🔒 Quarantine")
+        qb.clicked.connect(self._quarantine_threat)
+        xb = QPushButton("🗑 Delete")
+        xb.clicked.connect(self._delete_threat)
+        ib = QPushButton("Ignore")
+        ib.clicked.connect(self._ignore_threat)
+        qa = QPushButton("Quarantine ALL")
+        qa.clicked.connect(self._quarantine_all)
+        for b in (qb, xb, ib):
+            trow.addWidget(b)
+        trow.addStretch()
+        trow.addWidget(qa)
+        v.addLayout(trow)
+
+        rt = QLabel("Real-time protection")
+        rt.setObjectName("sectionTitle")
+        rt.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:8px;")
+        v.addWidget(rt)
+        self._chk_dl = QCheckBox("Download protection — auto-scan new downloads")
+        self._chk_fl = QCheckBox("Fileless / behavioral protection (process monitor)")
+        self._chk_sc = QCheckBox("Always-on Security Center (files · network · persistence)")
+        self._chk_dl.setChecked(bool(self._settings.get("download_protection", True)))
+        self._chk_fl.setChecked(bool(self._settings.get("fileless_protection", True)))
+        self._chk_sc.setChecked(bool(self._settings.get("realtime_security_center", True)))
+        self._chk_dl.stateChanged.connect(lambda s: self._toggle_guard("download", bool(s)))
+        self._chk_fl.stateChanged.connect(lambda s: self._toggle_guard("fileless", bool(s)))
+        self._chk_sc.stateChanged.connect(lambda s: self._toggle_guard("center", bool(s)))
+        for c in (self._chk_dl, self._chk_fl, self._chk_sc):
+            v.addWidget(c)
+
+        q = QLabel("Quarantine")
+        q.setObjectName("sectionTitle")
+        q.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:8px;")
+        v.addWidget(q)
+        self._qlist = QListWidget()
+        v.addWidget(self._qlist, 1)
+        qrow = QHBoxLayout()
+        rb = QPushButton("Restore selected")
+        rb.clicked.connect(self._restore)
+        db = QPushButton("Delete selected")
+        db.clicked.connect(self._delete)
+        rf = QPushButton("Refresh")
+        rf.clicked.connect(self._refresh)
+        qrow.addWidget(rb)
+        qrow.addWidget(db)
+        qrow.addStretch()
+        qrow.addWidget(rf)
+        v.addLayout(qrow)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        v.addWidget(close)
+        self.setStyleSheet(STYLE)
+        self._refresh()
+
+    # ---- status / quarantine ----
+    def _refresh(self):
+        try:
+            st = self._av.security_status()
+            eng = ", ".join(st.get("engines_available", []) or []) or "built-in heuristics"
+            self._status.setText(
+                f"Engines: {eng}    ·    Sandbox: {st.get('sandbox_available')}    ·    "
+                f"Quarantine: {st.get('quarantine_count', 0)} item(s)")
+        except Exception as e:
+            self._status.setText(f"status unavailable: {e}")
+        self._qlist.clear()
+        try:
+            for it in self._av.list_quarantine().get("items", []):
+                name = Path(it.get("original_path", "?")).name
+                reasons = ", ".join(it.get("reasons", []) or [])[:90]
+                item = QListWidgetItem(f"{name}   —   {reasons or 'flagged'}   ({it.get('quarantined_at','')})")
+                item.setData(Qt.ItemDataRole.UserRole, it.get("id"))
+                self._qlist.addItem(item)
+        except Exception:
+            pass
+
+    def _selected_quarantine_id(self):
+        it = self._qlist.currentItem()
+        return it.data(Qt.ItemDataRole.UserRole) if it else None
+
+    def _restore(self):
+        qid = self._selected_quarantine_id()
+        if not qid:
+            return
+        if QMessageBox.question(self, "Restore file",
+                "Restore this file to its original location? It was flagged as dangerous."
+                ) != QMessageBox.StandardButton.Yes:
+            return
+        r = self._av.restore_quarantined(qid)
+        QMessageBox.information(self, "Restore", "Restored." if r.get("ok") else f"Failed: {r.get('error')}")
+        self._refresh()
+
+    def _delete(self):
+        qid = self._selected_quarantine_id()
+        if not qid:
+            return
+        r = self._av.delete_quarantined(qid)
+        QMessageBox.information(self, "Delete", "Deleted." if r.get("ok") else f"Failed: {r.get('error')}")
+        self._refresh()
+
+    # ---- scans (off the UI thread) ----
+    def _scan_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder to scan", str(Path.home()))
+        if d:
+            self._run_scan([d])
+
+    def _quick_scan(self):
+        roots = [str(Path.home() / "Downloads"), str(Path.home() / "Desktop")]
+        roots = [r for r in roots if Path(r).exists()]
+        if roots:
+            self._run_scan(roots)
+
+    def _run_scan(self, paths):
+        self._progress.setText("🔄 Starting scan…")
+        self._bar.setRange(0, 0)          # indeterminate until first progress tick
+        self._bar.setVisible(True)
+        self._threats_list.clear()
+        self._last_flagged = []
+
+        def _prog(scanned, flagged, cur):
+            self._progress_sig.emit(scanned, flagged, cur)
+
+        def work():
+            agg = {"scanned": 0, "flagged": [], "errors": []}
+            for p in paths:
+                try:
+                    r = self._av.scan_directory(p, deep=True, max_files=100000, progress=_prog)
+                    if r.get("ok"):
+                        agg["scanned"] += r.get("scanned", 0)
+                        agg["flagged"] += r.get("flagged", []) or []
+                    else:
+                        agg["errors"].append(r.get("error", "scan failed"))
+                except Exception as e:
+                    agg["errors"].append(str(e))
+            self._scan_done.emit(agg)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_progress(self, scanned, flagged, cur):
+        # Live progress data instead of a beachball.
+        self._bar.setRange(0, 0)
+        name = Path(cur).name if cur else ""
+        self._progress.setText(f"🔄 Scanned {scanned} files · {flagged} flagged   {name[:48]}")
+
+    def _on_scan_done(self, agg):
+        self._progress.setText("")
+        # Process-scan result.
+        if "_processes" in agg:
+            r = agg["_processes"]
+            if not r.get("ok"):
+                QMessageBox.warning(self, "Process scan", r.get("error", "could not scan"))
+                return
+            flagged = r.get("flagged", [])
+            if flagged:
+                lines = "\n".join(f"• {f.get('name')} (pid {f.get('pid')}): {f.get('verdict')}"
+                                  for f in flagged[:15])
+                QMessageBox.warning(self, "Process scan",
+                                    f"⚠ {len(flagged)} suspicious process(es):\n\n{lines}")
+            else:
+                QMessageBox.information(self, "Process scan",
+                                       f"✓ Scanned {r.get('scanned', 0)} processes — nothing malicious.")
+            return
+        # Sandbox result.
+        if "_sandbox" in agg:
+            r = agg["_sandbox"]
+            if r.get("refused"):
+                QMessageBox.warning(self, "Sandbox", r.get("message", "Refused: file is malicious."))
+            elif not r.get("ok"):
+                QMessageBox.warning(self, "Sandbox", r.get("error", "Could not run in the sandbox."))
+            else:
+                QMessageBox.information(self, "Sandbox",
+                    f"Ran via {r.get('method', 'sandbox')} · verdict: {r.get('verdict_hint', '?')} · "
+                    f"exit {r.get('exit_code')}")
+            return
+        # Folder scan finished — populate the Threats panel (Norton-style) with actions.
+        self._bar.setVisible(False)
+        flagged = agg.get("flagged", [])
+        self._last_flagged = list(flagged)
+        self._threats_list.clear()
+        mal = [f for f in flagged if f.get("verdict") == "malicious"]
+        if flagged:
+            self._progress.setText(
+                f"⚠ {len(flagged)} threat(s) found in {agg.get('scanned', 0)} files "
+                f"({len(mal)} malicious). Select one and choose an action below.")
+            for f in flagged:
+                reasons = "; ".join(f.get("reasons", []) or [])[:90]
+                icon = "🟥" if f.get("verdict") == "malicious" else "🟧"
+                item = QListWidgetItem(f"{icon} {Path(f['path']).name}  —  {f.get('verdict')}  ·  {reasons}")
+                item.setData(Qt.ItemDataRole.UserRole, f["path"])
+                item.setToolTip(f["path"])
+                self._threats_list.addItem(item)
+        else:
+            self._progress.setText(f"✓ Scanned {agg.get('scanned', 0)} files — no threats found.")
+        if agg.get("errors"):
+            self._progress.setText(self._progress.text() + "  (some errors occurred)")
+        self._refresh()
+        # AI second opinion on the heuristic 'suspicious' flags — clears false positives.
+        if any(f.get("verdict") == "suspicious" for f in flagged) and self._ai_available():
+            self._progress.setText(self._progress.text() + "   🤖 AI is reviewing flagged files…")
+            items = list(flagged)
+            def review():
+                try:
+                    kept, cleared = self._av.ai_review_flagged(items)
+                except Exception:
+                    kept, cleared = items, []
+                self._reviewed_sig.emit(kept, cleared)
+            threading.Thread(target=review, daemon=True).start()
+
+    def _ai_available(self) -> bool:
+        return bool((self._settings.get("gemini_api_key") or self._settings.get("anthropic_api_key")
+                     or "").strip())
+
+    def _ai_judge(self, items):
+        """ONE batched model call: which flagged files could cause REAL harm? Returns list[bool]."""
+        import ai_detect
+        lines = []
+        for i, it in enumerate(items):
+            lines.append(f"[{i}] {it['name']} — flagged for: {', '.join(it.get('reasons', []))}\n"
+                         f"---content excerpt---\n{(it.get('excerpt') or '')[:1500]}\n---end---")
+        prompt = (
+            "You are a malware analyst. Each numbered item below is a file a HEURISTIC scanner "
+            "flagged as 'suspicious' (often a false positive). For EACH, decide if the file could "
+            "ACTUALLY cause real harm if opened or run. Source code, test files, documentation, "
+            "config, and normal app installers (.dmg/.pkg) are NOT harmful. Real malware "
+            "(reverse shells, ransomware, credential stealers, obfuscated droppers actually wired "
+            "to run) IS harmful. Reply with ONLY a JSON array of booleans in order "
+            "(true = could cause real harm), e.g. [false,true,false].\n\n" + "\n\n".join(lines))
+        raw = ai_detect._ask_model(prompt, self._settings)
+        import re as _re
+        m = _re.search(r"\[[^\]]*\]", raw or "")
+        if not m:
+            return [True] * len(items)   # uncertain -> keep flagged (safe)
+        try:
+            arr = json.loads(m.group(0))
+            out = [bool(x) for x in arr]
+            return out + [True] * (len(items) - len(out))
+        except Exception:
+            return [True] * len(items)
+
+    def _on_reviewed(self, kept, cleared):
+        """AI review came back: drop cleared (false-positive) rows + un-quarantine any that were
+        auto-quarantined, and show how many were cleared."""
+        cleared_paths = {f["path"] for f in (cleared or [])}
+        # Un-quarantine any cleared file that real-time protection had auto-quarantined.
+        for f in (cleared or []):
+            try:
+                for it in self._av.list_quarantine().get("items", []):
+                    if it.get("original_path") == f["path"]:
+                        self._av.restore_quarantined(it["id"])
+            except Exception:
+                pass
+        self._last_flagged = list(kept or [])
+        # Remove cleared rows from the list.
+        for row in range(self._threats_list.count() - 1, -1, -1):
+            it = self._threats_list.item(row)
+            if it and it.data(Qt.ItemDataRole.UserRole) in cleared_paths:
+                self._threats_list.takeItem(row)
+        n = len(cleared_paths)
+        base = self._progress.text().split("   🤖")[0]
+        if n:
+            self._progress.setText(base + f"   ✓ AI cleared {n} false positive(s).")
+        else:
+            self._progress.setText(base + "   ✓ AI confirmed the flags.")
+        self._refresh()
+
+    def _selected_threat_path(self):
+        it = self._threats_list.currentItem()
+        return it.data(Qt.ItemDataRole.UserRole) if it else None
+
+    def _quarantine_threat(self):
+        path = self._selected_threat_path()
+        if not path:
+            return
+        r = self._av.quarantine_file(path, reasons=["quarantined from Antivirus app"])
+        if r.get("ok"):
+            self._take_threat_row()
+            self._refresh()
+        else:
+            QMessageBox.warning(self, "Quarantine", r.get("error", "could not quarantine"))
+
+    def _quarantine_all(self):
+        if not self._last_flagged:
+            return
+        n = 0
+        for f in list(self._last_flagged):
+            if self._av.quarantine_file(f["path"], reasons=f.get("reasons")).get("ok"):
+                n += 1
+        self._threats_list.clear()
+        self._last_flagged = []
+        self._refresh()
+        QMessageBox.information(self, "Quarantine", f"Quarantined {n} item(s).")
+
+    def _delete_threat(self):
+        path = self._selected_threat_path()
+        if not path:
+            return
+        if QMessageBox.question(self, "Delete file",
+                f"Permanently delete this file?\n\n{path}") != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            Path(path).unlink()
+            self._take_threat_row()
+        except Exception as e:
+            QMessageBox.warning(self, "Delete", f"Could not delete: {e}")
+
+    def _ignore_threat(self):
+        self._take_threat_row()
+
+    def _take_threat_row(self):
+        row = self._threats_list.currentRow()
+        if row >= 0:
+            it = self._threats_list.takeItem(row)
+            p = it.data(Qt.ItemDataRole.UserRole) if it else None
+            self._last_flagged = [f for f in self._last_flagged if f.get("path") != p]
+
+    def _scan_processes(self):
+        self._progress.setText("🔄 Scanning running processes…")
+        def work():
+            try:
+                import fileless_guard
+                r = fileless_guard.scan_processes()
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            self._scan_done.emit({"_processes": r})
+        threading.Thread(target=work, daemon=True).start()
+
+    def _sandbox(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a file to run safely in the sandbox")
+        if not path:
+            return
+        self._progress.setText("🔄 Running in sandbox…")
+        def work():
+            try:
+                r = self._av.run_in_sandbox(path)
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            self._scan_done.emit({"_sandbox": r})
+        threading.Thread(target=work, daemon=True).start()
+
+    # _on_scan_done also handles the process/sandbox payloads:
+    def _toggle_guard(self, which, on):
+        try:
+            if which == "download":
+                import download_guard
+                self._settings["download_protection"] = on
+                download_guard.start() if on else download_guard.download_guard_stop()
+            elif which == "fileless":
+                import fileless_guard
+                self._av.set_config(fileless_protection=on)
+                self._settings["fileless_protection"] = on
+                fileless_guard.start() if on else fileless_guard.fileless_guard_stop()
+            elif which == "center":
+                import security_center
+                self._av.set_config(realtime_security_center=on)
+                self._settings["realtime_security_center"] = on
+                security_center.start() if on else security_center.security_center_stop()
+        except Exception as e:
+            QMessageBox.warning(self, "Protection", f"{type(e).__name__}: {e}")
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -2425,6 +2950,8 @@ class EmberWindow(QWidget):
         self._bridge.notice.connect(lambda m: self._add_bubble("system", m))
         self._bridge.source_updated.connect(self._on_source_updated)
         self._bridge.wake_detected.connect(self._on_wake_word)
+        self._bridge.download_alert.connect(self._on_download_alert)
+        self._bridge.live_voice_event.connect(self._on_live_voice_event)
         self._pending_update: dict | None = None
         # macOS never auto-prompts for Accessibility — explicitly request it shortly after launch.
         if not _SAFE_MODE:
@@ -2433,6 +2960,9 @@ class EmberWindow(QWidget):
         self._voice_chat_enabled = False
         self._voice_waiting_for_reply = False
         self._voice_turns = 0
+        self._live_voice = None          # active LiveVoice session (natural voice), if any
+        self._lv_user_buf = ""           # accumulates the user's live transcript for the turn
+        self._lv_ember_buf = ""          # accumulates Ember's live transcript for the turn
         self._title_jobs: set[str] = set()
         self._build_ui()
         self._restore_position()
@@ -2469,6 +2999,7 @@ class EmberWindow(QWidget):
         if self.settings.get("wake_word", True) and not _SAFE_MODE:
             # Always-on "Hey Ember" wake word — starts listening shortly after launch.
             QTimer.singleShot(2400, self._autostart_wake_word)
+        QTimer.singleShot(300, self._apply_tts_config)   # push read-aloud engine to voice
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
@@ -2712,6 +3243,10 @@ class EmberWindow(QWidget):
         self._start_voice_listen(mode="dictation")
 
     def _toggle_voice_chat(self):
+        # A running Live (natural) voice session toggles off here too.
+        if getattr(self, "_live_voice", None) is not None and self._live_voice.is_running():
+            self._stop_live_voice("Voice chat off")
+            return
         if self._voice_chat_enabled:
             self._stop_voice_chat("Voice chat off")
             return
@@ -2719,6 +3254,18 @@ class EmberWindow(QWidget):
             QMessageBox.warning(self, "No API key", "Open settings (gear) and add your Gemini API key first.")
             self._open_settings()
             return
+        # Natural voice (Gemini Live API) — real-time, full-duplex — when enabled + available.
+        if self.settings.get("live_voice_enabled") and (self.settings.get("gemini_api_key") or "").strip():
+            try:
+                import live_voice
+                if live_voice.available():
+                    self._start_live_voice()
+                    return
+                self._add_bubble("system",
+                    "Natural voice needs the google-genai SDK + pyaudio installed — "
+                    "falling back to standard voice chat.")
+            except Exception:
+                pass
         try:
             import voice
         except ImportError:
@@ -2758,6 +3305,134 @@ class EmberWindow(QWidget):
             wake_word.resume()
         except Exception:
             pass
+
+    # --- Natural voice (Gemini Live API) --------------------------------------
+    def _live_voice_system_instruction(self) -> str:
+        return ("You are Ember, a friendly voice assistant that can control the user's computer. "
+                "Keep spoken replies short, natural and conversational. If asked to do a task on "
+                "the computer, acknowledge briefly and describe what you'll do.")
+
+    def _start_live_voice(self):
+        import live_voice
+        try:
+            import wake_word
+            wake_word.pause()   # the Live session owns the mic continuously
+        except Exception:
+            pass
+        self._lv_user_buf = ""
+        self._lv_ember_buf = ""
+        b = self._bridge
+        self._live_voice = live_voice.LiveVoice(
+            (self.settings.get("gemini_api_key") or ""),
+            model=self.settings.get("live_voice_model") or live_voice.DEFAULT_MODEL,
+            voice=self.settings.get("live_voice_voice") or live_voice.DEFAULT_VOICE,
+            api_version=self.settings.get("live_voice_api_version") or live_voice.DEFAULT_API_VERSION,
+            system_instruction=self._live_voice_system_instruction(),
+            on_user_text=lambda t: b.live_voice_event.emit("user", t),
+            on_ember_text=lambda t: b.live_voice_event.emit("ember", t),
+            on_state=lambda s: b.live_voice_event.emit("state", s),
+            on_turn_complete=lambda: b.live_voice_event.emit("turn", ""),
+            on_interrupted=lambda: b.live_voice_event.emit("state", "listening"),
+            on_error=lambda e: b.live_voice_event.emit("error", e),
+        )
+        r = self._live_voice.start()
+        if not r.get("ok"):
+            self._add_bubble("system", "Natural voice: " + r.get("error", "could not start"))
+            self._live_voice = None
+            try:
+                import wake_word
+                wake_word.resume()
+            except Exception:
+                pass
+            return
+        orb = self._ensure_orb()
+        if orb:
+            orb.popup("listening")
+            orb.set_caption("Natural voice on — just talk.")
+        self._set_siri("listening")
+        self._add_bubble("system",
+            "🎙️ Natural voice (Gemini Live) is on — just talk, no button presses. "
+            "Click Voice Chat again (or say “stop voice chat”) to end.")
+        self._set_status("Natural voice listening…")
+        self._update_live_voice_btn(True)
+
+    def _stop_live_voice(self, status: str = "Voice chat off"):
+        lv = getattr(self, "_live_voice", None)
+        self._live_voice = None
+        if lv is not None:
+            try:
+                lv.stop()
+            except Exception:
+                pass
+        # Flush any partial Ember reply so it isn't lost.
+        if getattr(self, "_lv_ember_buf", "").strip():
+            self._add_bubble("assistant", self._lv_ember_buf.strip())
+            self._append_history("assistant", self._lv_ember_buf.strip())
+        self._lv_user_buf = ""
+        self._lv_ember_buf = ""
+        self._set_siri(None)
+        orb = self._ensure_orb()
+        if orb:
+            orb.dismiss_after(1200)
+        try:
+            import wake_word
+            wake_word.resume()
+        except Exception:
+            pass
+        self._set_status(status)
+        self._update_live_voice_btn(False)
+
+    def _update_live_voice_btn(self, on: bool):
+        btn = getattr(self, "voice_chat_btn", None)
+        if btn is None:
+            return
+        btn.setText("Voice On" if on else "Voice Chat")
+        btn.setObjectName("voiceToggleOn" if on else "voiceToggle")
+        try:
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        except Exception:
+            pass
+
+    def _on_live_voice_event(self, kind: str, text: str):
+        """Marshal Live API callbacks (fired on the asyncio thread) onto the UI thread."""
+        if kind == "user":
+            self._lv_user_buf += text
+            low = self._lv_user_buf.lower()
+            if "stop voice chat" in low or "stop the voice chat" in low:
+                self._stop_live_voice("Voice chat off")
+                return
+            self._set_status("🎙️ " + self._lv_user_buf.strip()[-60:])
+        elif kind == "ember":
+            # The user's turn is done once Ember starts replying — commit it to the chat.
+            if self._lv_user_buf.strip():
+                u = self._lv_user_buf.strip()
+                self._lv_user_buf = ""
+                self._add_bubble("user", u)
+                self._append_history("user", u)
+            self._lv_ember_buf += text
+            orb = self._ensure_orb()
+            if orb:
+                orb.set_state("speaking")
+                orb.set_caption(self._lv_ember_buf.strip()[-200:])
+        elif kind == "turn":
+            if self._lv_ember_buf.strip():
+                e = self._lv_ember_buf.strip()
+                self._lv_ember_buf = ""
+                self._add_bubble("assistant", e)
+                self._append_history("assistant", e)
+            self._set_status("Natural voice listening…")
+        elif kind == "state":
+            if text == "idle":
+                if getattr(self, "_live_voice", None) is not None:
+                    self._stop_live_voice("Natural voice ended")
+            elif text in ("listening", "thinking", "speaking"):
+                self._set_siri(text)
+                orb = self._ensure_orb()
+                if orb and text in ("listening", "speaking"):
+                    orb.set_state(text)
+        elif kind == "error":
+            self._set_status("Natural voice: " + (text or "")[:80])
 
     def _update_voice_chat_ui(self, hint: str | None = None):
         btn = getattr(self, "voice_chat_btn", None)
@@ -2823,7 +3498,17 @@ class EmberWindow(QWidget):
                 phrase_timeout = float(self.settings.get("voice_chat_phrase_timeout", 8))
             except Exception:
                 phrase_timeout = 8.0
-        voice.listen_once(_cb, phrase_timeout=phrase_timeout, listen_timeout=max(8.0, phrase_timeout + 2.0))
+        listen_timeout = max(8.0, phrase_timeout + 2.0)
+        started = False
+        try:
+            import audio_level
+            # Metered capture publishes the live mic level so the glow/orb pulse with your voice.
+            started = audio_level.listen_metered(_cb, phrase_timeout=phrase_timeout,
+                                                 listen_timeout=listen_timeout)
+        except Exception:
+            started = False
+        if not started:
+            voice.listen_once(_cb, phrase_timeout=phrase_timeout, listen_timeout=listen_timeout)
 
     def _on_transcript(self, text: str, err: str):
         mode = getattr(self, "_listening_mode", "dictation")
@@ -2838,6 +3523,9 @@ class EmberWindow(QWidget):
             return
         if mode == "voice_chat":
             self._handle_voice_chat_transcript(text, err)
+            return
+        if mode == "orb":
+            self._handle_orb_transcript(text, err)
             return
         # Dictation is one-shot: hand the mic back to the wake word and dim the glow.
         try:
@@ -2933,6 +3621,31 @@ class EmberWindow(QWidget):
         else:
             root.setGraphicsEffect(None)
 
+    def _theme_overrides(self) -> str:
+        """Extra QSS appended to the base theme so the user's accent colour AND chat text
+        size actually take effect (the base STYLE was static, which is why both 'did nothing').
+        QSS later-rules win, so these override the base."""
+        accent = self.settings.get("accent_color", "#7aa2f7") or "#7aa2f7"
+        try:
+            fs = max(10, min(22, int(self.settings.get("font_size", 12))))
+        except Exception:
+            fs = 12
+        return f"""
+QPushButton#send {{ background-color: {accent}; border-color: {accent}; color: #ffffff; }}
+QLineEdit:focus, QTextEdit:focus {{ border-color: {accent}; }}
+QPushButton#chip:hover {{ border-color: {accent}; }}
+QListWidget::item:selected {{ background-color: {accent}; }}
+QLabel#bubbleBody {{ font-size: {fs}px; }}
+"""
+
+    def _apply_window_theme(self):
+        """Set the main window stylesheet = base theme (glass or flat) + accent/font overrides.
+        Central place so accent + chat text size always apply, glass on or off."""
+        try:
+            self.setStyleSheet(STYLE + self._theme_overrides())
+        except Exception:
+            self.setStyleSheet(STYLE)
+
     def _apply_glass_effect(self):
         """Liquid Glass toggle. The clean approach:
         - When ON: enable DWM acrylic on the window. The root QFrame's QSS uses rgba bg
@@ -2983,10 +3696,11 @@ class EmberWindow(QWidget):
         # through and make it unreadable — that was the see-through bug), and thins the veil
         # when a blur IS mounted (Windows acrylic / opt-in EMBER_NATIVE_BLUR).
         if enabled:
-            self.setStyleSheet(_glass_style(200, self.settings.get("accent_color", "#58a6ff"),
-                                            see_through=blur_level, blurred=blurred))
+            base = _glass_style(200, self.settings.get("accent_color", "#58a6ff"),
+                                see_through=blur_level, blurred=blurred)
         else:
-            self.setStyleSheet(STYLE)
+            base = STYLE
+        self.setStyleSheet(base + self._theme_overrides())
         self.update()
 
     def _toggle_max(self):
@@ -3328,7 +4042,7 @@ class EmberWindow(QWidget):
         input_row.addLayout(send_col)
         layout.addLayout(input_row)
 
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(STYLE + self._theme_overrides())
         # Mark root widget so the stylesheet applies
         root.setProperty("class", "root")
 
@@ -3556,6 +4270,13 @@ class EmberWindow(QWidget):
     def _do_quit(self):
         """Really quit Ember (tray ▸ Quit / explicit quit) — stops the background listeners."""
         self._really_quit = True
+        lv = getattr(self, "_live_voice", None)
+        if lv is not None:
+            try:
+                lv.stop()
+            except Exception:
+                pass
+            self._live_voice = None
         for mod in ("wake_word",):
             try:
                 __import__(mod).stop()
@@ -3662,6 +4383,7 @@ class EmberWindow(QWidget):
             m.setWordWrap(True)
             v.addWidget(m)
         body = QLabel()
+        body.setObjectName("bubbleBody")   # so the chat-text-size override can target it
         body.setWordWrap(True)
         body.setTextFormat(Qt.TextFormat.RichText)
         body.setText(_md_to_html(text))
@@ -3977,6 +4699,8 @@ class EmberWindow(QWidget):
         # dict and leave EVERY button dead (that's exactly how all the buttons can go silent).
         feature_methods = {
             "__features__": "_open_features",
+            "__antivirus__": "_open_antivirus_app",
+            "__adblock__": "_open_adblock",
             "__voice_chat__": "_toggle_voice_chat",
             "__manual__": "_open_manual_mode",
             "__remote__": "_start_remote_control",
@@ -4014,6 +4738,54 @@ class EmberWindow(QWidget):
             return
         self.input_box.setPlainText(cmd)
         self._on_send()
+
+    def _open_antivirus_app(self):
+        """Open the standalone graphical Antivirus app."""
+        try:
+            AntivirusDialog(self).exec()
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.warning(self, "Antivirus", f"{type(e).__name__}: {e}")
+
+    def _open_adblock(self):
+        """Toggle / manage the system-wide ad blocker (hosts-file sinkhole, all apps)."""
+        try:
+            import network_adblock as ab
+            st = ab.adblock_status()
+        except Exception as e:
+            QMessageBox.warning(self, "Ad blocker", f"unavailable: {e}")
+            return
+        on = bool(st.get("enabled"))
+        box = QMessageBox(self)
+        box.setWindowTitle("System-wide Ad Blocker")
+        box.setText(("✅ ON" if on else "⛔ OFF")
+                    + f"  —  {st.get('blocked_domains', 0)} ad/tracker domains")
+        box.setInformativeText(
+            "Blocks ads & trackers for EVERY app (like Pi-hole) by sinkholing their domains in "
+            "your computer's hosts file. Turning it on/off asks for your password once.")
+        act = (box.addButton("Disable", QMessageBox.ButtonRole.DestructiveRole) if on
+               else box.addButton("Enable", QMessageBox.ButtonRole.AcceptRole))
+        stronger = box.addButton("Use stronger list", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if clicked is act:
+                r = ab.adblock_disable() if on else ab.adblock_enable()
+                self._add_bubble("system" if r.get("ok") else "error",
+                                 r.get("message") or r.get("error") or "done")
+            elif clicked is stronger:
+                self._add_bubble("system", "Fetching a large public blocklist (StevenBlack)…")
+
+                def work():
+                    r = ab.adblock_update_from_url()
+                    self._bridge.notice.emit(
+                        f"🚫 Ad blocker: added {r.get('added', 0)} domains "
+                        f"({r.get('blocked_domains', 0)} total)." if r.get("ok")
+                        else f"Ad blocker update failed: {r.get('error')}")
+                threading.Thread(target=work, daemon=True).start()
+        except Exception as e:
+            QMessageBox.warning(self, "Ad blocker", str(e))
 
     def _open_features(self):
         """Show the browsable, searchable Features directory."""
@@ -4450,6 +5222,8 @@ class EmberWindow(QWidget):
         background. Best-effort and failure-silent so it never blocks the app."""
         try:
             import download_guard
+            # Surface threats/cautionary downloads (the watcher used to only log them silently).
+            download_guard.set_on_threat(lambda evt: self._bridge.download_alert.emit(evt))
             r = download_guard.start()
             if r.get("ok"):
                 print(f"[Download protection on: watching {r.get('folder')}]")
@@ -4457,6 +5231,44 @@ class EmberWindow(QWidget):
                 print(f"[Download protection failed: {r.get('error')}]")
         except Exception as e:
             print(f"[Download protection autostart failed: {e}]")
+
+    def _on_download_alert(self, evt: dict):
+        """A downloaded file was flagged (or is a cautionary executable). Toast + offer to
+        quarantine/delete — runs on the UI thread (marshalled via the bridge)."""
+        try:
+            name = evt.get("name", "a file")
+            detail = evt.get("detail", "")
+            level = evt.get("level", "caution")
+            tray = getattr(self, "_tray", None)
+            if tray is not None:
+                try:
+                    tray.showMessage(
+                        ("⚠ Threat in your download" if level == "threat" else "Download warning"),
+                        f"{name}\n{detail}", QSystemTrayIcon.MessageIcon.Warning, 6000)
+                except Exception:
+                    pass
+            self._add_bubble("system" if level == "caution" else "error",
+                             f"🛡 Download protection: **{name}** — {detail}")
+            path = evt.get("path")
+            if path and Path(path).exists():
+                box = QMessageBox(self)
+                box.setWindowTitle("Download protection")
+                box.setText(f"{name}\n\n{detail}")
+                qb = box.addButton("Quarantine", QMessageBox.ButtonRole.AcceptRole)
+                db = box.addButton("Delete", QMessageBox.ButtonRole.DestructiveRole)
+                box.addButton("Keep", QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                clicked = box.clickedButton()
+                if clicked is qb:
+                    import antivirus
+                    antivirus.quarantine_file(path, reasons=[detail])
+                elif clicked is db:
+                    try:
+                        Path(path).unlink()
+                    except Exception as e:
+                        QMessageBox.warning(self, "Delete", f"Could not delete: {e}")
+        except Exception:
+            traceback.print_exc()
 
     def _autostart_fileless_protection(self):
         """Start always-on fileless / behavioral malware protection (the background
@@ -4549,28 +5361,145 @@ class EmberWindow(QWidget):
         except Exception as e:
             print(f"[Wake word autostart failed: {e}]")
 
+    def _ensure_orb(self):
+        """The floating Siri orb (a top-level, focus-preserving overlay)."""
+        if getattr(self, "_orb", None) is None:
+            try:
+                from siri_glow import SiriOrb
+                self._orb = SiriOrb()
+                try:
+                    import audio_level
+                    self._orb.set_level_provider(audio_level.get_level)  # pulse with the voice
+                except Exception:
+                    pass
+            except Exception:
+                self._orb = None
+        return getattr(self, "_orb", None)
+
+    def _apply_tts_config(self):
+        """Push the read-aloud engine settings to the voice module."""
+        try:
+            import voice
+            voice.set_tts_config({
+                "tts_engine": self.settings.get("tts_engine", "system"),
+                "gemini_api_key": self.settings.get("gemini_api_key", ""),
+                "gemini_tts_voice": self.settings.get("gemini_tts_voice", "Kore"),
+                "soundtools_api_key": self.settings.get("soundtools_api_key", ""),
+                "soundtools_url": self.settings.get("soundtools_url", ""),
+                "soundtools_voice": self.settings.get("soundtools_voice", ""),
+            })
+        except Exception:
+            pass
+
+    def _orb_speak(self, text: str):
+        """Always speak (orb turns are voice interactions), regardless of the TTS setting."""
+        try:
+            import voice
+            spoken = re.sub(r"\[[^\]]+\]", "", (text or "").replace("*", "").replace("`", "")).strip()
+            if spoken:
+                voice.speak(spoken[:700])
+        except Exception:
+            pass
+
     def _on_wake_word(self):
-        """'Hey Ember' was heard (marshalled to the UI thread). Bring Ember forward (it may be
-        hidden in the tray), light up, and start a turn."""
+        """'Hey Ember' was heard. Show a small FLOATING ORB over whatever app you're using —
+        DON'T switch apps or bring the whole Ember window forward — then listen, and caption +
+        speak the reply on the orb (like the macOS Siri orb)."""
+        # Barge-in: saying "Hey Ember" interrupts whatever it's currently saying.
         try:
-            if self.isHidden() or self.isMinimized():
-                self.showNormal()
-            self.raise_()
-            self.activateWindow()
+            import voice
+            voice.stop_speaking()
         except Exception:
             pass
+        orb = self._ensure_orb()
+        if not self.agent:
+            if orb:
+                orb.popup("speaking")
+                orb.set_caption("Add your API key to start.")
+                orb.dismiss_after(3500)
+            self._orb_speak("Add your API key to start.")
+            return
+        if self._listening:
+            return   # already mid-turn
+        if orb:
+            orb.popup("listening")
+            orb.set_caption("Listening…")
+        self._orb_active = True
+        self._start_orb_turn()
+
+    def _start_orb_turn(self):
+        """Listen once for a wake-word turn and send it to the agent. The reply is captioned +
+        spoken on the orb (handled in the agent-event handler), never opening the window."""
         try:
-            self._set_siri("listening")
-            if not self.agent:
-                # Nothing to talk to yet — just acknowledge with the glow + a chime of TTS.
-                self._speak_reply("Add your API key to start.")
-                return
-            if not self._voice_chat_enabled:
-                self._toggle_voice_chat()      # enables voice chat + starts listening
-            elif not self._listening:
-                self._start_voice_listen(mode="voice_chat")
+            import voice
+            ok, detail = voice.mic_available()
+        except Exception:
+            ok, detail = True, ""
+        if not ok:
+            orb = self._ensure_orb()
+            if orb:
+                orb.set_caption(detail or "Microphone unavailable")
+                orb.dismiss_after(4000)
+            self._orb_active = False
+            return
+        self._listening = True
+        self._listening_mode = "orb"
+        try:
+            import wake_word
+            wake_word.pause()
         except Exception:
             pass
+
+        def _cb(text, err):
+            self._bridge.transcript.emit(text or "", err or "")
+        try:
+            import voice
+            started = False
+            try:
+                import audio_level
+                # Metered capture publishes the live mic level so the orb pulses with your voice.
+                started = audio_level.listen_metered(_cb, phrase_timeout=8.0, listen_timeout=10.0)
+            except Exception:
+                started = False
+            if not started:
+                voice.listen_once(_cb, phrase_timeout=8.0, listen_timeout=10.0)
+        except Exception:
+            self._listening = False
+            self._orb_active = False
+
+    def _handle_orb_transcript(self, text: str, err: str):
+        """The wake-word turn's speech came back: send it to the agent (reply is captioned +
+        spoken on the orb via the event handler). Resume the wake word listener afterward."""
+        orb = self._ensure_orb()
+        try:
+            import wake_word
+            wake_word.resume()
+        except Exception:
+            pass
+        text = (text or "").strip()
+        if err or not text:
+            if orb:
+                orb.set_caption("Didn't catch that — say “Hey Ember” again.")
+                orb.dismiss_after(3000)
+            self._orb_active = False
+            return
+        if not self.agent:
+            self._orb_active = False
+            if orb:
+                orb.dismiss()
+            return
+        if orb:
+            orb.set_state("thinking")
+            orb.set_caption("Thinking…")
+        # Record the turn + send. The window stays where it is; reply comes back via events.
+        self._append_history("user", text)
+        try:
+            self.agent.send_user_message(self._agent_contextual_text(text))
+        except Exception as e:
+            if orb:
+                orb.set_caption(f"Error: {e}")
+                orb.dismiss_after(4000)
+            self._orb_active = False
 
     # --- Siri-style glow ------------------------------------------------------
     def _ensure_siri(self):
@@ -4578,6 +5507,11 @@ class EmberWindow(QWidget):
             try:
                 from siri_glow import SiriGlow
                 self._siri = SiriGlow(self._root)
+                try:
+                    import audio_level
+                    self._siri.set_level_provider(audio_level.get_level)  # band moves with the voice
+                except Exception:
+                    pass
             except Exception:
                 self._siri = None
         if getattr(self, "_siri", None) is not None:
@@ -4995,10 +5929,11 @@ class EmberWindow(QWidget):
             if hasattr(self, "_automation"):
                 self._automation.enabled = bool(self.settings.get("automation_enabled", True))
                 self._automation.auto_confirm_popups = bool(self.settings.get("auto_confirm_popups", False))
-            # Re-apply appearance live (no restart needed)
+            # Re-apply appearance live (no restart needed). Always re-theme so the accent
+            # colour AND chat text size take effect immediately (both used to "do nothing").
             self._apply_glow()
-            if any(self.settings.get(k) != old_glass[k] for k in glass_keys):
-                self._apply_glass_effect()
+            self._apply_glass_effect()
+            self._apply_tts_config()   # read-aloud engine may have changed
             new_hotkey = (self.settings.get("hotkey") or "ctrl+shift+space").lower()
             if new_hotkey != old_hotkey:
                 self._install_hotkey()
@@ -5220,7 +6155,16 @@ class EmberWindow(QWidget):
                 self._append_history("assistant", text)
                 if _remote:
                     _remote.push_chat("assistant", text)
-                self._speak_reply(text)
+                # Floating-orb turn ("Hey Ember"): caption the reply on the orb and ALWAYS
+                # speak it (it's a voice interaction), without bringing the window forward.
+                if getattr(self, "_orb_active", False):
+                    orb = self._ensure_orb()
+                    if orb:
+                        orb.set_state("speaking")
+                        orb.set_caption(text)
+                    self._orb_speak(text)
+                else:
+                    self._speak_reply(text)
             elif ev.kind == "tool_call":
                 name = ev.payload["name"]
                 args_short = self._shorten_args(ev.payload["args"])
@@ -5272,7 +6216,18 @@ class EmberWindow(QWidget):
                 self.send_btn.setEnabled(True)
                 self._hide_typing_indicator()
                 self._set_status(f"Ready ({self.settings.get('model_id') or self.settings.get('gemini_model')})")
-                if self._voice_chat_enabled:
+                if getattr(self, "_orb_active", False):
+                    # Wake-word orb turn finished — leave the reply up briefly, then fade.
+                    self._orb_active = False
+                    orb = self._ensure_orb()
+                    if orb:
+                        orb.dismiss_after(7000)
+                    try:
+                        import wake_word
+                        wake_word.resume()
+                    except Exception:
+                        pass
+                elif self._voice_chat_enabled:
                     self._voice_waiting_for_reply = False
                     self._update_voice_chat_ui("Listening again")
                     QTimer.singleShot(650, lambda: self._start_voice_listen(mode="voice_chat"))

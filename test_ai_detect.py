@@ -27,6 +27,27 @@ def test_text_too_short():
     assert ai_detect.detect_text("too short")["ok"] is False
 
 
+def test_page_ai_builder_domain_flagged():
+    # An obviously-AI-built site (e.g. *.base44.app) must be flagged from the URL alone,
+    # even with trivial text — this is the case a text-only check missed.
+    r = ai_detect.detect_page(url="https://my-startup.base44.app/", html="<html></html>", text="hi")
+    assert r["ok"] and r["ai_likelihood"] >= 90, r
+    assert "base44" in r["verdict"].lower(), r
+
+
+def test_page_builder_meta_generator_flagged():
+    r = ai_detect.detect_page(url="https://example.com",
+                              html='<meta name="generator" content="Lovable">', text="x")
+    assert r["ok"] and r["ai_likelihood"] >= 80, r
+
+
+def test_page_plain_site_uses_text_heuristic():
+    r = ai_detect.detect_page(url="https://en.wikipedia.org/wiki/Cat",
+                              html="<html><body>article</body></html>", text=_HUMAN)
+    assert r["ok"], r
+    assert r["ai_likelihood"] <= 50, r   # ordinary human-written site, not flagged as AI
+
+
 def test_image_with_sd_metadata_flagged():
     from PIL import Image
     from PIL.PngImagePlugin import PngInfo
