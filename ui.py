@@ -232,6 +232,7 @@ FEATURE_CATALOG = [
     ]),
     ("Web & research", [
         ("🌐", "Ember Browser", "A real built-in browser Ember can read and drive (tab groups + passwords).", ("open", "__browser_app__")),
+        ("🧩", "AI extension maker", "In Ember Browser, describe what you want and AI writes a userscript that runs on matching pages (🧩 button).", ("open", "__browser_app__")),
         ("🕸️", "Automate a website", "Open a page and fill forms / click / scrape via the DevTools browser.", ("open", "/web")),
         ("🔎", "Research a topic", "Browse multiple sources, compare, and report back.", ("open", "/research")),
         ("📸", "Screenshot the screen", "Capture the screen so Ember can see and act on it.", ("open", "/shot")),

@@ -10,6 +10,8 @@ AI-first (uses your Gemini or Claude key from Ember Settings):
 - ✨ AI panel: Summarize / Ask about the page.
 - 🔎 AI Check: estimate whether the page's text is AI-generated.
 - "ai <question>" or a trailing "?" in the address bar asks without a URL.
+- 🧩 AI extension maker: describe what you want ("hide the comments") and Ember's AI
+  writes a userscript that's injected into matching pages (see browser_extensions.py).
 
 Plus: tabs, bookmarks, find-in-page (Ctrl+F), zoom (Ctrl+ +/-), Ctrl+T/W/L.
 
@@ -178,6 +180,7 @@ def _instant_answer(query: str):
 class EmberBrowser(QWidget):
     _ai_result = pyqtSignal(str)
     _search_result = pyqtSignal(str, str)
+    _ext_made = pyqtSignal(str, str, str, str)   # name, match, description, js
 
     def __init__(self, settings: dict | None = None):
         super().__init__()
@@ -188,6 +191,7 @@ class EmberBrowser(QWidget):
         self.setStyleSheet(BROWSER_QSS)
         self._ai_result.connect(self._show_ai_result)
         self._search_result.connect(self._load_search_results)
+        self._ext_made.connect(self._on_ext_made)
         self._bookmarks = self._load_bookmarks()
         self._history = self._load_history()
 
@@ -238,6 +242,7 @@ class EmberBrowser(QWidget):
         bar.addWidget(_btn("🔎", "Find on page (Ctrl+F)", self._toggle_find))
         bar.addWidget(_btn("✓AI", "Check if the page text is AI-generated", self._ai_check_page, w=50))
         bar.addWidget(_btn("🔑", "Passwords (save / fill / manage logins)", self._show_password_menu))
+        bar.addWidget(_btn("🧩", "Extensions — let Ember's AI build one for you", self._show_extensions_menu))
         bar.addWidget(_btn("+", "New tab", lambda: self._new_tab()))
         bar.addWidget(_btn("✨", "AI panel", self._toggle_ai))
         outer.addLayout(bar)
@@ -417,6 +422,20 @@ class EmberBrowser(QWidget):
                 self._pending_autofill_domain = login["domain"]
         except Exception:
             pass
+        # Inject any enabled, matching AI-built extensions (userscripts) for this page.
+        try:
+            import browser_extensions
+            url = view.url().toString()
+            if url.startswith("http"):
+                scripts = browser_extensions.scripts_for_url(url)
+                for ext in scripts:
+                    view.page().runJavaScript(
+                        browser_extensions.wrap_for_injection(ext.get("js", "")))
+                if scripts:
+                    names = ", ".join(e.get("name", "?") for e in scripts)
+                    self._status.setText(f"🧩 Ran extension(s): {names}")
+        except Exception:
+            pass
 
     # ---- password manager ----
     def _current_domain(self) -> str:
@@ -494,6 +513,129 @@ class EmberBrowser(QWidget):
                     == QMessageBox.StandardButton.Yes:
                 browser_passwords.delete_login(dom)
                 self._status.setText(f"Deleted saved login for {dom}")
+
+    # ---- AI-built extensions (userscripts) ----
+    def _show_extensions_menu(self):
+        import browser_extensions
+        menu = QMenu(self)
+        make = menu.addAction("✨ Make an extension with AI…")
+        menu.addSeparator()
+        action_map = {}
+        exts = browser_extensions.list_extensions()
+        if exts:
+            for e in exts:
+                mark = "●" if e.get("enabled", True) else "○"
+                sub = menu.addMenu(f"{mark} {e.get('name', 'Untitled')}")
+                action_map[sub.addAction("Run on this page now")] = ("run", e)
+                action_map[sub.addAction("Disable" if e.get("enabled", True) else "Enable")] = ("toggle", e)
+                action_map[sub.addAction("Edit JavaScript…")] = ("edit", e)
+                action_map[sub.addAction("Delete")] = ("delete", e)
+        else:
+            none = menu.addAction("(no extensions yet — make one!)")
+            none.setEnabled(False)
+        from PyQt6.QtGui import QCursor
+        chosen = menu.exec(QCursor.pos())
+        if chosen is None:
+            return
+        if chosen is make:
+            self._make_extension_ai()
+            return
+        kind_ext = action_map.get(chosen)
+        if not kind_ext:
+            return
+        kind, e = kind_ext
+        if kind == "run":
+            self._run_extension_now(e)
+        elif kind == "toggle":
+            new_state = not e.get("enabled", True)
+            browser_extensions.set_enabled(e["id"], new_state)
+            self._status.setText(("Enabled " if new_state else "Disabled ") + e.get("name", ""))
+        elif kind == "edit":
+            self._edit_extension(e)
+        elif kind == "delete":
+            if QMessageBox.question(self, "Delete extension",
+                                    f"Delete “{e.get('name', '')}”?") == QMessageBox.StandardButton.Yes:
+                browser_extensions.delete_extension(e["id"])
+                self._status.setText("Deleted extension")
+
+    def _make_extension_ai(self):
+        import browser_extensions
+        desc, ok = QInputDialog.getMultiLineText(
+            self, "Make an extension",
+            "Describe what it should do — Ember's AI writes the JavaScript:\n"
+            "(e.g. “hide the comments section”, “give every page a dark background”)", "")
+        if not ok or not desc.strip():
+            return
+        v = self._cur()
+        cur_url = v.url().toString() if v is not None else ""
+        try:
+            default_match = urlparse(cur_url).netloc or "*"
+        except Exception:
+            default_match = "*"
+        match, ok = QInputDialog.getText(
+            self, "Where should it run?",
+            "URL match — a domain (youtube.com), a glob (*.example.com/*), or * for every site:",
+            _QLE.EchoMode.Normal, default_match)
+        if not ok:
+            return
+        match = match.strip() or "*"
+        name, ok = QInputDialog.getText(self, "Name it", "Extension name:",
+                                        _QLE.EchoMode.Normal, desc.strip()[:40])
+        if not ok:
+            return
+        name = name.strip() or "Untitled"
+        self._status.setText("🧩 Ember is writing your extension…")
+
+        def work():
+            out = self._model_text(browser_extensions.build_userscript_prompt(desc, cur_url))
+            self._ext_made.emit(name, match, desc.strip(), browser_extensions.extract_js(out))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_ext_made(self, name, match, desc, js):
+        import browser_extensions
+        if not js.strip() or js.lstrip().startswith(("AI error", "Add a Gemini", "Add an Anthropic")):
+            QMessageBox.warning(self, "Extension",
+                                js.strip() or "The AI didn't return any JavaScript. Try rephrasing.")
+            self._status.setText("Extension not created")
+            return
+        # It's code that will run on real pages — let the user review/edit before saving.
+        reviewed, ok = QInputDialog.getMultiLineText(
+            self, f"Review “{name}”",
+            "Ember wrote this JavaScript. Review/edit it, then OK to save & enable:", js)
+        if not ok:
+            self._status.setText("Extension discarded")
+            return
+        ext = browser_extensions.save_extension(name, match, reviewed, description=desc)
+        self._status.setText(f"🧩 Saved “{name}” — runs on {match}")
+        self._run_extension_now(ext)
+
+    def _run_extension_now(self, ext):
+        import browser_extensions
+        v = self._cur()
+        if v is None:
+            return
+        url = v.url().toString()
+        if not browser_extensions.match_url(ext.get("match", "*"), url):
+            self._status.setText(
+                f"“{ext.get('name', '')}” is scoped to {ext.get('match', '*')} — not this page")
+            return
+        try:
+            v.page().runJavaScript(browser_extensions.wrap_for_injection(ext.get("js", "")))
+            self._status.setText(f"🧩 Ran “{ext.get('name', '')}”")
+        except Exception as e:
+            self._status.setText(f"Extension error: {e}")
+
+    def _edit_extension(self, ext):
+        import browser_extensions
+        js, ok = QInputDialog.getMultiLineText(
+            self, f"Edit “{ext.get('name', '')}”", "JavaScript:", ext.get("js", ""))
+        if not ok:
+            return
+        browser_extensions.save_extension(
+            ext.get("name", ""), ext.get("match", "*"), js,
+            description=ext.get("description", ""), ext_id=ext.get("id"),
+            enabled=ext.get("enabled", True))
+        self._status.setText("Updated extension")
 
     # ---- tab groups ----
     _GROUP_COLORS = [("Red", "#f7768e"), ("Amber", "#e0af68"), ("Green", "#9ece6a"),
