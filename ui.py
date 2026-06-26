@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -71,6 +72,7 @@ SLASH_COMMANDS = {
     "/link": "__remote__",
     "/browser": "__browser_app__",
     "/manual": "__manual__",
+    "/features": "__features__",
     "/help": "__help__",
     "/clear": "__clear__",
     "/reset": "__clear__",
@@ -88,7 +90,10 @@ SLASH_COMMANDS = {
     "/ollama": "__local_ai__",
 }
 
-HELP_TEXT = """How Ember's buttons work
+HELP_TEXT = """Tip: click the ✨ Features button (top of the window) for a searchable list of
+EVERYTHING Ember can do, with a one-click "Open" for each. Or type /features.
+
+How Ember's buttons work
 The Command Center has two kinds of buttons:
   • Apps & tools — OPEN a feature (Phone Link, Ember Browser, Antivirus, Sandbox,
     Usage, Plugins, Manual bridge).
@@ -183,6 +188,7 @@ COMMAND_CENTER_GROUPS = [
         ("🖥 Local AI",       "__local_ai__",    "Use a local Ollama model — offline, no key, no limits"),
         ("📊 Usage",          "__usage__",       "API calls & tokens vs the free-tier limits"),
         ("🧩 Plugins",        "__plugins__",     "Manage drop-in plugin tools (the plugins/ folder)"),
+        ("⬇️ Update",         "__update__",      "Check for and install the latest version of Ember"),
         ("🔗 Manual bridge",  "__manual__",      "Bridge an external AI for hard reasoning"),
     ]),
     ("Quick tasks", [
@@ -199,6 +205,79 @@ COMMAND_CENTER_GROUPS = [
         ("Diagnose this PC",  "/diagnose",  None),
         ("Build a rule",      "/automate",  None),
         ("Schedule a task",   "/schedule",  None),
+    ]),
+]
+
+
+# ---------------------------------------------------------------------------
+# Feature catalog — the single, browsable list of EVERYTHING Ember can do, shown in
+# the "✨ Features" directory (FeaturesDialog). Each entry is (emoji, name, description,
+# action). action is one of:
+#   ("open", "<token>")  -> runs a feature opener / slash via _run_slash (e.g. "__remote__", "/diagnose")
+#   ("type", "<text>")   -> drops an example request into the chat box (the user hits send)
+#   ("settings", "<tab>")-> opens Settings (tab name is just a hint shown to the user)
+#   ("info", "")         -> no button, purely informational
+# Keeping it data-driven means the directory, search, and launch buttons all stay in sync.
+FEATURE_CATALOG = [
+    ("Automate your computer", [
+        ("🤖", "Autopilot", "Hand Ember a whole task and it drives the mouse, keyboard and apps to finish it.", ("open", "/autopilot")),
+        ("🪟", "Operate an app", "Tell Ember to do something in the app that's open right now.", ("open", "/apps")),
+        ("⏰", "Scheduled tasks", "Run a task on a timer (e.g. every morning).", ("open", "/schedule")),
+        ("⚙️", "Automation rules", "Background rules: when a window/app appears, auto-do something.", ("open", "/automate")),
+        ("🎬", "Record & replay workflows", "Record your mouse/keyboard once, replay it any time.", ("open", "__workflow__")),
+        ("🧩", "Build your own tool", "Ask Ember to save a repeatable multi-step procedure as a reusable tool.", ("type", "Build a custom tool that organizes my Downloads and then lists what changed, and save it.")),
+    ]),
+    ("Web & research", [
+        ("🌐", "Ember Browser", "A real built-in browser Ember can read and drive (tab groups + passwords).", ("open", "__browser_app__")),
+        ("🕸️", "Automate a website", "Open a page and fill forms / click / scrape via the DevTools browser.", ("open", "/web")),
+        ("🔎", "Research a topic", "Browse multiple sources, compare, and report back.", ("open", "/research")),
+        ("📸", "Screenshot the screen", "Capture the screen so Ember can see and act on it.", ("open", "/shot")),
+    ]),
+    ("Files & documents", [
+        ("🗂️", "Organize a folder", "Sort a folder by type/date — always previews with a dry-run first.", ("open", "/organize")),
+        ("🧹", "Clean Downloads", "Tidy your Downloads folder.", ("open", "/downloads")),
+        ("📑", "Find duplicates", "Find duplicate files so you can reclaim space.", ("open", "/dedupe")),
+        ("📦", "Find big files", "Find the biggest space-hogs.", ("open", "/biggest")),
+        ("📄", "Read / discuss a file", "Drop or paste a file (or photo) into the chat — Ember reads it.", ("type", "Read this file and summarize it: ")),
+        ("✍️", "Create a file", "Have Ember create a document, script, or asset locally.", ("open", "/create")),
+    ]),
+    ("Voice & hands-free", [
+        ("🎙️", "Voice chat", "Talk to Ember hands-free — it listens, acts, and speaks back.", ("open", "__voice_chat__")),
+        ("👋", "“Hey Ember” wake word", "Always-on wake word so you can summon it by voice. Toggle in Settings ▸ Voice.", ("settings", "Voice")),
+        ("🔊", "Spoken replies", "Have Ember read its answers aloud. Settings ▸ Voice.", ("settings", "Voice")),
+    ]),
+    ("Security & privacy", [
+        ("🛡️", "Antivirus scan", "Scan a folder for malware (entropy + IOC + signatures).", ("open", "__scan_folder__")),
+        ("📦", "Sandbox a file", "Run a risky file in an isolated sandbox.", ("open", "__sandbox__")),
+        ("🔒", "Real-time protection", "Always-on download, fileless & Security-Center scanning. Settings ▸ Security.", ("settings", "Security")),
+        ("🌍", "VPN", "Connect/disconnect your WireGuard VPN.", ("open", "__vpn__")),
+        ("🔐", "Password manager", "Saved website logins, encrypted on your machine.", ("open", "__passwords__")),
+        ("🗝️", "Encrypted key vault", "Store your API keys encrypted instead of in plaintext. Settings ▸ Models.", ("settings", "Models")),
+    ]),
+    ("AI brain & models", [
+        ("✨", "Gemini (free)", "Runs day-to-day on Google's free tier. Settings ▸ Models.", ("settings", "Models")),
+        ("🧠", "Claude", "Switch to Claude for hard reasoning. Add a key in Settings ▸ Models.", ("settings", "Models")),
+        ("🖥️", "Local AI (Ollama)", "Run fully offline with no key or limits.", ("open", "__local_ai__")),
+        ("🔗", "Manual bridge", "Bridge an external AI for a tough problem.", ("open", "__manual__")),
+    ]),
+    ("Phone & remote", [
+        ("📱", "Phone Link (Ember Link)", "Control this computer from your phone over Wi-Fi, PIN-protected.", ("open", "__remote__")),
+    ]),
+    ("Productivity", [
+        ("✂️", "Snippets", "Save reusable text and expand it anywhere.", ("open", "__snippets__")),
+        ("📋", "Macros", "Save and run named task macros.", ("open", "__macros__")),
+        ("🔴", "Screen recorder", "Record your screen to a video file.", ("open", "__screen_record__")),
+        ("📊", "Usage dashboard", "See API calls & tokens vs the free-tier limits.", ("open", "__usage__")),
+    ]),
+    ("Diagnose your PC", [
+        ("🩺", "Full diagnosis", "Scan crashes, errors and health in one go.", ("open", "/diagnose")),
+        ("📈", "Performance snapshot", "Live CPU / memory / disk.", ("open", "/perf")),
+        ("💻", "System info", "OS / CPU / GPU / RAM.", ("open", "/info")),
+    ]),
+    ("Extend & upkeep", [
+        ("🧩", "Plugins", "Drop a .py file in the plugins/ folder to add your own tools.", ("open", "__plugins__")),
+        ("⬇️", "Update Ember", "Check for and install the latest version.", ("open", "__update__")),
+        ("🎛️", "Settings", "Models, Appearance, Voice, Performance, Automations, Memory, Security.", ("settings", "")),
     ]),
 ]
 
@@ -1174,7 +1253,7 @@ class SettingsDialog(QDialog):
         layout.addRow(self.keep_bg_check)
 
         self.launch_login_check = QCheckBox(
-            "Launch Ember at login & keep it running (true always-on “Hey Ember”)")
+            "Launch Ember at login && keep it running (true always-on “Hey Ember”)")
         try:
             import autostart
             self.launch_login_check.setChecked(autostart.is_installed())
@@ -2176,6 +2255,154 @@ class ClaudeHandoffDialog(QDialog):
         self.reject()
 
 
+class ChatInput(QTextEdit):
+    """Chat input that accepts pasted (and dropped) FILES and IMAGES, not just text.
+
+    Cmd/Ctrl+V of file(s) copied in Finder/Explorer attaches their paths; a copied image
+    (e.g. a screenshot) is saved to a temp PNG and attached; plain text pastes as plain
+    text. `on_attach(list_of_paths)` is the window callback that adds them to the message."""
+
+    def __init__(self, on_attach, parent=None):
+        super().__init__(parent)
+        self._on_attach = on_attach
+
+    def canInsertFromMimeData(self, source) -> bool:
+        if source.hasImage() or source.hasUrls():
+            return True
+        return super().canInsertFromMimeData(source)
+
+    def insertFromMimeData(self, source) -> None:
+        paths: list[str] = []
+        try:
+            if source.hasUrls():
+                paths = [u.toLocalFile() for u in source.urls() if u.toLocalFile()]
+            if not paths and source.hasImage():
+                p = _save_clipboard_image(source.imageData())
+                if p:
+                    paths = [p]
+        except Exception:
+            paths = []
+        if paths:
+            try:
+                self._on_attach(paths)
+                return
+            except Exception:
+                pass
+        # Fall back to PLAIN text (avoids pasting rich HTML/fonts into the prompt box).
+        if source.hasText():
+            self.insertPlainText(source.text())
+        else:
+            super().insertFromMimeData(source)
+
+
+def _save_clipboard_image(image) -> str | None:
+    """Save a raw clipboard image (a copied screenshot/photo with no file path) to a temp
+    PNG so Ember can read it like any other attached file. Returns the path or None."""
+    try:
+        from PyQt6.QtGui import QImage
+        qimg = image if isinstance(image, QImage) else QImage(image)
+        if qimg is None or qimg.isNull():
+            return None
+        d = Path(tempfile.gettempdir()) / "ember_pasted"
+        d.mkdir(parents=True, exist_ok=True)
+        dst = d / f"pasted_{int(time.time() * 1000)}.png"
+        return str(dst) if qimg.save(str(dst), "PNG") else None
+    except Exception:
+        return None
+
+
+class FeaturesDialog(QDialog):
+    """A browsable, SEARCHABLE directory of everything Ember can do — so features are
+    actually discoverable instead of hidden behind chat commands. Each row has a button
+    that opens the feature, drops an example into the chat, or jumps to Settings.
+    `on_action((kind, value))` is the window callback that performs the chosen action."""
+
+    def __init__(self, on_action, parent=None):
+        super().__init__(parent)
+        self._on_action = on_action
+        self.setWindowTitle("Everything Ember can do")
+        self.setMinimumSize(660, 640)
+        outer = QVBoxLayout(self)
+        head = QLabel("✨ Features")
+        head.setObjectName("title")
+        outer.addWidget(head)
+        sub = QLabel("Click any feature to open it or drop an example into the chat. "
+                     "Search to find anything fast.")
+        sub.setStyleSheet("color:#9aa0b5; font-size:12px;")
+        sub.setWordWrap(True)
+        outer.addWidget(sub)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search features…  (try: voice, vpn, organize, malware)")
+        self.search.textChanged.connect(self._filter)
+        outer.addWidget(self.search)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        self._vbox = QVBoxLayout(inner)
+        self._vbox.setSpacing(4)
+        self._sections = []        # (section_label_widget, [row_widgets])
+        self._rows = []            # (row_widget, haystack, section_label_widget)
+        self._build_rows()
+        self._vbox.addStretch(1)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.reject)
+        outer.addWidget(close)
+        self.setStyleSheet(STYLE)
+        QTimer.singleShot(0, self.search.setFocus)
+
+    def _build_rows(self):
+        for category, feats in FEATURE_CATALOG:
+            sec = QLabel(category)
+            sec.setObjectName("sectionTitle")
+            sec.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:10px;")
+            self._vbox.addWidget(sec)
+            section_rows = []
+            for emoji, name, desc, action in feats:
+                row = QFrame()
+                row.setObjectName("commandAction")
+                h = QHBoxLayout(row)
+                h.setContentsMargins(10, 7, 10, 7)
+                txt = QLabel(f"<b>{emoji}  {name}</b><br>"
+                             f"<span style='color:#9aa0b5'>{desc}</span>")
+                txt.setTextFormat(Qt.TextFormat.RichText)
+                txt.setWordWrap(True)
+                h.addWidget(txt, 1)
+                kind = action[0]
+                btn_label = {"open": "Open", "type": "Try", "settings": "Settings"}.get(kind, "")
+                if btn_label:
+                    b = QPushButton(btn_label)
+                    b.setObjectName("send")
+                    b.setCursor(Qt.CursorShape.PointingHandCursor)
+                    b.setFixedWidth(96)
+                    b.clicked.connect(lambda _=False, a=action: self._do(a))
+                    h.addWidget(b)
+                self._vbox.addWidget(row)
+                section_rows.append(row)
+                self._rows.append((row, f"{name} {desc} {category}".lower(), sec))
+            self._sections.append((sec, section_rows))
+
+    def _do(self, action):
+        self.accept()
+        try:
+            self._on_action(action)
+        except Exception:
+            pass
+
+    def _filter(self, text):
+        q = (text or "").strip().lower()
+        for row, hay, _sec in self._rows:
+            row.setVisible((q in hay) if q else True)
+        # Hide a section header when every row under it is filtered out.
+        for sec, rows in self._sections:
+            sec.setVisible(True if not q else any(r.isVisible() for r in rows))
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -2449,28 +2676,32 @@ class EmberWindow(QWidget):
             except Exception:
                 pass
 
+    def _attach_paths(self, paths, intro: str = "I'm attaching these files for you to read / discuss:"):
+        """Add file/photo paths to the next message. Shared by the upload dialog, drag-drop
+        AND Cmd/Ctrl+V paste so all three behave identically."""
+        paths = [p for p in (paths or []) if p]
+        if not paths:
+            return
+        listing = "\n".join(f"- {p}" for p in paths[:20])
+        existing = self.input_box.toPlainText().strip()
+        prefix = (existing + "\n\n") if existing else ""
+        self.input_box.setPlainText(f"{prefix}{intro}\n{listing}\n\n")
+        cursor = self.input_box.textCursor()
+        cursor.movePosition(cursor.MoveOperation.End)
+        self.input_box.setTextCursor(cursor)
+        self.input_box.setFocus()
+        self._set_status(f"{len(paths)} file(s) attached")
+
     def _open_upload_dialog(self):
         """File picker - the chosen paths get attached to the user's next message
-        the same way drag-and-drop does."""
+        the same way drag-and-drop and paste do."""
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Upload files for Ember",
             str(Path.home()),
             "All files (*);;Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;"
             "Documents (*.pdf *.docx *.txt *.md *.csv *.json);;Spreadsheets (*.xlsx *.csv)",
         )
-        if not paths:
-            return
-        listing = "\n".join(f"- {p}" for p in paths[:20])
-        existing = self.input_box.toPlainText().strip()
-        prefix = (existing + "\n\n") if existing else ""
-        self.input_box.setPlainText(
-            f"{prefix}I'm uploading these files for you to read / discuss:\n{listing}\n\n"
-        )
-        cursor = self.input_box.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.input_box.setTextCursor(cursor)
-        self.input_box.setFocus()
-        self._set_status(f"{len(paths)} file(s) attached")
+        self._attach_paths(paths, "I'm uploading these files for you to read / discuss:")
 
     def _toggle_mic(self):
         if self._voice_chat_enabled:
@@ -2995,8 +3226,10 @@ class EmberWindow(QWidget):
         self.close_btn = QPushButton("✕")
         self.close_btn.setObjectName("closeBtn")
         self.close_btn.setFixedSize(BTN, BTN)
-        self.close_btn.setToolTip("Close")
-        self.close_btn.clicked.connect(self.close)
+        self.close_btn.setToolTip("Quit Ember (use — to minimize and keep “Hey Ember” running)")
+        # X QUITS the app, as users expect. The — button minimizes to the corner pill if you
+        # want Ember to keep running in the background for the wake word.
+        self.close_btn.clicked.connect(self._do_quit)
         title_row.addWidget(self.close_btn)
 
         layout.addLayout(title_row)
@@ -3012,6 +3245,7 @@ class EmberWindow(QWidget):
         # Keep the header clean: only the essentials. Everything else is available by typing
         # (e.g. "organize my downloads") or via /help, which lists all commands.
         _chips = [
+            ("✨ Features", "__features__"),
             ("Autopilot", "/autopilot"),
             ("Voice", "__voice_chat__"),
             ("Screen", "/shot"),
@@ -3057,9 +3291,10 @@ class EmberWindow(QWidget):
 
         # Input row
         input_row = QHBoxLayout()
-        self.input_box = QTextEdit()
+        # ChatInput accepts pasted/dropped files + images (Cmd/Ctrl+V), not just text.
+        self.input_box = ChatInput(on_attach=self._attach_paths)
         self.input_box.setMaximumHeight(70)
-        self.input_box.setPlaceholderText("What should I do?")
+        self.input_box.setPlaceholderText("What should I do?  (paste or drop files / photos too)")
         self.input_box.installEventFilter(self)
         input_row.addWidget(self.input_box)
 
@@ -3382,16 +3617,7 @@ class EmberWindow(QWidget):
         paths = [u.toLocalFile() for u in urls if u.toLocalFile()]
         if not paths:
             return
-        listing = "\n".join(f"- {p}" for p in paths[:20])
-        existing = self.input_box.toPlainText().strip()
-        prefix = (existing + "\n\n") if existing else ""
-        self.input_box.setPlainText(
-            f"{prefix}Here are some files/folders I'm asking about:\n{listing}\n\n"
-        )
-        cursor = self.input_box.textCursor()
-        cursor.movePosition(cursor.MoveOperation.End)
-        self.input_box.setTextCursor(cursor)
-        self.input_box.setFocus()
+        self._attach_paths(paths, "Here are some files/folders I'm asking about:")
         e.acceptProposedAction()
 
     def eventFilter(self, obj, ev):
@@ -3419,11 +3645,11 @@ class EmberWindow(QWidget):
             frame.setObjectName("bubble")
         # Bubble fills horizontal width and expands vertically for long responses.
         frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        # Hard cap so it never exceeds the visible chat area, even mid-resize.
+        # Hard cap so it never exceeds the visible chat area (scrollbar reserved), even mid-resize.
         try:
-            view_w = self.chat_scroll.viewport().width() - 24  # leave margin
-            if view_w > 100:
-                frame.setMaximumWidth(view_w)
+            frame_w, _ = self._chat_widths()
+            if frame_w > 0:
+                frame.setMaximumWidth(frame_w)
         except Exception:
             pass
 
@@ -3475,12 +3701,12 @@ class EmberWindow(QWidget):
             # Lock THIS bubble's width (and its labels' wrap width) and force the layout to
             # compute the real wrapped height NOW, so we animate to the final height.
             try:
-                view_w = self.chat_scroll.viewport().width() - 24
-                if view_w > 100:
-                    frame.setMaximumWidth(view_w)
+                frame_w, lbl_w = self._chat_widths()
+                if frame_w > 0:
+                    frame.setMaximumWidth(frame_w)
                     from PyQt6.QtWidgets import QLabel
                     for lbl in frame.findChildren(QLabel):
-                        lbl.setFixedWidth(max(60, view_w - 24))
+                        lbl.setFixedWidth(lbl_w)
             except Exception:
                 pass
             lay = frame.layout()
@@ -3505,22 +3731,37 @@ class EmberWindow(QWidget):
             except Exception:
                 pass
 
+    def _chat_widths(self) -> tuple[int, int]:
+        """(frame_width, label_width) for chat bubbles. Reserves the vertical scrollbar's
+        width ALWAYS — even while it's hidden — so a bubble sized before the bar appears (as
+        the chat grows) doesn't end up clipped under it. That right-edge clipping was the bug."""
+        try:
+            W = self.chat_scroll.width()
+            if W < 120:
+                return 0, 0
+            sb = self.chat_scroll.verticalScrollBar()
+            sb_w = sb.sizeHint().width() or 14
+            frame_w = max(80, W - sb_w - 16)   # 16 = chat_container 8+8 margins
+            lbl_w = max(60, frame_w - 28)      # frame 12+12 margins + 4 safety
+            return frame_w, lbl_w
+        except Exception:
+            return 0, 0
+
     def _clamp_bubble_widths(self):
         """Size every bubble to the chat width. Inner labels get a FIXED width so their
         word-wrapped height is computed correctly — otherwise the layout allocates a one-line
         height and bubbles overlap ('playing cards') or clip their text."""
         try:
-            view_w = self.chat_scroll.viewport().width() - 24
-            if view_w <= 100 or not hasattr(self, "chat_layout"):
+            frame_w, lbl_w = self._chat_widths()
+            if frame_w <= 0 or not hasattr(self, "chat_layout"):
                 return
             from PyQt6.QtWidgets import QLabel
-            lbl_w = max(60, view_w - 24)
             for i in range(self.chat_layout.count()):
                 item = self.chat_layout.itemAt(i)
                 w = item.widget() if item else None
                 if w is None:
                     continue
-                w.setMaximumWidth(view_w)
+                w.setMaximumWidth(frame_w)
                 for lbl in w.findChildren(QLabel):
                     lbl.setFixedWidth(lbl_w)
                 w.updateGeometry()
@@ -3710,9 +3951,6 @@ class EmberWindow(QWidget):
         if target == "__remote__":
             self._start_remote_control()
             return True
-        if target == "__update__":
-            self._start_update()
-            return True
         if target == "__manual__":
             self._open_manual_mode()
             return True
@@ -3733,27 +3971,32 @@ class EmberWindow(QWidget):
         return True
 
     def _run_slash(self, cmd: str):
-        # Map each Command-Center feature token to its opener. Anything not here is a
-        # "quick task" that gets typed into the box and sent to the agent.
-        features = {
-            "__voice_chat__": self._toggle_voice_chat,
-            "__manual__": self._open_manual_mode,
-            "__remote__": self._start_remote_control,
-            "__browser_app__": self._open_ember_browser,
-            "__scan_folder__": self._scan_folder,
-            "__sandbox__": self._run_in_sandbox_ui,
-            "__update__": self._start_update,
-            "__usage__": self._show_usage_dashboard,
-            "__plugins__": self._open_plugins_manager,
-            "__passwords__": self._open_passwords_manager,
-            "__vpn__": self._open_vpn_manager,
-            "__workflow__": self._open_workflow_recorder,
-            "__screen_record__": self._open_screen_recorder,
-            "__snippets__": self._open_snippets_manager,
-            "__macros__": self._open_macros_manager,
-            "__local_ai__": self._open_local_ai,
+        # Map each Command-Center feature token to its opener METHOD NAME. Anything not here is
+        # a "quick task" that gets typed into the box and sent to the agent.
+        # NB: resolved via getattr so a single missing/renamed handler can't blow up the whole
+        # dict and leave EVERY button dead (that's exactly how all the buttons can go silent).
+        feature_methods = {
+            "__features__": "_open_features",
+            "__voice_chat__": "_toggle_voice_chat",
+            "__manual__": "_open_manual_mode",
+            "__remote__": "_start_remote_control",
+            "__browser_app__": "_open_ember_browser",
+            "__scan_folder__": "_scan_folder",
+            "__sandbox__": "_run_in_sandbox_ui",
+            "__update__": "_update_now",
+            "__usage__": "_show_usage_dashboard",
+            "__plugins__": "_open_plugins_manager",
+            "__passwords__": "_open_passwords_manager",
+            "__vpn__": "_open_vpn_manager",
+            "__workflow__": "_open_workflow_recorder",
+            "__screen_record__": "_open_screen_recorder",
+            "__snippets__": "_open_snippets_manager",
+            "__macros__": "_open_macros_manager",
+            "__local_ai__": "_open_local_ai",
         }
-        handler = features.get(cmd)
+        handler = None
+        if cmd in feature_methods:
+            handler = getattr(self, feature_methods[cmd], None)
         if handler is not None:
             # Surface any failure instead of letting the button silently do nothing
             # (a raised exception in a Qt slot is otherwise swallowed -> "dead button").
@@ -3771,6 +4014,28 @@ class EmberWindow(QWidget):
             return
         self.input_box.setPlainText(cmd)
         self._on_send()
+
+    def _open_features(self):
+        """Show the browsable, searchable Features directory."""
+        try:
+            FeaturesDialog(self._features_action, self).exec()
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.warning(self, "Features", f"{type(e).__name__}: {e}")
+
+    def _features_action(self, action):
+        """Perform a feature chosen in the Features directory."""
+        kind, val = action
+        if kind == "open":
+            self._run_slash(val)
+        elif kind == "type":
+            self.input_box.setPlainText(val)
+            cur = self.input_box.textCursor()
+            cur.movePosition(cur.MoveOperation.End)
+            self.input_box.setTextCursor(cur)
+            self.input_box.setFocus()
+        elif kind == "settings":
+            self._open_settings()
 
     def _show_usage_dashboard(self):
         show_usage_dashboard(self)
@@ -4511,6 +4776,94 @@ class EmberWindow(QWidget):
             msg += "\n\n" + notes[:500]
         self._add_bubble("system", msg)
         self._set_status(f"Update {ver} available — type /update")
+
+    def _update_now(self):
+        """Manual 'check for updates' that is NEVER silent — it always tells the user what
+        happened. Handles BOTH a git/source checkout (fetch + fast-forward) and an installed
+        app (release manifest). This is the fix for 'auto-update doesn't work': the automatic
+        check is best-effort/quiet, but this button gives a clear, actionable result."""
+        import shutil
+        base = _base_dir()
+        frozen = getattr(sys, "frozen", False)
+        if not frozen and (base / ".git").exists() and shutil.which("git"):
+            self._add_bubble("system", "Checking GitHub for a newer version…")
+            self._set_status("Checking for updates…")
+            threading.Thread(target=self._git_update_verbose, args=(str(base),), daemon=True).start()
+            return
+        if frozen:
+            try:
+                import updater
+                if not updater.can_self_update():
+                    self._add_bubble("system",
+                        "This build can't self-update (it isn't writable or the release feed "
+                        "isn't published yet). Download the newest build from the Ember website.")
+                    return
+            except Exception as e:
+                self._add_bubble("error", f"Updater unavailable: {e}")
+                return
+            self._add_bubble("system", "Checking for the latest Ember release…")
+            self._set_status("Checking for updates…")
+
+            def _work():
+                try:
+                    import updater
+                    manifest = updater.check_for_update()
+                except Exception as e:
+                    self._bridge.notice.emit(f"Update check failed: {type(e).__name__}: {e}")
+                    return
+                if manifest:
+                    QTimer.singleShot(0, lambda: self._on_update_available(manifest))
+                else:
+                    import version
+                    self._bridge.notice.emit(f"✓ Ember is up to date (v{version.__version__}).")
+            threading.Thread(target=_work, daemon=True).start()
+            return
+        # Plain download (no .git, not a frozen app) — can't self-update; point them to the site.
+        try:
+            import version
+            site = version.site_url()
+        except Exception:
+            site = "the Ember website"
+        self._add_bubble("system",
+            "This copy of Ember isn't a git checkout or an installed app, so it can't update "
+            f"itself. Get the latest build from {site}.")
+
+    def _git_update_verbose(self, base: str):
+        """Fetch + fast-forward a source checkout and report the exact outcome (up to date /
+        updated / why it couldn't). Runs on a worker thread; posts results via the bridge."""
+        import subprocess
+
+        def run(*args, timeout=120):
+            return subprocess.run(["git", "-C", base, *args],
+                                  capture_output=True, text=True, timeout=timeout)
+        try:
+            before = run("rev-parse", "HEAD").stdout.strip()
+            branch = (run("rev-parse", "--abbrev-ref", "HEAD").stdout or "").strip() or "?"
+            run("fetch", "--quiet", timeout=90)
+            up = run("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+            if up.returncode != 0:
+                self._bridge.notice.emit(
+                    f"Update: branch '{branch}' has no upstream to pull from. Set one with:\n"
+                    f"git branch --set-upstream-to=origin/{branch}")
+                return
+            counts = (run("rev-list", "--left-right", "--count", "HEAD...@{u}").stdout or "").split()
+            behind = counts[1] if len(counts) == 2 else "?"
+            if behind == "0":
+                self._bridge.notice.emit(f"✓ Ember is up to date ({branch} @ {before[:8]}).")
+                return
+            pull = run("pull", "--ff-only", timeout=120)
+            after = run("rev-parse", "HEAD").stdout.strip()
+            if before and after and before != after:
+                self._bridge.source_updated.emit(after[:8])
+            else:
+                err = (pull.stderr or pull.stdout or "").strip()[:300]
+                self._bridge.notice.emit(
+                    f"Ember is {behind} commit(s) behind on '{branch}' but couldn't fast-forward"
+                    + (f":\n{err}" if err else ".")
+                    + "\nThis is usually local changes or a diverged branch — commit/stash, or "
+                    "run: git pull --ff-only")
+        except Exception as e:
+            self._bridge.notice.emit(f"Update check failed: {type(e).__name__}: {e}")
 
     def _start_update(self, auto: bool = False):
         """Download + install the pending update, then relaunch. Triggered by /update, or
