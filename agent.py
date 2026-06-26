@@ -56,6 +56,7 @@ import workflow_recorder
 import productivity_tools
 import plugin_system
 import custom_tools
+import network_adblock
 from claude_bridge import build_handoff_prompt, copy_to_clipboard, try_anthropic_api
 
 
@@ -2074,7 +2075,8 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
 # of truth the agent + lean-mode filter read from.
 for _feat in (key_vault, usage_tracker, download_guard, fileless_guard, security_center,
               agent_profiles, agent_scheduler, integrations,
-              workflow_recorder, productivity_tools, plugin_system, custom_tools):
+              workflow_recorder, productivity_tools, plugin_system, custom_tools,
+              network_adblock):
     for _decl in _feat.TOOL_DECLARATIONS:
         if _decl["name"] not in TOOL_DISPATCH:
             TOOL_DECLARATIONS.append(_decl)
@@ -2137,6 +2139,8 @@ PARALLEL_SAFE_TOOLS = frozenset({
     "scheduler_status", "scheduler_events", "integration_list",
     # AI-authored custom tools (read-only management)
     "list_custom_tools", "get_custom_tool", "export_custom_tool",
+    # system-wide ad blocker (read-only status)
+    "adblock_status",
 })
 
 # Declared-type map for argument coercion (built AFTER all module tools merged in).

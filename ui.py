@@ -73,6 +73,7 @@ SLASH_COMMANDS = {
     "/browser": "__browser_app__",
     "/manual": "__manual__",
     "/antivirus": "__antivirus__",
+    "/adblock": "__adblock__",
     "/features": "__features__",
     "/help": "__help__",
     "/clear": "__clear__",
@@ -179,6 +180,7 @@ COMMAND_CENTER_GROUPS = [
         ("📱 Phone Link",     "__remote__",      "Control this Mac from your phone (Ember Link)"),
         ("🌐 Ember Browser",  "__browser_app__", "Open the secure AI browser — tab groups + password manager"),
         ("🛡 Antivirus",      "__antivirus__",   "Open the Antivirus app — scan, quarantine, real-time protection"),
+        ("🚫 Ad blocker",     "__adblock__",     "Block ads & trackers system-wide (every app, not just the browser)"),
         ("📦 Sandbox",        "__sandbox__",     "Run a file safely in an isolated sandbox"),
         ("🔐 Passwords",      "__passwords__",   "Saved website logins (encrypted)"),
         ("🌍 VPN",            "__vpn__",         "Connect / disconnect your WireGuard VPN"),
@@ -249,6 +251,7 @@ FEATURE_CATALOG = [
     ]),
     ("Security & privacy", [
         ("🛡️", "Antivirus", "Scan, manage quarantine, and toggle real-time protection.", ("open", "__antivirus__")),
+        ("🚫", "Ad blocker", "Block ads & trackers for EVERY app (system-wide hosts sinkhole).", ("open", "__adblock__")),
         ("📦", "Sandbox a file", "Run a risky file in an isolated sandbox.", ("open", "__sandbox__")),
         ("🔒", "Real-time protection", "Always-on download, fileless & Security-Center scanning. Settings ▸ Security.", ("settings", "Security")),
         ("🌍", "VPN", "Connect/disconnect your WireGuard VPN.", ("open", "__vpn__")),
@@ -4369,6 +4372,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         feature_methods = {
             "__features__": "_open_features",
             "__antivirus__": "_open_antivirus_app",
+            "__adblock__": "_open_adblock",
             "__voice_chat__": "_toggle_voice_chat",
             "__manual__": "_open_manual_mode",
             "__remote__": "_start_remote_control",
@@ -4414,6 +4418,46 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         except Exception as e:
             traceback.print_exc()
             QMessageBox.warning(self, "Antivirus", f"{type(e).__name__}: {e}")
+
+    def _open_adblock(self):
+        """Toggle / manage the system-wide ad blocker (hosts-file sinkhole, all apps)."""
+        try:
+            import network_adblock as ab
+            st = ab.adblock_status()
+        except Exception as e:
+            QMessageBox.warning(self, "Ad blocker", f"unavailable: {e}")
+            return
+        on = bool(st.get("enabled"))
+        box = QMessageBox(self)
+        box.setWindowTitle("System-wide Ad Blocker")
+        box.setText(("✅ ON" if on else "⛔ OFF")
+                    + f"  —  {st.get('blocked_domains', 0)} ad/tracker domains")
+        box.setInformativeText(
+            "Blocks ads & trackers for EVERY app (like Pi-hole) by sinkholing their domains in "
+            "your computer's hosts file. Turning it on/off asks for your password once.")
+        act = (box.addButton("Disable", QMessageBox.ButtonRole.DestructiveRole) if on
+               else box.addButton("Enable", QMessageBox.ButtonRole.AcceptRole))
+        stronger = box.addButton("Use stronger list", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        clicked = box.clickedButton()
+        try:
+            if clicked is act:
+                r = ab.adblock_disable() if on else ab.adblock_enable()
+                self._add_bubble("system" if r.get("ok") else "error",
+                                 r.get("message") or r.get("error") or "done")
+            elif clicked is stronger:
+                self._add_bubble("system", "Fetching a large public blocklist (StevenBlack)…")
+
+                def work():
+                    r = ab.adblock_update_from_url()
+                    self._bridge.notice.emit(
+                        f"🚫 Ad blocker: added {r.get('added', 0)} domains "
+                        f"({r.get('blocked_domains', 0)} total)." if r.get("ok")
+                        else f"Ad blocker update failed: {r.get('error')}")
+                threading.Thread(target=work, daemon=True).start()
+        except Exception as e:
+            QMessageBox.warning(self, "Ad blocker", str(e))
 
     def _open_features(self):
         """Show the browsable, searchable Features directory."""
