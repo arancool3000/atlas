@@ -130,6 +130,14 @@ def listen_once(on_transcript: Callable[[str, str | None], None],
         except sr.RequestError as e:
             on_transcript("", f"speech API error: {e}")
         except Exception as e:
-            on_transcript("", f"transcribe failed: {e}")
+            msg = str(e)
+            # The bundled flac encoder being the wrong CPU type is a packaging problem, not a
+            # transient mic error — give an actionable fix instead of a cryptic Errno.
+            if "bad cpu type" in msg.lower() or ("flac" in msg.lower() and "errno" in msg.lower()):
+                on_transcript("", "audio encoder (flac) is the wrong CPU type for this Mac. "
+                                  "Fix: run `brew install flac`, then reopen Ember (a native flac "
+                                  "on PATH replaces the broken bundled one).")
+            else:
+                on_transcript("", f"transcribe failed: {e}")
 
     threading.Thread(target=_run, daemon=True).start()

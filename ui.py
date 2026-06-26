@@ -184,6 +184,7 @@ COMMAND_CENTER_GROUPS = [
         ("🖥 Local AI",       "__local_ai__",    "Use a local Ollama model — offline, no key, no limits"),
         ("📊 Usage",          "__usage__",       "API calls & tokens vs the free-tier limits"),
         ("🧩 Plugins",        "__plugins__",     "Manage drop-in plugin tools (the plugins/ folder)"),
+        ("⬇️ Update",         "__update__",      "Check for and install the latest version of Ember"),
         ("🔗 Manual bridge",  "__manual__",      "Bridge an external AI for hard reasoning"),
     ]),
     ("Quick tasks", [
@@ -3056,8 +3057,10 @@ class EmberWindow(QWidget):
         self.close_btn = QPushButton("✕")
         self.close_btn.setObjectName("closeBtn")
         self.close_btn.setFixedSize(BTN, BTN)
-        self.close_btn.setToolTip("Close")
-        self.close_btn.clicked.connect(self.close)
+        self.close_btn.setToolTip("Quit Ember (use — to minimize and keep “Hey Ember” running)")
+        # X QUITS the app, as users expect. The — button minimizes to the corner pill if you
+        # want Ember to keep running in the background for the wake word.
+        self.close_btn.clicked.connect(self._do_quit)
         title_row.addWidget(self.close_btn)
 
         layout.addLayout(title_row)
@@ -3801,27 +3804,31 @@ class EmberWindow(QWidget):
         return True
 
     def _run_slash(self, cmd: str):
-        # Map each Command-Center feature token to its opener. Anything not here is a
-        # "quick task" that gets typed into the box and sent to the agent.
-        features = {
-            "__voice_chat__": self._toggle_voice_chat,
-            "__manual__": self._open_manual_mode,
-            "__remote__": self._start_remote_control,
-            "__browser_app__": self._open_ember_browser,
-            "__scan_folder__": self._scan_folder,
-            "__sandbox__": self._run_in_sandbox_ui,
-            "__update__": self._start_update,
-            "__usage__": self._show_usage_dashboard,
-            "__plugins__": self._open_plugins_manager,
-            "__passwords__": self._open_passwords_manager,
-            "__vpn__": self._open_vpn_manager,
-            "__workflow__": self._open_workflow_recorder,
-            "__screen_record__": self._open_screen_recorder,
-            "__snippets__": self._open_snippets_manager,
-            "__macros__": self._open_macros_manager,
-            "__local_ai__": self._open_local_ai,
+        # Map each Command-Center feature token to its opener METHOD NAME. Anything not here is
+        # a "quick task" that gets typed into the box and sent to the agent.
+        # NB: resolved via getattr so a single missing/renamed handler can't blow up the whole
+        # dict and leave EVERY button dead (that's exactly how all the buttons can go silent).
+        feature_methods = {
+            "__voice_chat__": "_toggle_voice_chat",
+            "__manual__": "_open_manual_mode",
+            "__remote__": "_start_remote_control",
+            "__browser_app__": "_open_ember_browser",
+            "__scan_folder__": "_scan_folder",
+            "__sandbox__": "_run_in_sandbox_ui",
+            "__update__": "_update_now",
+            "__usage__": "_show_usage_dashboard",
+            "__plugins__": "_open_plugins_manager",
+            "__passwords__": "_open_passwords_manager",
+            "__vpn__": "_open_vpn_manager",
+            "__workflow__": "_open_workflow_recorder",
+            "__screen_record__": "_open_screen_recorder",
+            "__snippets__": "_open_snippets_manager",
+            "__macros__": "_open_macros_manager",
+            "__local_ai__": "_open_local_ai",
         }
-        handler = features.get(cmd)
+        handler = None
+        if cmd in feature_methods:
+            handler = getattr(self, feature_methods[cmd], None)
         if handler is not None:
             # Surface any failure instead of letting the button silently do nothing
             # (a raised exception in a Qt slot is otherwise swallowed -> "dead button").
@@ -4579,6 +4586,94 @@ class EmberWindow(QWidget):
             msg += "\n\n" + notes[:500]
         self._add_bubble("system", msg)
         self._set_status(f"Update {ver} available — type /update")
+
+    def _update_now(self):
+        """Manual 'check for updates' that is NEVER silent — it always tells the user what
+        happened. Handles BOTH a git/source checkout (fetch + fast-forward) and an installed
+        app (release manifest). This is the fix for 'auto-update doesn't work': the automatic
+        check is best-effort/quiet, but this button gives a clear, actionable result."""
+        import shutil
+        base = _base_dir()
+        frozen = getattr(sys, "frozen", False)
+        if not frozen and (base / ".git").exists() and shutil.which("git"):
+            self._add_bubble("system", "Checking GitHub for a newer version…")
+            self._set_status("Checking for updates…")
+            threading.Thread(target=self._git_update_verbose, args=(str(base),), daemon=True).start()
+            return
+        if frozen:
+            try:
+                import updater
+                if not updater.can_self_update():
+                    self._add_bubble("system",
+                        "This build can't self-update (it isn't writable or the release feed "
+                        "isn't published yet). Download the newest build from the Ember website.")
+                    return
+            except Exception as e:
+                self._add_bubble("error", f"Updater unavailable: {e}")
+                return
+            self._add_bubble("system", "Checking for the latest Ember release…")
+            self._set_status("Checking for updates…")
+
+            def _work():
+                try:
+                    import updater
+                    manifest = updater.check_for_update()
+                except Exception as e:
+                    self._bridge.notice.emit(f"Update check failed: {type(e).__name__}: {e}")
+                    return
+                if manifest:
+                    QTimer.singleShot(0, lambda: self._on_update_available(manifest))
+                else:
+                    import version
+                    self._bridge.notice.emit(f"✓ Ember is up to date (v{version.__version__}).")
+            threading.Thread(target=_work, daemon=True).start()
+            return
+        # Plain download (no .git, not a frozen app) — can't self-update; point them to the site.
+        try:
+            import version
+            site = version.site_url()
+        except Exception:
+            site = "the Ember website"
+        self._add_bubble("system",
+            "This copy of Ember isn't a git checkout or an installed app, so it can't update "
+            f"itself. Get the latest build from {site}.")
+
+    def _git_update_verbose(self, base: str):
+        """Fetch + fast-forward a source checkout and report the exact outcome (up to date /
+        updated / why it couldn't). Runs on a worker thread; posts results via the bridge."""
+        import subprocess
+
+        def run(*args, timeout=120):
+            return subprocess.run(["git", "-C", base, *args],
+                                  capture_output=True, text=True, timeout=timeout)
+        try:
+            before = run("rev-parse", "HEAD").stdout.strip()
+            branch = (run("rev-parse", "--abbrev-ref", "HEAD").stdout or "").strip() or "?"
+            run("fetch", "--quiet", timeout=90)
+            up = run("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+            if up.returncode != 0:
+                self._bridge.notice.emit(
+                    f"Update: branch '{branch}' has no upstream to pull from. Set one with:\n"
+                    f"git branch --set-upstream-to=origin/{branch}")
+                return
+            counts = (run("rev-list", "--left-right", "--count", "HEAD...@{u}").stdout or "").split()
+            behind = counts[1] if len(counts) == 2 else "?"
+            if behind == "0":
+                self._bridge.notice.emit(f"✓ Ember is up to date ({branch} @ {before[:8]}).")
+                return
+            pull = run("pull", "--ff-only", timeout=120)
+            after = run("rev-parse", "HEAD").stdout.strip()
+            if before and after and before != after:
+                self._bridge.source_updated.emit(after[:8])
+            else:
+                err = (pull.stderr or pull.stdout or "").strip()[:300]
+                self._bridge.notice.emit(
+                    f"Ember is {behind} commit(s) behind on '{branch}' but couldn't fast-forward"
+                    + (f":\n{err}" if err else ".")
+                    + "\nThis is usually local changes or a diverged branch — commit/stash, or "
+                    "run: git pull --ff-only")
+        except Exception as e:
+            self._bridge.notice.emit(f"Update check failed: {type(e).__name__}: {e}")
 
     def _start_update(self, auto: bool = False):
         """Download + install the pending update, then relaunch. Triggered by /update, or

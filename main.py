@@ -32,6 +32,27 @@ def _ensure_valid_cwd():
             continue
 
 
+def _fix_gui_path():
+    """A macOS app launched from Finder inherits only a minimal PATH (/usr/bin:/bin:…), so
+    Homebrew dirs are missing. That breaks two things in-process:
+      • shutil.which('flac') (used by SpeechRecognition) can't find a NATIVE flac, so it falls
+        back to the bundled flac-mac — which on a downloaded build is often the wrong CPU type
+        ('[Errno 86] Bad CPU type'). With brew's flac on PATH it uses that instead.
+      • any tool that shells out to brew/ffmpeg/etc.
+    So we prepend the standard Homebrew + system dirs to THIS process's PATH at startup."""
+    import os
+    if sys.platform.startswith("win"):
+        return
+    extra = ["/opt/homebrew/bin", "/opt/homebrew/sbin",
+             "/usr/local/bin", "/usr/local/sbin",
+             "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+    merged = []
+    for d in extra + os.environ.get("PATH", "").split(os.pathsep):
+        if d and d not in merged:
+            merged.append(d)
+    os.environ["PATH"] = os.pathsep.join(merged)
+
+
 def _set_taskbar_app_id():
     """Tell Windows that this process is its own app (not just generic pythonw.exe).
     Required so the taskbar groups Ember separately, uses the Ember icon, and lets
@@ -77,6 +98,7 @@ def _reset_tcc_if_new_build():
 if __name__ == "__main__":
     try:
         _ensure_valid_cwd()   # repair a deleted CWD before anything calls os.getcwd()
+        _fix_gui_path()       # put Homebrew on PATH so flac/brew resolve when launched from Finder
         _set_taskbar_app_id()
         # If this is a freshly-built .app, clear stale macOS permission grants so they re-prompt.
         _reset_tcc_if_new_build()
