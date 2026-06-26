@@ -223,10 +223,27 @@ class EmberBrowser(QWidget):
             b.clicked.connect(fn)
             return b
 
-        bar.addWidget(_btn("←", "Back", lambda: self._cur() and self._cur().back()))
-        bar.addWidget(_btn("→", "Forward", lambda: self._cur() and self._cur().forward()))
-        bar.addWidget(_btn("⟳", "Reload", lambda: self._cur() and self._cur().reload()))
-        bar.addWidget(_btn("⌂", "Ember Search home", lambda: self._go_home()))
+        def _ibtn(icon_name, fallback, tip, fn, w=34):
+            """A toolbar button using Ember's own icon set, falling back to text/emoji if
+            the SVG icon can't be rendered — so the bar never ends up blank."""
+            b = _btn("", tip, fn, w)
+            try:
+                import icons
+                from PyQt6.QtCore import QSize
+                ic = icons.qicon(icon_name, size=18, color="#cdd1db")
+                if ic is not None and not ic.isNull():
+                    b.setIcon(ic)
+                    b.setIconSize(QSize(18, 18))
+                    return b
+            except Exception:
+                pass
+            b.setText(fallback)
+            return b
+
+        bar.addWidget(_ibtn("back", "←", "Back", lambda: self._cur() and self._cur().back()))
+        bar.addWidget(_ibtn("forward", "→", "Forward", lambda: self._cur() and self._cur().forward()))
+        bar.addWidget(_ibtn("reload", "⟳", "Reload", lambda: self._cur() and self._cur().reload()))
+        bar.addWidget(_ibtn("home", "⌂", "Ember Search home", lambda: self._go_home()))
         self._lock = QLabel("🔒")
         bar.addWidget(self._lock)
         self.address = QLineEdit()
@@ -235,17 +252,17 @@ class EmberBrowser(QWidget):
         self.address.returnPressed.connect(self._navigate_from_bar)
         self.address.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         bar.addWidget(self.address, 1)
-        bar.addWidget(_btn("★", "Bookmark this page", self._bookmark_current))
-        bar.addWidget(_btn("📑", "Bookmarks", self._show_bookmarks_menu))
-        bar.addWidget(_btn("📜", "History", self._show_history_menu))
-        bar.addWidget(_btn("📖", "Reader mode", self._reader_mode))
-        bar.addWidget(_btn("🌙", "Dark mode for this site", self._toggle_dark))
-        bar.addWidget(_btn("🔎", "Find on page (Ctrl+F)", self._toggle_find))
+        bar.addWidget(_ibtn("star", "★", "Bookmark this page", self._bookmark_current))
+        bar.addWidget(_ibtn("bookmark", "📑", "Bookmarks", self._show_bookmarks_menu))
+        bar.addWidget(_ibtn("history", "📜", "History", self._show_history_menu))
+        bar.addWidget(_ibtn("book", "📖", "Reader mode", self._reader_mode))
+        bar.addWidget(_ibtn("moon", "🌙", "Dark mode for this site", self._toggle_dark))
+        bar.addWidget(_ibtn("search", "🔎", "Find on page (Ctrl+F)", self._toggle_find))
         bar.addWidget(_btn("✓AI", "Check if the page text is AI-generated", self._ai_check_page, w=50))
-        bar.addWidget(_btn("🔑", "Passwords (save / fill / manage logins)", self._show_password_menu))
-        bar.addWidget(_btn("🧩", "Extensions — let Ember's AI build one for you", self._show_extensions_menu))
-        bar.addWidget(_btn("+", "New tab", lambda: self._new_tab()))
-        bar.addWidget(_btn("✨", "AI panel", self._toggle_ai))
+        bar.addWidget(_ibtn("key", "🔑", "Passwords (save / fill / manage logins)", self._show_password_menu))
+        bar.addWidget(_ibtn("puzzle", "🧩", "Extensions — let Ember's AI build one for you", self._show_extensions_menu))
+        bar.addWidget(_ibtn("plus", "+", "New tab", lambda: self._new_tab()))
+        bar.addWidget(_ibtn("sparkle", "✨", "AI panel", self._toggle_ai))
         outer.addLayout(bar)
 
         # Slim page-load progress line (animates as pages load, fades out when done).

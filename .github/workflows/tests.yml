@@ -50,7 +50,8 @@ jobs:
             test_audio_level.py \
             test_browser_extensions.py \
             test_live_voice.py \
-            test_hotkey_daemon.py; do
+            test_hotkey_daemon.py \
+            test_icons.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"
