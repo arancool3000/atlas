@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QSizePolicy, QSystemTrayIcon, QMenu,
     QComboBox, QCheckBox, QTabWidget, QListWidget, QListWidgetItem,
     QInputDialog, QFileDialog, QGraphicsOpacityEffect, QGraphicsDropShadowEffect,
-    QSlider, QLayout,
+    QSlider, QLayout, QGroupBox,
 )
 
 import models as model_catalog
@@ -443,731 +443,8 @@ def autocorrect_chat_text(text: str) -> tuple[str, bool]:
     return text2, changed or text2 != text
 
 
-def _glass_style(alpha: int = 180, accent: str = "#ffffff", see_through: int = 70,
-                 blurred: bool = False) -> str:
-    """Neutral Liquid Glass stylesheet.
+from styles import _glass_style, STYLE  # stylesheets live in styles.py
 
-    Dark *frosted* glass (light text needs a dark-ish veil), but dressed with real glass
-    cues so it reads as glass instead of a flat tint: a top-down light-falloff gradient,
-    a bright specular rim ("water-droplet" edge), and a generous corner radius. When a
-    native NSVisualEffectView blur is mounted behind (blurred=True) the veil is thinned so
-    the real blur shows through.
-    """
-    if blurred:
-        # A real desktop blur sits behind the window — keep the veil light so it shows through.
-        win_a = max(12, int((100 - see_through) * 0.45))
-    else:
-        # No native blur (the default): the window must stay essentially opaque, or the
-        # desktop shows through and the UI becomes unreadable. The glass look then comes from
-        # the gradient, the bright specular rim, and the frosted side panels — not from
-        # see-through. glass_opacity still nudges it within a safe, readable band.
-        win_a = max(232, min(250, 252 - int(see_through * 0.2)))
-    top_a = max(8, win_a - 8)                          # glass catches light at the top…
-    mid_a = win_a
-    bot_a = min(235, win_a + 36)                       # …and deepens at the bottom for legibility
-    bubble_a = max(118, int(alpha * 0.70))
-    input_a = max(145, int(alpha * 0.82))
-    bg = (f"qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-          f" stop:0 rgba(40, 43, 54, {top_a}),"
-          f" stop:0.5 rgba(17, 19, 26, {mid_a}),"
-          f" stop:1 rgba(9, 10, 14, {bot_a}))")
-    bg_bubble = f"rgba(255, 255, 255, {bubble_a})"
-    bg_input = f"rgba(255, 255, 255, {input_a})"
-    bg_control = "rgba(255, 255, 255, 34)"
-    bg_control_hover = "rgba(255, 255, 255, 56)"
-    rim = "rgba(255, 255, 255, 145)"                    # bright specular edge — the droplet rim
-    edge = "rgba(255, 255, 255, 72)"
-    edge_soft = "rgba(255, 255, 255, 36)"
-    return f"""
-QMessageBox, QInputDialog, QDialog {{ background-color: rgba(18, 18, 20, 236); }}
-QMessageBox QLabel, QInputDialog QLabel {{ color: #f6f6f4; background-color: transparent; font-size: 13px; }}
-QWidget#root {{
-    background: {bg};
-    border: 1.5px solid {rim};
-    border-radius: 26px;
-}}
-QFrame#historyPanel {{
-    background-color: rgba(255, 255, 255, 28);
-    border: 1px solid rgba(255, 255, 255, 34);
-    border-radius: 16px;
-}}
-QFrame#commandPanel {{
-    background-color: rgba(255, 255, 255, 24);
-    border: 1px solid rgba(255, 255, 255, 34);
-    border-radius: 16px;
-}}
-QLabel#sideTitle {{
-    color: #f6f6f4;
-    font-size: 13px;
-    font-weight: 800;
-    padding: 2px 4px;
-}}
-QLabel#sectionTitle {{
-    color: #f6f6f4;
-    font-size: 12px;
-    font-weight: 850;
-    padding: 4px 4px 2px 4px;
-}}
-QLabel#sideHint {{
-    color: rgba(246, 246, 244, 145);
-    font-size: 10px;
-    padding: 2px 4px;
-}}
-QLabel#panelHint {{
-    color: rgba(246, 246, 244, 150);
-    font-size: 10px;
-    padding: 0 4px 4px 4px;
-}}
-QFrame#statusStrip {{
-    background-color: rgba(0, 0, 0, 34);
-    border: 1px solid rgba(255, 255, 255, 30);
-    border-radius: 12px;
-}}
-QLabel#statusMetric {{
-    color: rgba(246, 246, 244, 210);
-    font-size: 10px;
-    font-weight: 700;
-}}
-QListWidget#historyList {{
-    background-color: rgba(255, 255, 255, 20);
-    color: #f6f6f4;
-    border: 1px solid rgba(255, 255, 255, 30);
-    border-radius: 12px;
-    padding: 4px;
-    outline: none;
-}}
-QListWidget#historyList::item {{
-    padding: 8px 7px;
-    border-radius: 9px;
-    margin: 2px;
-}}
-QListWidget#historyList::item:selected {{
-    background-color: rgba(255, 255, 255, 76);
-}}
-QListWidget#historyList::item:hover {{
-    background-color: rgba(255, 255, 255, 46);
-}}
-QLabel#title {{
-    color: #f6f6f4;
-    font-weight: 750;
-    font-size: 15px;
-    padding: 6px 8px;
-    letter-spacing: 0.2px;
-}}
-QLabel#statusBar {{
-    color: rgba(246, 246, 244, 170);
-    font-size: 11px;
-    padding: 0 12px 6px 12px;
-    font-weight: 600;
-}}
-QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {{
-    background: transparent;
-    border: none;
-}}
-QScrollBar:vertical {{
-    background: transparent;
-    width: 8px;
-    margin: 4px 2px;
-}}
-QScrollBar::handle:vertical {{
-    background: rgba(255, 255, 255, 60);
-    border-radius: 4px;
-    min-height: 24px;
-}}
-QScrollBar::handle:vertical:hover {{ background: rgba(255, 255, 255, 110); }}
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-QScrollBar:horizontal {{ background: transparent; height: 6px; margin: 2px 4px; }}
-QScrollBar::handle:horizontal {{ background: rgba(255, 255, 255, 60); border-radius: 3px; min-width: 24px; }}
-QScrollBar::handle:horizontal:hover {{ background: rgba(255, 255, 255, 110); }}
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; height: 0; }}
-QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
-QTextEdit, QPlainTextEdit {{
-    background-color: {bg_input};
-    color: #f7f7f5;
-    border: 1px solid {edge_soft};
-    border-radius: 15px;
-    padding: 10px 12px;
-    font-family: -apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    font-size: 13px;
-    selection-background-color: rgba(255, 255, 255, 82);
-}}
-QLineEdit {{
-    background-color: {bg_input};
-    color: #f7f7f5;
-    border: 1px solid {edge_soft};
-    border-radius: 15px;
-    padding: 8px 12px;
-    font-size: 13px;
-}}
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{
-    border: 1px solid rgba(255, 255, 255, 132);
-}}
-QPushButton {{
-    background-color: {bg_control};
-    color: #f6f6f4;
-    border: 1px solid {edge_soft};
-    border-radius: 12px;
-    padding: 6px 14px;
-    font-size: 12px;
-    font-weight: 650;
-}}
-QPushButton:hover {{
-    background-color: {bg_control_hover};
-    border-color: rgba(255, 255, 255, 100);
-}}
-QPushButton:pressed {{ background-color: rgba(255, 255, 255, 180); color: #08080a; }}
-QPushButton#send {{
-    background-color: rgba(255, 255, 255, 218);
-    color: #08080a;
-    font-weight: 700;
-    font-size: 13px;
-    border: 1px solid rgba(255, 255, 255, 190);
-}}
-QPushButton#send:hover {{
-    background-color: rgba(255, 255, 255, 238);
-}}
-QPushButton#approve {{ background-color: #3fb950; color: #ffffff; font-weight: bold; }}
-QPushButton#deny    {{ background-color: #f85149; color: #ffffff; font-weight: bold; }}
-QPushButton#titleBtn {{
-    background-color: {bg_control};
-    color: rgba(246, 246, 244, 220);
-    border: 1px solid {edge_soft};
-    border-radius: 10px;
-    padding: 0;
-    font-size: 14px;
-    font-weight: 700;
-}}
-QPushButton#titleBtn:hover {{
-    background-color: {bg_control_hover};
-    color: #ffffff;
-    border-color: rgba(255, 255, 255, 120);
-}}
-QPushButton#closeBtn {{
-    background-color: {bg_control};
-    color: rgba(246, 246, 244, 220);
-    border: 1px solid {edge_soft};
-    border-radius: 10px;
-    padding: 0;
-    font-size: 14px;
-    font-weight: 700;
-}}
-QPushButton#closeBtn:hover {{
-    background-color: #f85149;
-    color: #ffffff;
-    border-color: #f85149;
-}}
-QPushButton#chip {{
-    background-color: {bg_control};
-    color: rgba(246, 246, 244, 210);
-    border: 1px solid {edge_soft};
-    border-radius: 15px;
-    padding: 4px 12px;
-    font-size: 11px;
-    font-weight: 650;
-}}
-QPushButton#chip:hover {{
-    background-color: {bg_control_hover};
-    color: #ffffff;
-    border-color: rgba(255, 255, 255, 100);
-}}
-QPushButton#commandAction {{
-    background-color: rgba(255, 255, 255, 30);
-    color: rgba(246, 246, 244, 225);
-    border: 1px solid rgba(255, 255, 255, 42);
-    border-radius: 11px;
-    padding: 7px 10px;
-    font-size: 11px;
-    font-weight: 750;
-    text-align: left;
-}}
-QPushButton#commandAction:hover {{
-    background-color: rgba(255, 255, 255, 58);
-    color: #ffffff;
-    border-color: rgba(255, 255, 255, 106);
-}}
-QPushButton#commandTask {{
-    background-color: rgba(255, 255, 255, 10);
-    color: rgba(246, 246, 244, 200);
-    border: 1px solid rgba(255, 255, 255, 26);
-    border-left: 3px solid rgba(122, 162, 247, 170);
-    border-radius: 9px;
-    padding: 6px 10px;
-    font-size: 11px;
-    font-weight: 600;
-    font-style: italic;
-    text-align: left;
-}}
-QPushButton#commandTask:hover {{
-    background-color: rgba(255, 255, 255, 30);
-    color: #ffffff;
-}}
-QPushButton#voiceToggle {{
-    background-color: rgba(255, 255, 255, 220);
-    color: #08080a;
-    border: 1px solid rgba(255, 255, 255, 180);
-    border-radius: 14px;
-    padding: 10px 12px;
-    font-size: 13px;
-    font-weight: 850;
-}}
-QPushButton#voiceToggleOn {{
-    background-color: rgba(46, 160, 120, 230);
-    color: #ffffff;
-    border: 1px solid rgba(155, 255, 210, 180);
-    border-radius: 14px;
-    padding: 10px 12px;
-    font-size: 13px;
-    font-weight: 850;
-}}
-QFrame#bubble {{
-    background-color: {bg_bubble};
-    border: 1px solid {edge_soft};
-    border-radius: 18px;
-    padding: 10px 14px;
-    margin: 4px 2px;
-}}
-QFrame#bubbleUser {{
-    background-color: rgba(255, 255, 255, 218);
-    border: 1px solid rgba(255, 255, 255, 190);
-    border-radius: 18px;
-    padding: 10px 14px;
-    margin: 4px 2px;
-}}
-QFrame#bubbleUser QLabel {{ color: #08080a; }}
-QFrame#bubbleTool {{
-    background-color: rgba(255, 255, 255, 24);
-    border: 1px solid rgba(255, 255, 255, 34);
-    border-radius: 12px;
-    padding: 6px 10px;
-    margin: 2px 4px;
-}}
-QFrame#bubbleError {{
-    background-color: rgba(56, 32, 32, 200);
-    border: 1px solid #f85149;
-    border-radius: 12px;
-    padding: 10px 14px;
-    margin: 4px 2px;
-}}
-QFrame#bubbleConfirm {{
-    background-color: rgba(56, 48, 22, 200);
-    border: 1px solid #d29922;
-    border-radius: 12px;
-    padding: 10px 14px;
-    margin: 4px 2px;
-}}
-QFrame#typingIndicator {{
-    background-color: {bg_bubble};
-    border: 1px solid {edge_soft};
-    border-radius: 18px;
-    padding: 8px 14px;
-    margin: 4px 2px;
-}}
-QLabel#typingDots {{
-    color: rgba(255, 255, 255, 220);
-    font-size: 14px;
-    font-weight: bold;
-    letter-spacing: 3px;
-}}
-QLabel {{ color: #f6f6f4; font-size: 13px; }}
-QLabel#meta {{ color: rgba(246, 246, 244, 160); font-size: 10px; font-weight: 650; }}
-QMenu {{
-    background-color: {bg_bubble};
-    border: 1px solid {edge_soft};
-    border-radius: 16px;
-    padding: 7px;
-}}
-QMenu::item {{
-    padding: 9px 18px 9px 16px;
-    border-radius: 11px;
-    margin: 1px 4px;
-    color: #f6f6f4;
-}}
-QMenu::item:selected {{ background-color: rgba(255, 255, 255, 30); }}
-QMenu::separator {{ height: 1px; background: {edge_soft}; margin: 6px 12px; }}
-QFrame#pillRoot {{
-    background-color: {bg};
-    border: 1px solid {edge};
-    border-radius: 19px;
-}}
-QFrame#pillRoot:hover {{ border-color: rgba(255, 255, 255, 130); }}
-QTabBar::tab {{
-    background-color: transparent;
-    color: rgba(246, 246, 244, 150);
-    padding: 8px 14px;
-    min-width: 92px;
-    border: none;
-    font-size: 12px;
-    font-weight: 500;
-}}
-QTabBar::tab:selected {{
-    color: #ffffff;
-    border-bottom: 2px solid rgba(255, 255, 255, 210);
-}}
-QTabBar::tab:hover {{ color: #f6f6f4; }}
-QTabWidget::pane {{ border: none; }}
-QCheckBox {{ color: #f6f6f4; font-size: 12px; spacing: 8px; }}
-QCheckBox::indicator {{
-    width: 16px; height: 16px;
-    border: 1px solid {edge_soft};
-    background: rgba(255, 255, 255, 26);
-    border-radius: 4px;
-}}
-QCheckBox::indicator:checked {{
-    background: rgba(255, 255, 255, 220);
-    border-color: rgba(255, 255, 255, 220);
-}}
-QComboBox {{
-    background-color: {bg_input};
-    color: #f6f6f4;
-    border: 1px solid {edge_soft};
-    border-radius: 12px;
-    padding: 6px 10px;
-    font-size: 12px;
-}}
-QComboBox:focus, QComboBox:hover {{ border-color: rgba(255, 255, 255, 120); }}
-QComboBox::drop-down {{ border: none; width: 20px; }}
-"""
-
-
-STYLE = """
-/* ===== Ember — neutral liquid interface fallback ===== */
-/* Palette: graphite glass, frosted white controls, no colored glass tint. */
-
-/* Dialogs: dark panel + light text so native QMessageBox text is always readable. */
-QMessageBox, QInputDialog, QDialog { background-color: #161926; }
-QMessageBox QLabel, QInputDialog QLabel {
-    color: #eef1f8; background-color: transparent; font-size: 13px;
-}
-
-QWidget#root {
-    background-color: #0c0e16;
-    border: 1px solid rgba(255, 255, 255, 0.09);
-    border-radius: 20px;
-}
-QFrame#historyPanel {
-    background-color: rgba(255,255,255,0.035);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 16px;
-}
-QFrame#commandPanel {
-    background-color: rgba(255,255,255,0.035);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 16px;
-}
-QLabel#sideTitle {
-    color: #eef1f8;
-    font-size: 13px;
-    font-weight: 800;
-    padding: 2px 4px;
-}
-QLabel#sectionTitle {
-    color: #eef1f8;
-    font-size: 12px;
-    font-weight: 800;
-    padding: 4px 4px 2px 4px;
-}
-QLabel#sideHint {
-    color: #9298ad;
-    font-size: 10px;
-    padding: 2px 4px;
-}
-QLabel#panelHint {
-    color: #a7adbd;
-    font-size: 10px;
-    padding: 0 4px 4px 4px;
-}
-QFrame#statusStrip {
-    background-color: rgba(255,255,255,0.025);
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 12px;
-}
-QLabel#statusMetric {
-    color: #cbd1df;
-    font-size: 10px;
-    font-weight: 700;
-}
-QListWidget#historyList {
-    background-color: rgba(255,255,255,0.025);
-    color: #eef1f8;
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 12px;
-    padding: 4px;
-    outline: none;
-}
-QListWidget#historyList::item {
-    padding: 8px 7px;
-    border-radius: 9px;
-    margin: 2px;
-}
-QListWidget#historyList::item:selected { background-color: rgba(255,255,255,0.16); }
-QListWidget#historyList::item:hover { background-color: rgba(255,255,255,0.10); }
-QLabel#title {
-    color: #eef1f8;
-    font-weight: 700;
-    font-size: 15px;
-    padding: 6px 8px;
-    letter-spacing: 0.4px;
-}
-QLabel#statusBar {
-    color: #9298ad;
-    font-size: 11px;
-    padding: 0 12px 6px 12px;
-    font-weight: 500;
-    letter-spacing: 0.2px;
-}
-
-QScrollArea, QScrollArea > QWidget, QScrollArea > QWidget > QWidget {
-    background: transparent; border: none;
-}
-QScrollBar:vertical { background: transparent; width: 9px; margin: 4px 2px; }
-QScrollBar::handle:vertical { background: rgba(255,255,255,0.13); border-radius: 4px; min-height: 28px; }
-QScrollBar::handle:vertical:hover { background: rgba(255,255,255,0.24); }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QScrollBar:horizontal { background: transparent; height: 6px; margin: 2px 4px; }
-QScrollBar::handle:horizontal { background: rgba(255,255,255,0.13); border-radius: 3px; min-width: 28px; }
-QScrollBar::handle:horizontal:hover { background: rgba(255,255,255,0.24); }
-QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; height: 0; }
-QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
-
-QTextEdit, QPlainTextEdit {
-    background-color: #161926;
-    color: #eef1f8;
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 14px;
-    padding: 11px 14px;
-    font-family: -apple-system, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    font-size: 13px;
-    selection-background-color: rgba(255,255,255,0.32);
-}
-QLineEdit {
-    background-color: #161926;
-    color: #eef1f8;
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 12px;
-    padding: 9px 13px;
-    font-size: 13px;
-    selection-background-color: rgba(255,255,255,0.32);
-}
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus { border: 1px solid rgba(255,255,255,0.56); }
-
-QPushButton {
-    background-color: #1e2233;
-    color: #eef1f8;
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 10px;
-    padding: 7px 15px;
-    font-size: 12px;
-    font-weight: 600;
-}
-QPushButton:hover { background-color: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.42); }
-QPushButton:pressed { background-color: #14172180; }
-
-QPushButton#send {
-    background-color: rgba(255,255,255,0.92);
-    color: #08080a; font-weight: 700; font-size: 14px; border: none; border-radius: 11px;
-}
-QPushButton#send:hover {
-    background-color: rgba(255,255,255,0.98);
-}
-QPushButton#approve { background-color: #2ea043; color: #ffffff; font-weight: 700; border: none; }
-QPushButton#approve:hover { background-color: #3fb950; }
-QPushButton#deny    { background-color: #e5484d; color: #ffffff; font-weight: 700; border: none; }
-QPushButton#deny:hover { background-color: #f85149; }
-
-QPushButton#titleBtn {
-    background-color: rgba(255,255,255,0.05);
-    color: #c9cee0;
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 9px;
-    padding: 0;
-    font-size: 15px;
-    font-weight: 600;
-}
-QPushButton#titleBtn:hover { background-color: rgba(255,255,255,0.14); color: #ffffff; border-color: rgba(255,255,255,0.44); }
-QPushButton#closeBtn {
-    background-color: rgba(255,255,255,0.05);
-    color: #c9cee0;
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 9px;
-    padding: 0;
-    font-size: 15px;
-    font-weight: 600;
-}
-QPushButton#closeBtn:hover { background-color: #e5484d; color: #ffffff; border-color: #e5484d; }
-
-QFrame#pillRoot {
-    background-color: #0c0e16;
-    border: 1px solid rgba(255,255,255,0.54);
-    border-radius: 20px;
-}
-QFrame#pillRoot:hover { border-color: rgba(255,255,255,0.82); }
-
-QPushButton#chip {
-    background-color: rgba(255,255,255,0.04);
-    color: #b9c2e0;
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 15px;
-    padding: 5px 14px;
-    font-size: 11px;
-    font-weight: 600;
-}
-QPushButton#chip:hover {
-    background-color: rgba(255,255,255,0.14);
-    color: #ffffff;
-    border-color: rgba(255,255,255,0.42);
-}
-QPushButton#commandAction {
-    background-color: rgba(255,255,255,0.045);
-    color: #d6dae5;
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 11px;
-    padding: 7px 10px;
-    font-size: 11px;
-    font-weight: 700;
-    text-align: left;
-}
-QPushButton#commandAction:hover {
-    background-color: rgba(255,255,255,0.12);
-    color: #ffffff;
-    border-color: rgba(255,255,255,0.36);
-}
-QPushButton#commandTask {
-    background-color: rgba(255,255,255,0.04);
-    color: rgba(40,42,54,0.85);
-    border: 1px solid rgba(0,0,0,0.10);
-    border-left: 3px solid rgba(122,162,247,0.85);
-    border-radius: 9px;
-    padding: 6px 10px;
-    font-size: 11px;
-    font-weight: 600;
-    font-style: italic;
-    text-align: left;
-}
-QPushButton#commandTask:hover {
-    background-color: rgba(122,162,247,0.16);
-    color: #08080a;
-}
-QPushButton#voiceToggle {
-    background-color: rgba(238,241,248,0.92);
-    color: #08080a;
-    border: none;
-    border-radius: 14px;
-    padding: 10px 12px;
-    font-size: 13px;
-    font-weight: 800;
-}
-QPushButton#voiceToggle:hover {
-    background-color: rgba(255,255,255,0.98);
-}
-QPushButton#voiceToggleOn {
-    background-color: #2fa678;
-    color: #ffffff;
-    border: 1px solid rgba(153,255,209,0.55);
-    border-radius: 14px;
-    padding: 10px 12px;
-    font-size: 13px;
-    font-weight: 800;
-}
-QPushButton#voiceToggleOn:hover {
-    background-color: #38bd8a;
-}
-
-QFrame#typingIndicator {
-    background-color: #161926;
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 16px;
-    padding: 9px 15px;
-    margin: 4px 2px;
-}
-QLabel#typingDots { color: rgba(255,255,255,0.86); font-size: 14px; font-weight: bold; letter-spacing: 3px; }
-QMenu {
-    background-color: #161926;
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 16px;
-    padding: 7px;
-}
-QMenu::item { padding: 9px 18px; border-radius: 11px; margin: 1px 4px; color: #e6e6ea; }
-QMenu::item:selected { background-color: rgba(255,255,255,0.10); }
-QMenu::separator { height: 1px; background: rgba(255,255,255,0.10); margin: 6px 12px; }
-
-QFrame#bubble {
-    background-color: #161926;
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 16px;
-    padding: 12px 16px;
-    margin: 5px 2px;
-}
-QFrame#bubbleUser {
-    background-color: rgba(255,255,255,0.9);
-    border: 1px solid rgba(255,255,255,0.72);
-    border-radius: 16px;
-    padding: 12px 16px;
-    margin: 5px 2px;
-}
-QFrame#bubbleUser QLabel { color: #08080a; }
-QFrame#bubbleTool {
-    background-color: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 10px;
-    padding: 7px 10px;
-    margin: 2px;
-}
-QFrame#bubbleError {
-    background-color: #2e1719;
-    border: 1px solid #e5484d;
-    border-radius: 14px;
-    padding: 12px 16px;
-    margin: 5px 2px;
-}
-QFrame#bubbleConfirm {
-    background-color: #2c2614;
-    border: 1px solid #d29922;
-    border-radius: 14px;
-    padding: 12px 16px;
-    margin: 5px 2px;
-}
-
-QLabel { color: #eef1f8; font-size: 13px; }
-QLabel#meta { color: #9298ad; font-size: 10px; font-weight: 600; letter-spacing: 0.3px; }
-
-QTabBar::tab {
-    background-color: transparent;
-    color: #9298ad;
-    padding: 8px 12px;
-    min-width: 92px;
-    border: none;
-    font-size: 12px;
-    font-weight: 600;
-}
-QTabBar::tab:selected { color: #ffffff; border-bottom: 2px solid rgba(255,255,255,0.82); }
-QTabBar::tab:hover { color: #eef1f8; }
-QTabWidget::pane { border: none; }
-
-QCheckBox { color: #eef1f8; font-size: 12px; spacing: 9px; }
-QCheckBox::indicator {
-    width: 17px; height: 17px;
-    border: 1px solid rgba(255,255,255,0.18);
-    background: #161926;
-    border-radius: 5px;
-}
-QCheckBox::indicator:checked { background: rgba(255,255,255,0.86); border-color: rgba(255,255,255,0.86); }
-
-QComboBox {
-    background-color: #161926;
-    color: #eef1f8;
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 10px;
-    padding: 7px 12px;
-    font-size: 12px;
-}
-QComboBox:focus, QComboBox:hover { border-color: rgba(255,255,255,0.5); }
-QComboBox::drop-down { border: none; width: 22px; }
-QComboBox QAbstractItemView {
-    background-color: #1e2233; color: #eef1f8;
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 10px; selection-background-color: rgba(255,255,255,0.28);
-}
-"""
 
 
 class FlowLayout(QLayout):
@@ -1571,9 +848,55 @@ class SettingsDialog(QDialog):
 
         self.setStyleSheet(STYLE)
 
+    # --- layout helpers (keep every tab tidy + prevent clipped/elided text) ---
+    def _new_form(self):
+        """Return a fresh QFormLayout whose fields EXPAND to fill the width.
+
+        macOS's QFormLayout default (FieldsStayAtSizeHint) keeps inputs at their
+        size hint, which elides long placeholders like 'Optional 2nd backup key'.
+        Growing the fields fixes that and uses the dialog's full width."""
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(8)
+        return form
+
+    def _group(self, title: str) -> tuple:
+        """A titled QGroupBox containing an expanding QFormLayout. Returns (box, form)."""
+        box = QGroupBox(title)
+        form = self._new_form()
+        box.setLayout(form)
+        return box, form
+
+    def _hint(self, text: str) -> QLabel:
+        lbl = QLabel(text)
+        lbl.setStyleSheet("color: #565f89; font-size: 11px;")
+        lbl.setWordWrap(True)
+        return lbl
+
+    def _add_tab(self, page, title: str, scroll: bool = True):
+        """Add a tab, optionally wrapped in a scroll area so tall content never clips
+        off the bottom of the dialog."""
+        if scroll:
+            area = QScrollArea()
+            area.setWidgetResizable(True)
+            area.setFrameShape(QFrame.Shape.NoFrame)
+            area.setWidget(page)
+            self.tabs.addTab(area, title)
+        else:
+            self.tabs.addTab(page, title)
+
     def _build_models_tab(self):
         page = QWidget()
-        layout = QFormLayout(page)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(4, 8, 4, 8)
+        outer.setSpacing(12)
+
+        # --- API keys ---------------------------------------------------------
+        keys_box, layout = self._group("API keys")
+        outer.addWidget(keys_box)
 
         self.gemini_key_input = QLineEdit(self.settings.get("gemini_api_key", ""))
         self.gemini_key_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -1595,18 +918,14 @@ class SettingsDialog(QDialog):
         self.gemini_key_4_input.setPlaceholderText("Optional 3rd backup key")
         layout.addRow("Backup Gemini key 3:", self.gemini_key_4_input)
 
-        self.dual_api_check = QCheckBox("If Gemini is rate-limited, rotate through the backup keys")
-        self.dual_api_check.setChecked(bool(self.settings.get("dual_api_failover", True)))
-        layout.addRow(self.dual_api_check)
-
-        self.ai_titles_check = QCheckBox("Generate chat titles with Gemma 3 27B")
-        self.ai_titles_check.setChecked(bool(self.settings.get("ai_chat_titles", True)))
-        layout.addRow(self.ai_titles_check)
-
         self.anthropic_key_input = QLineEdit(self.settings.get("anthropic_api_key", ""))
         self.anthropic_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.anthropic_key_input.setPlaceholderText("Required if Claude is the primary model")
-        layout.addRow("Anthropic API key:", self.anthropic_key_input)
+        layout.addRow("Anthropic key:", self.anthropic_key_input)
+
+        self.dual_api_check = QCheckBox("If Gemini is rate-limited, rotate through the backup keys")
+        self.dual_api_check.setChecked(bool(self.settings.get("dual_api_failover", True)))
+        layout.addRow(self.dual_api_check)
 
         self.vault_check = QCheckBox("🔒 Store API keys in the encrypted vault (not plaintext settings.json)")
         self.vault_check.setChecked(bool(self.settings.get("use_key_vault", False)))
@@ -1616,12 +935,13 @@ class SettingsDialog(QDialog):
             _vbk = key_vault.backend()
         except Exception:
             _vbk = "encrypted-file"
-        vault_hint = QLabel(
-            f"Keys are encrypted using the {'OS keychain' if _vbk == 'keychain' else 'an encrypted file (Fernet)'}. "
-            "When on, settings.json keeps blank keys and the real values live in the vault.")
-        vault_hint.setStyleSheet("color: #565f89; font-size: 11px;")
-        vault_hint.setWordWrap(True)
-        layout.addRow(vault_hint)
+        layout.addRow(self._hint(
+            f"Keys are encrypted using {'the OS keychain' if _vbk == 'keychain' else 'an encrypted file (Fernet)'}. "
+            "When on, settings.json keeps blank keys and the real values live in the vault."))
+
+        # --- Model selection --------------------------------------------------
+        model_box, mlayout = self._group("Model")
+        outer.addWidget(model_box)
 
         self.model_combo = QComboBox()
         self._model_options = model_catalog.all_choices()
@@ -1632,32 +952,33 @@ class SettingsDialog(QDialog):
             if mid == current:
                 current_idx = i
         self.model_combo.setCurrentIndex(current_idx)
-        layout.addRow("Primary model:", self.model_combo)
+        mlayout.addRow("Primary model:", self.model_combo)
 
         rate_btn = QPushButton("Show free-tier rate limits")
         rate_btn.clicked.connect(self._show_rates)
-        layout.addRow("", rate_btn)
+        mlayout.addRow("", rate_btn)
+
+        self.ai_titles_check = QCheckBox("Generate chat titles with Gemma 3 27B")
+        self.ai_titles_check.setChecked(bool(self.settings.get("ai_chat_titles", True)))
+        mlayout.addRow(self.ai_titles_check)
 
         # Local AI (Ollama): pick "Local (Ollama)" as the model above; optionally name a model.
         self.ollama_model_input = QLineEdit(self.settings.get("ollama_model", ""))
         self.ollama_model_input.setPlaceholderText("e.g. llama3.2 (blank = first installed)")
-        layout.addRow("Ollama model (local):", self.ollama_model_input)
+        mlayout.addRow("Ollama model:", self.ollama_model_input)
         ollama_btn = QPushButton("Check local Ollama")
         ollama_btn.clicked.connect(self._check_ollama)
-        layout.addRow("", ollama_btn)
+        mlayout.addRow("", ollama_btn)
 
-        info = QLabel(
-            "Gemini 3.1 Flash Lite has the highest free-tier RPD (500/day).\n"
-            "Gemma 4 models go to 1500 RPD but don't support tool-use - text only.\n"
-            "Gemma 3 27B is used for short chat titles. Pick a Claude model to switch to Anthropic.\n"
+        mlayout.addRow(self._hint(
+            "Gemini 3.1 Flash Lite has the highest free-tier RPD (500/day). "
+            "Gemma 4 models go to 1500 RPD but don't support tool-use — text only. "
+            "Gemma 3 27B is used for short chat titles. Pick a Claude model to switch to Anthropic. "
             "Local (Ollama) runs fully offline with no key or limits (chat only — no computer "
-            "control). Install from ollama.com and `ollama pull llama3.2`."
-        )
-        info.setStyleSheet("color: #565f89; font-size: 11px;")
-        info.setWordWrap(True)
-        layout.addRow(info)
+            "control). Install from ollama.com and `ollama pull llama3.2`."))
 
-        self.tabs.addTab(page, "Models")
+        outer.addStretch()
+        self._add_tab(page, "Models")
 
     def _check_ollama(self):
         try:
@@ -1678,7 +999,8 @@ class SettingsDialog(QDialog):
 
     def _build_appearance_tab(self):
         page = QWidget()
-        layout = QFormLayout(page)
+        layout = self._new_form()
+        page.setLayout(layout)
 
         self.animations_check = QCheckBox("Enable bubble fade-in + typing animations")
         self.animations_check.setChecked(bool(self.settings.get("animations_enabled", True)))
@@ -1765,7 +1087,7 @@ class SettingsDialog(QDialog):
         note.setWordWrap(True)
         layout.addRow(note)
 
-        self.tabs.addTab(page, "Appearance")
+        self._add_tab(page, "Appearance")
 
     def _apply_theme_preset(self, key):
         """Apply a named theme preset to the Appearance widgets (does not save until the user
@@ -1785,7 +1107,8 @@ class SettingsDialog(QDialog):
 
     def _build_voice_tab(self):
         page = QWidget()
-        layout = QFormLayout(page)
+        layout = self._new_form()
+        page.setLayout(layout)
 
         self.wake_word_check = QCheckBox('Always listen for "Hey Ember" (hands-free wake word)')
         self.wake_word_check.setChecked(bool(self.settings.get("wake_word", True)))
@@ -1822,11 +1145,12 @@ class SettingsDialog(QDialog):
         note.setWordWrap(True)
         layout.addRow(note)
 
-        self.tabs.addTab(page, "Voice")
+        self._add_tab(page, "Voice")
 
     def _build_performance_tab(self):
         page = QWidget()
-        layout = QFormLayout(page)
+        layout = self._new_form()
+        page.setLayout(layout)
 
         self.auto_shot_check = QCheckBox("Let Ember view the screen when it decides it needs to")
         self.auto_shot_check.setChecked(bool(self.settings.get("auto_screenshot", True)))
@@ -1879,11 +1203,7 @@ class SettingsDialog(QDialog):
                                           "(loads only core tools, hides niche utilities)")
         self.lean_tools_check.setChecked(bool(self.settings.get("lean_tools", True)))
         layout.addRow(self.lean_tools_check)
-
-        self.download_protect_check = QCheckBox(
-            "🛡 Real-time download protection — auto-scan new files in Downloads for malware")
-        self.download_protect_check.setChecked(bool(self.settings.get("download_protection", False)))
-        layout.addRow(self.download_protect_check)
+        # (Real-time download protection lives on the Security tab — it's on by default there.)
 
         usage_btn = QPushButton("📊 Show usage dashboard (calls / tokens vs free-tier limits)")
         usage_btn.clicked.connect(self._show_usage_dashboard)
@@ -1905,7 +1225,7 @@ class SettingsDialog(QDialog):
         note.setStyleSheet("color: #565f89; font-size: 11px;")
         note.setWordWrap(True)
         layout.addRow(note)
-        self.tabs.addTab(page, "Performance")
+        self._add_tab(page, "Performance")
 
     def _build_automations_tab(self):
         page = QWidget()
@@ -2162,8 +1482,8 @@ class SettingsDialog(QDialog):
         v.addWidget(self._sec_ioc)
 
         self._sec_autokill = QCheckBox(
-            "Auto-terminate confirmed-malicious processes (default: alert only)")
-        self._sec_autokill.setChecked(bool(cfg.get("fileless_auto_terminate", False)))
+            "Auto-terminate confirmed-malicious processes (uncheck for alert-only)")
+        self._sec_autokill.setChecked(bool(cfg.get("fileless_auto_terminate", True)))
         self._sec_autokill.stateChanged.connect(
             lambda s: antivirus.set_config(fileless_auto_terminate=bool(s)))
         v.addWidget(self._sec_autokill)
@@ -2767,8 +2087,7 @@ class SettingsDialog(QDialog):
             self.settings["launch_at_login"] = self.launch_login_check.isChecked()
         self.settings["auto_update"] = self.auto_update_check.isChecked()
         self.settings["lean_tools"] = self.lean_tools_check.isChecked()
-        if hasattr(self, "download_protect_check"):
-            self.settings["download_protection"] = self.download_protect_check.isChecked()
+        # download_protection is owned by the Security tab toggle (persisted live there).
         if hasattr(self, "vault_check"):
             self.settings["use_key_vault"] = self.vault_check.isChecked()
         if hasattr(self, "wake_word_check"):
@@ -3174,6 +2493,13 @@ class EmberWindow(QWidget):
         except ImportError:
             QMessageBox.warning(self, "Voice not available",
                 "Voice deps missing. Run: pip install SpeechRecognition pyttsx3 pyaudio")
+            return
+        # Fail loudly + helpfully instead of silently looping "no speech" forever when the
+        # mic can't be opened (the #1 cause: macOS microphone permission not granted).
+        ok, detail = voice.mic_available()
+        if not ok:
+            QMessageBox.warning(self, "Microphone unavailable", detail)
+            self._set_status("Mic unavailable")
             return
         self._voice_chat_enabled = True
         self._voice_waiting_for_reply = False
@@ -4136,14 +3462,34 @@ class EmberWindow(QWidget):
         return frame
 
     def _animate_bubble_in(self, frame):
-        """Grow a new bubble in (0 -> natural height) with an easing curve, then release the
+        """Snappy grow-in (0 -> natural height) with an easing curve, then release the
         height cap. Layout-safe: no QGraphicsEffect (those regressed bubble width/word-wrap),
-        and the cap always ends unbounded so a bubble can never be left collapsed."""
+        and the cap always ends unbounded so a bubble can never be left collapsed.
+
+        Crucially, the target height is measured AFTER the bubble's word-wrap width is locked
+        in (clamp + layout activate). Measuring too early returned a single-line height, so the
+        old animation grew to a stub and then SNAPPED to full height — that ugly jump was the
+        'random fade' the bubbles seemed to do."""
         QWIDGET_MAX = 16777215
         try:
+            # Lock THIS bubble's width (and its labels' wrap width) and force the layout to
+            # compute the real wrapped height NOW, so we animate to the final height.
+            try:
+                view_w = self.chat_scroll.viewport().width() - 24
+                if view_w > 100:
+                    frame.setMaximumWidth(view_w)
+                    from PyQt6.QtWidgets import QLabel
+                    for lbl in frame.findChildren(QLabel):
+                        lbl.setFixedWidth(max(60, view_w - 24))
+            except Exception:
+                pass
+            lay = frame.layout()
+            if lay is not None:
+                lay.activate()
+            frame.adjustSize()
             h = max(1, frame.sizeHint().height())
             anim = QPropertyAnimation(frame, b"maximumHeight", self)
-            anim.setDuration(240)
+            anim.setDuration(200)          # snappy
             anim.setStartValue(0)
             anim.setEndValue(h)
             anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -4916,12 +4262,25 @@ class EmberWindow(QWidget):
             print(f"[Agent scheduler autostart failed: {e}]")
 
     def _autostart_wake_word(self):
-        """Start always-on 'Hey Ember' wake-word listening. Failure-silent."""
+        """Start always-on 'Hey Ember' wake-word listening. Failure-visible: if the mic
+        can't be opened, tell the user once (usually a macOS permission prompt) instead of
+        leaving 'Hey Ember' silently dead."""
         try:
             import wake_word
             wake_word.start(on_wake=lambda: self._bridge.wake_detected.emit())
-            print("[Wake word on: listening for 'Hey Ember']" if wake_word.is_running()
-                  else "[Wake word: mic unavailable]")
+            if wake_word.is_running():
+                print("[Wake word on: listening for 'Hey Ember']")
+                return
+            print("[Wake word: mic unavailable]")
+            try:
+                import voice
+                ok, detail = voice.mic_available()
+            except Exception:
+                ok, detail = False, "microphone unavailable"
+            if not ok and not self.settings.get("_warned_mic_perm"):
+                self.settings["_warned_mic_perm"] = True
+                self._add_bubble("system",
+                    "🎙️ “Hey Ember” couldn’t start: " + detail)
         except Exception as e:
             print(f"[Wake word autostart failed: {e}]")
 

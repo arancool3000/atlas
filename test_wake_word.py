@@ -9,6 +9,8 @@ def _reset():
     with ww._LOCK:
         ww._events.clear()
         ww._detections = 0
+        ww._heard_count = 0
+        ww._last_heard = ""
     ww._CAPTURE = None
     ww._on_wake = None
     ww._paused = False
@@ -96,6 +98,29 @@ def test_start_idempotent_and_stop():
         r = ww.stop()
         assert r["ok"]
         assert ww.is_running() is False
+        _reset()
+
+
+def test_heard_diagnostic_tracks_non_wake_speech():
+    """Even when the wake phrase isn't spoken, status() should show the mic IS producing
+    transcripts (heard_count / last_heard) — the signal used to tell 'mic dead/denied'
+    apart from 'just no wake phrase'."""
+    _reset()
+    def cap():
+        time.sleep(0.01)
+        return "the weather is nice today"
+    ww._CAPTURE = cap
+    try:
+        ww.start(on_wake=lambda: None)
+        deadline = time.time() + 2.0
+        while time.time() < deadline and ww.status()["heard_count"] < 1:
+            time.sleep(0.02)
+        st = ww.status()
+        assert st["heard_count"] >= 1, st
+        assert "weather" in st["last_heard"], st
+        assert st["detections"] == 0, "non-wake speech must not count as a detection"
+    finally:
+        ww.stop()
         _reset()
 
 

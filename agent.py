@@ -55,6 +55,7 @@ import tool_args
 import workflow_recorder
 import productivity_tools
 import plugin_system
+import custom_tools
 from claude_bridge import build_handoff_prompt, copy_to_clipboard, try_anthropic_api
 
 
@@ -124,24 +125,32 @@ use the built-in double-click controls: smart_click(..., double=true), click(...
 browser_click_text(..., mode="double"). If the first click does not activate the target, try double-click or
 keyboard Enter before giving up. Use zoom_screenshot/read_screen_text for small or ambiguous controls.
 
-# Speed
-- Spend model calls like a scarce resource: the free tier allows only ~15 PER MINUTE, and every step you take
-  is one call. Do the maximum useful work per step. Aim for one observe call, one batched action call, and one
-  final verification. Request multiple INDEPENDENT tool calls together in a single step rather than one at a
-  time. If a tool result already answers the user, answer immediately instead of gathering more.
-- Batch deterministic steps with do_sequence (one API request). Include waits and a final assertion inside
+# Speed — every step costs ONE model API call, so minimize steps (THIS IS A HARD RULE)
+- The free tier allows only ~15 calls PER MINUTE. Each round-trip of tool calls is one call. Many small
+  one-tool-at-a-time rounds is the single biggest waste. Treat 1-2 tool steps as the target for a normal turn,
+  4-5 as a lot, and anything beyond that as a sign you are over-investigating.
+- BATCH every independent read into ONE step. If you need to look at 3 files, list a folder, and search text,
+  request read_file + read_file + read_file + list_directory + grep_files TOGETHER in a single response - they
+  run concurrently as one call. NEVER fetch them one per round. Before you emit a step, ask: "what is every
+  piece of info I could possibly need next?" and request it all now.
+- Use the DEDICATED read tools, never shell for reading. read_file (not run_shell cat/head/tail),
+  grep_files (not run_shell grep/rg), list_directory/folder_tree (not run_shell ls/find), count_lines, json_query.
+  These dedicated tools batch concurrently; run_shell does NOT batch and burns a whole call each time, so a
+  "cat then grep then ls" sequence is 3 wasted calls when one batched read step would do it. Reserve run_shell
+  for things with no dedicated tool (e.g. running a build), and even then combine commands with && in ONE call.
+- STOP as soon as you can act or answer. Do not gather "just in case" context. If a tool result already answers
+  the user, reply immediately - do not take another look. Verification is ONE final check, not a habit between
+  every action.
+- Batch deterministic UI steps with do_sequence (one API request). Include waits and a final assertion inside
   the same do_sequence whenever the next action is obvious. Don't screenshot between every action -
   screenshot/assert_text_visible once at the END to verify.
 - Understand the screen in ONE pass: when you DO capture, batch take_screenshot with read_screen_text so you
   get the image plus an exact word+coordinate map together - read it and reason fully BEFORE acting. Don't take
   a second screenshot just to re-read the same screen; only re-capture after the screen actually changes.
-- A batch of read-only tools (read_screen_text, list_*, get_*, http_get, ...) runs concurrently - issue them
-  together when gathering info.
 - paste_text beats type_text for anything over a few words.
 - Never repeat an identical failing call. Change tool, args, or tactic.
 - Prefer high-signal tools over broad ones: browser_get_page for webpages, read_screen_text(query=...) for
-  visible labels, list_directory with a narrow path/pattern for files, and shell only when it gives a shorter
-  answer than UI work.
+  visible labels, list_directory with a narrow path/pattern for files.
 
 # Reasoning pattern (think harder on anything non-trivial)
 Before acting, think quietly: restate the user's REAL goal (not just the literal words), the minimum evidence you
@@ -156,6 +165,15 @@ escalate to ask_claude rather than guessing. Do not narrate this plan unless the
 smart_click -> read_screen_text to see exact labels -> find_ui_elements (try a partial match, scroll, or
 scope="desktop") -> keyboard navigation -> right_click_element_by_text then read the menu -> last, click(x,y)
 from a tool-sourced coordinate. Only after these: ask_claude (hard reasoning) or pause_for_human (truly blocked).
+
+# Building your own tools (you can extend yourself)
+When the user asks you to remember a repeatable multi-step procedure ("every morning, tidy Downloads and
+summarize my unread tabs"), or you notice you keep running the same sequence, BUILD A TOOL for it with
+create_custom_tool: give it a snake_case name, a description, optional parameters, and steps that each call a
+tool you already have (use {{placeholders}} in step args for inputs). It persists across restarts. Run it later
+with run_custom_tool(name=..., args={...}); see what you've built with list_custom_tools; share one with
+export_custom_tool / import_custom_tool. Each recipe step is still gated by the normal safety rules, so a custom
+tool can't do anything you couldn't already do. Prefer a custom tool over re-deriving the same steps each time.
 
 # Who you are (answer this directly if asked "what is Ember / what can you do")
 You are Ember, a local AI agent that lives on the user's {_OS} computer. Unlike a chatbot, you can ACT on
@@ -2056,11 +2074,17 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
 # of truth the agent + lean-mode filter read from.
 for _feat in (key_vault, usage_tracker, download_guard, fileless_guard, security_center,
               agent_profiles, agent_scheduler, integrations,
-              workflow_recorder, productivity_tools, plugin_system):
+              workflow_recorder, productivity_tools, plugin_system, custom_tools):
     for _decl in _feat.TOOL_DECLARATIONS:
         if _decl["name"] not in TOOL_DISPATCH:
             TOOL_DECLARATIONS.append(_decl)
     TOOL_DISPATCH.update(_feat.TOOL_DISPATCH)
+
+# Tell custom_tools the full live tool registry so create_custom_tool can reject a recipe
+# step that names a tool Ember doesn't actually have. (run_custom_tool is host-executed, so
+# it isn't in TOOL_DISPATCH — add it explicitly.)
+custom_tools.KNOWN_TOOLS = set(TOOL_DISPATCH) | {
+    "run_custom_tool", "ask_claude", "pause_for_human", "spawn_agent", "agent_run"}
 
 # Dynamically loaded user plugins (drop a .py into the plugins/ folder -> auto-registers).
 # A broken plugin is skipped by load_plugins(); we never let it break startup.
@@ -2111,6 +2135,8 @@ PARALLEL_SAFE_TOOLS = frozenset({
     # agent run modes / profiles (read-only)
     "list_run_modes", "agent_list", "agent_get",
     "scheduler_status", "scheduler_events", "integration_list",
+    # AI-authored custom tools (read-only management)
+    "list_custom_tools", "get_custom_tool", "export_custom_tool",
 })
 
 # Declared-type map for argument coercion (built AFTER all module tools merged in).
@@ -2163,6 +2189,16 @@ class PendingHumanPause:
     reason: str
     what_you_need: str
     response: queue.Queue = field(default_factory=queue.Queue)
+
+
+class _CustomFC:
+    """Minimal function-call shim (.name / .args) so a custom tool's recipe steps can be
+    run through the same _execute_fc path as a model-issued tool call."""
+    __slots__ = ("name", "args")
+
+    def __init__(self, name: str, args: dict):
+        self.name = name
+        self.args = args or {}
 
 
 class Agent:
@@ -2713,6 +2749,38 @@ class Agent:
                 out[k] = v
         return out
 
+    def _handle_run_custom_tool(self, args: dict) -> dict:
+        """Run an AI-authored custom tool: resolve its saved recipe (with the call's args
+        substituted in) and execute each step through THIS agent's own _execute_fc, so every
+        step keeps its normal events + safety/confirmation + audit. Stops on the first failure."""
+        name = (args.get("name") or "").strip()
+        call_args = args.get("args") if isinstance(args.get("args"), dict) else {}
+        # Bounded recursion: a custom tool may call run_custom_tool, but not endlessly.
+        depth = getattr(self, "_custom_depth", 0)
+        if depth >= 3:
+            return {"ok": False, "error": "custom-tool nesting limit reached (3)"}
+        resolved = custom_tools.resolve_steps(name, call_args)
+        if not resolved.get("ok"):
+            return resolved
+        steps = resolved.get("steps", [])
+        if not steps:
+            return {"ok": False, "error": f"custom tool '{name}' has no steps"}
+        self._custom_depth = depth + 1
+        results = []
+        try:
+            for i, step in enumerate(steps):
+                if self._stop_flag.is_set():
+                    return {"ok": False, "error": "stopped", "ran": i, "results": results}
+                _n, res = self._execute_fc(_CustomFC(step["tool"], step.get("args") or {}))
+                compact = self._compact_result(res) if isinstance(res, dict) else res
+                results.append({"step": i, "tool": _n, "result": compact})
+                if isinstance(res, dict) and not res.get("ok", True):
+                    return {"ok": False, "tool": name, "ran": i + 1, "failed_step": i,
+                            "failed_tool": _n, "error": res.get("error"), "results": results}
+        finally:
+            self._custom_depth = depth
+        return {"ok": True, "tool": name, "steps_run": len(results), "results": results}
+
     def _execute_fc(self, fc) -> tuple[str, dict]:
         """Execute a single tool call: emit events, handle confirmation, run, fail-track.
         Returns (name, result). Safe to call from worker threads (events marshal via Qt)."""
@@ -2765,6 +2833,8 @@ class Agent:
             result = self._handle_spawn_agent(args)
         elif name == "agent_run":
             result = self._handle_agent_run(args)
+        elif name == "run_custom_tool":
+            result = self._handle_run_custom_tool(args)
         else:
             fn = TOOL_DISPATCH.get(name)
             if not fn:
@@ -2821,6 +2891,7 @@ class Agent:
     def _process_response(self, response):
         max_steps = 12
         steps = 0
+        _econ_nudged = False  # only inject the "wrap it up" hint once per turn
         while steps < max_steps and not self._stop_flag.is_set():
             steps += 1
             # Usage dashboard: record every model response's token usage (free-tier headroom).
@@ -2887,6 +2958,18 @@ class Agent:
                         attach_image_mime = result.get("mime_type", "image/jpeg")
             if attach_image:
                 parts_to_send.append(self._image_part(attach_image, mime_type=attach_image_mime))
+
+            # Step-economy nudge: if this turn is burning many model calls, remind the model
+            # ONCE to batch any remaining reads and converge instead of one-tool-per-round.
+            if steps >= 5 and not _econ_nudged and not self._stop_flag.is_set():
+                _econ_nudged = True
+                parts_to_send.append(types.Part.from_text(
+                    text=(f"[step-economy: you have used {steps} model calls on this turn. Each extra step "
+                          "is another API call. Batch ALL remaining independent reads into ONE step "
+                          "(read_file/grep_files/list_directory run concurrently; don't use run_shell to "
+                          "read), then answer or act. Stop gathering context unless it is strictly required "
+                          "to finish.]")
+                ))
 
             try:
                 response = self._send_with_retry(parts_to_send)
