@@ -1326,7 +1326,20 @@ def _native_command(p: Path, args: list[str]) -> list[str]:
 
 
 def _run_native_sandbox(p: Path, args: list[str], timeout: int) -> dict:
-    cmd = _native_command(p, args)
+    # Stage a COPY in a throwaway temp dir and run THAT — never chmod (+x) or execute
+    # the user's original file in place. Mutating the host file's permissions, or running
+    # it from its real location, are both side effects a sandbox must not have.
+    import tempfile
+    tmpdir = None
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="ember_sbx_")
+        run_path = Path(tmpdir) / (p.name or "sample")  # keep the suffix: _native_command keys on it
+        shutil.copy2(p, run_path)
+    except Exception as e:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+        return {"ok": False, "sandbox": "native", "error": f"could not stage file for sandbox: {e}"}
+    cmd = _native_command(run_path, args)
     try:
         if sys.platform == "darwin":
             full = ["/usr/bin/sandbox-exec", "-p", _MAC_SANDBOX_PROFILE, *cmd]
@@ -1356,7 +1369,7 @@ def _run_native_sandbox(p: Path, args: list[str], timeout: int) -> dict:
                 return {"ok": False, "sandbox": "none",
                         "error": "no sandbox available (install Docker or firejail to run untrusted files safely)"}
         try:
-            os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
+            os.chmod(run_path, os.stat(run_path).st_mode | stat.S_IXUSR)  # the copy, not the original
         except Exception:
             pass
         r = subprocess.run(full, capture_output=True, text=True, timeout=timeout)
@@ -1368,6 +1381,9 @@ def _run_native_sandbox(p: Path, args: list[str], timeout: int) -> dict:
                 "note": f"killed after {timeout}s — long-running or hung"}
     except Exception as e:
         return {"ok": False, "sandbox": "native", "error": str(e)}
+    finally:
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def run_in_sandbox(path: str, args: list[str] | None = None, timeout: int = 30) -> dict:

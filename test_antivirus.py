@@ -247,6 +247,50 @@ def test_status_reports_strong_engines():
     assert "fileless_protection" in s
 
 
+def test_native_sandbox_runs_a_copy_not_the_original():
+    """The sandbox must run a throwaway COPY — never chmod (+x) or execute the user's
+    real file in place, and never leak the temp copy."""
+    src = _write("sample.sh", "echo hi\n")
+    os.chmod(src, 0o644)
+    orig_mode = src.stat().st_mode
+
+    captured = {}
+
+    class _R:
+        returncode = 0
+        stdout = "hi"
+        stderr = ""
+
+    def _fake_run(full, **kw):
+        captured["full"] = list(full)
+        return _R()
+
+    real_platform = antivirus.sys.platform
+    real_which = antivirus._which
+    real_run = antivirus.subprocess.run
+    try:
+        antivirus.sys.platform = "linux"
+        antivirus._which = lambda name: "/usr/bin/firejail" if name == "firejail" else None
+        antivirus.subprocess.run = _fake_run
+        out = antivirus._run_native_sandbox(Path(src), [], 5)
+    finally:
+        antivirus.sys.platform = real_platform
+        antivirus._which = real_which
+        antivirus.subprocess.run = real_run
+
+    assert out.get("ok") is True, out
+    joined = " ".join(captured["full"])
+    # The original file path must NOT appear in the executed command…
+    assert str(src) not in joined, captured["full"]
+    # …a staged copy in a throwaway dir must.
+    copy_parts = [x for x in captured["full"] if "ember_sbx_" in x]
+    assert copy_parts, captured["full"]
+    # The user's real file keeps its original permissions (no +x side effect).
+    assert src.stat().st_mode == orig_mode
+    # And the temp copy is cleaned up afterwards.
+    assert not os.path.exists(os.path.dirname(copy_parts[-1]))
+
+
 def _run_all() -> bool:
     import types
     funcs = [v for k, v in sorted(globals().items())
