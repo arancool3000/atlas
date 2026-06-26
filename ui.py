@@ -72,6 +72,7 @@ SLASH_COMMANDS = {
     "/link": "__remote__",
     "/browser": "__browser_app__",
     "/manual": "__manual__",
+    "/features": "__features__",
     "/help": "__help__",
     "/clear": "__clear__",
     "/reset": "__clear__",
@@ -89,7 +90,10 @@ SLASH_COMMANDS = {
     "/ollama": "__local_ai__",
 }
 
-HELP_TEXT = """How Ember's buttons work
+HELP_TEXT = """Tip: click the ✨ Features button (top of the window) for a searchable list of
+EVERYTHING Ember can do, with a one-click "Open" for each. Or type /features.
+
+How Ember's buttons work
 The Command Center has two kinds of buttons:
   • Apps & tools — OPEN a feature (Phone Link, Ember Browser, Antivirus, Sandbox,
     Usage, Plugins, Manual bridge).
@@ -201,6 +205,79 @@ COMMAND_CENTER_GROUPS = [
         ("Diagnose this PC",  "/diagnose",  None),
         ("Build a rule",      "/automate",  None),
         ("Schedule a task",   "/schedule",  None),
+    ]),
+]
+
+
+# ---------------------------------------------------------------------------
+# Feature catalog — the single, browsable list of EVERYTHING Ember can do, shown in
+# the "✨ Features" directory (FeaturesDialog). Each entry is (emoji, name, description,
+# action). action is one of:
+#   ("open", "<token>")  -> runs a feature opener / slash via _run_slash (e.g. "__remote__", "/diagnose")
+#   ("type", "<text>")   -> drops an example request into the chat box (the user hits send)
+#   ("settings", "<tab>")-> opens Settings (tab name is just a hint shown to the user)
+#   ("info", "")         -> no button, purely informational
+# Keeping it data-driven means the directory, search, and launch buttons all stay in sync.
+FEATURE_CATALOG = [
+    ("Automate your computer", [
+        ("🤖", "Autopilot", "Hand Ember a whole task and it drives the mouse, keyboard and apps to finish it.", ("open", "/autopilot")),
+        ("🪟", "Operate an app", "Tell Ember to do something in the app that's open right now.", ("open", "/apps")),
+        ("⏰", "Scheduled tasks", "Run a task on a timer (e.g. every morning).", ("open", "/schedule")),
+        ("⚙️", "Automation rules", "Background rules: when a window/app appears, auto-do something.", ("open", "/automate")),
+        ("🎬", "Record & replay workflows", "Record your mouse/keyboard once, replay it any time.", ("open", "__workflow__")),
+        ("🧩", "Build your own tool", "Ask Ember to save a repeatable multi-step procedure as a reusable tool.", ("type", "Build a custom tool that organizes my Downloads and then lists what changed, and save it.")),
+    ]),
+    ("Web & research", [
+        ("🌐", "Ember Browser", "A real built-in browser Ember can read and drive (tab groups + passwords).", ("open", "__browser_app__")),
+        ("🕸️", "Automate a website", "Open a page and fill forms / click / scrape via the DevTools browser.", ("open", "/web")),
+        ("🔎", "Research a topic", "Browse multiple sources, compare, and report back.", ("open", "/research")),
+        ("📸", "Screenshot the screen", "Capture the screen so Ember can see and act on it.", ("open", "/shot")),
+    ]),
+    ("Files & documents", [
+        ("🗂️", "Organize a folder", "Sort a folder by type/date — always previews with a dry-run first.", ("open", "/organize")),
+        ("🧹", "Clean Downloads", "Tidy your Downloads folder.", ("open", "/downloads")),
+        ("📑", "Find duplicates", "Find duplicate files so you can reclaim space.", ("open", "/dedupe")),
+        ("📦", "Find big files", "Find the biggest space-hogs.", ("open", "/biggest")),
+        ("📄", "Read / discuss a file", "Drop or paste a file (or photo) into the chat — Ember reads it.", ("type", "Read this file and summarize it: ")),
+        ("✍️", "Create a file", "Have Ember create a document, script, or asset locally.", ("open", "/create")),
+    ]),
+    ("Voice & hands-free", [
+        ("🎙️", "Voice chat", "Talk to Ember hands-free — it listens, acts, and speaks back.", ("open", "__voice_chat__")),
+        ("👋", "“Hey Ember” wake word", "Always-on wake word so you can summon it by voice. Toggle in Settings ▸ Voice.", ("settings", "Voice")),
+        ("🔊", "Spoken replies", "Have Ember read its answers aloud. Settings ▸ Voice.", ("settings", "Voice")),
+    ]),
+    ("Security & privacy", [
+        ("🛡️", "Antivirus scan", "Scan a folder for malware (entropy + IOC + signatures).", ("open", "__scan_folder__")),
+        ("📦", "Sandbox a file", "Run a risky file in an isolated sandbox.", ("open", "__sandbox__")),
+        ("🔒", "Real-time protection", "Always-on download, fileless & Security-Center scanning. Settings ▸ Security.", ("settings", "Security")),
+        ("🌍", "VPN", "Connect/disconnect your WireGuard VPN.", ("open", "__vpn__")),
+        ("🔐", "Password manager", "Saved website logins, encrypted on your machine.", ("open", "__passwords__")),
+        ("🗝️", "Encrypted key vault", "Store your API keys encrypted instead of in plaintext. Settings ▸ Models.", ("settings", "Models")),
+    ]),
+    ("AI brain & models", [
+        ("✨", "Gemini (free)", "Runs day-to-day on Google's free tier. Settings ▸ Models.", ("settings", "Models")),
+        ("🧠", "Claude", "Switch to Claude for hard reasoning. Add a key in Settings ▸ Models.", ("settings", "Models")),
+        ("🖥️", "Local AI (Ollama)", "Run fully offline with no key or limits.", ("open", "__local_ai__")),
+        ("🔗", "Manual bridge", "Bridge an external AI for a tough problem.", ("open", "__manual__")),
+    ]),
+    ("Phone & remote", [
+        ("📱", "Phone Link (Ember Link)", "Control this computer from your phone over Wi-Fi, PIN-protected.", ("open", "__remote__")),
+    ]),
+    ("Productivity", [
+        ("✂️", "Snippets", "Save reusable text and expand it anywhere.", ("open", "__snippets__")),
+        ("📋", "Macros", "Save and run named task macros.", ("open", "__macros__")),
+        ("🔴", "Screen recorder", "Record your screen to a video file.", ("open", "__screen_record__")),
+        ("📊", "Usage dashboard", "See API calls & tokens vs the free-tier limits.", ("open", "__usage__")),
+    ]),
+    ("Diagnose your PC", [
+        ("🩺", "Full diagnosis", "Scan crashes, errors and health in one go.", ("open", "/diagnose")),
+        ("📈", "Performance snapshot", "Live CPU / memory / disk.", ("open", "/perf")),
+        ("💻", "System info", "OS / CPU / GPU / RAM.", ("open", "/info")),
+    ]),
+    ("Extend & upkeep", [
+        ("🧩", "Plugins", "Drop a .py file in the plugins/ folder to add your own tools.", ("open", "__plugins__")),
+        ("⬇️", "Update Ember", "Check for and install the latest version.", ("open", "__update__")),
+        ("🎛️", "Settings", "Models, Appearance, Voice, Performance, Automations, Memory, Security.", ("settings", "")),
     ]),
 ]
 
@@ -2234,6 +2311,98 @@ def _save_clipboard_image(image) -> str | None:
         return None
 
 
+class FeaturesDialog(QDialog):
+    """A browsable, SEARCHABLE directory of everything Ember can do — so features are
+    actually discoverable instead of hidden behind chat commands. Each row has a button
+    that opens the feature, drops an example into the chat, or jumps to Settings.
+    `on_action((kind, value))` is the window callback that performs the chosen action."""
+
+    def __init__(self, on_action, parent=None):
+        super().__init__(parent)
+        self._on_action = on_action
+        self.setWindowTitle("Everything Ember can do")
+        self.setMinimumSize(660, 640)
+        outer = QVBoxLayout(self)
+        head = QLabel("✨ Features")
+        head.setObjectName("title")
+        outer.addWidget(head)
+        sub = QLabel("Click any feature to open it or drop an example into the chat. "
+                     "Search to find anything fast.")
+        sub.setStyleSheet("color:#9aa0b5; font-size:12px;")
+        sub.setWordWrap(True)
+        outer.addWidget(sub)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search features…  (try: voice, vpn, organize, malware)")
+        self.search.textChanged.connect(self._filter)
+        outer.addWidget(self.search)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        self._vbox = QVBoxLayout(inner)
+        self._vbox.setSpacing(4)
+        self._sections = []        # (section_label_widget, [row_widgets])
+        self._rows = []            # (row_widget, haystack, section_label_widget)
+        self._build_rows()
+        self._vbox.addStretch(1)
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.reject)
+        outer.addWidget(close)
+        self.setStyleSheet(STYLE)
+        QTimer.singleShot(0, self.search.setFocus)
+
+    def _build_rows(self):
+        for category, feats in FEATURE_CATALOG:
+            sec = QLabel(category)
+            sec.setObjectName("sectionTitle")
+            sec.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:10px;")
+            self._vbox.addWidget(sec)
+            section_rows = []
+            for emoji, name, desc, action in feats:
+                row = QFrame()
+                row.setObjectName("commandAction")
+                h = QHBoxLayout(row)
+                h.setContentsMargins(10, 7, 10, 7)
+                txt = QLabel(f"<b>{emoji}  {name}</b><br>"
+                             f"<span style='color:#9aa0b5'>{desc}</span>")
+                txt.setTextFormat(Qt.TextFormat.RichText)
+                txt.setWordWrap(True)
+                h.addWidget(txt, 1)
+                kind = action[0]
+                btn_label = {"open": "Open", "type": "Try", "settings": "Settings"}.get(kind, "")
+                if btn_label:
+                    b = QPushButton(btn_label)
+                    b.setObjectName("send")
+                    b.setCursor(Qt.CursorShape.PointingHandCursor)
+                    b.setFixedWidth(96)
+                    b.clicked.connect(lambda _=False, a=action: self._do(a))
+                    h.addWidget(b)
+                self._vbox.addWidget(row)
+                section_rows.append(row)
+                self._rows.append((row, f"{name} {desc} {category}".lower(), sec))
+            self._sections.append((sec, section_rows))
+
+    def _do(self, action):
+        self.accept()
+        try:
+            self._on_action(action)
+        except Exception:
+            pass
+
+    def _filter(self, text):
+        q = (text or "").strip().lower()
+        for row, hay, _sec in self._rows:
+            row.setVisible((q in hay) if q else True)
+        # Hide a section header when every row under it is filtered out.
+        for sec, rows in self._sections:
+            sec.setVisible(True if not q else any(r.isVisible() for r in rows))
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -3076,6 +3245,7 @@ class EmberWindow(QWidget):
         # Keep the header clean: only the essentials. Everything else is available by typing
         # (e.g. "organize my downloads") or via /help, which lists all commands.
         _chips = [
+            ("✨ Features", "__features__"),
             ("Autopilot", "/autopilot"),
             ("Voice", "__voice_chat__"),
             ("Screen", "/shot"),
@@ -3781,9 +3951,6 @@ class EmberWindow(QWidget):
         if target == "__remote__":
             self._start_remote_control()
             return True
-        if target == "__update__":
-            self._start_update()
-            return True
         if target == "__manual__":
             self._open_manual_mode()
             return True
@@ -3809,6 +3976,7 @@ class EmberWindow(QWidget):
         # NB: resolved via getattr so a single missing/renamed handler can't blow up the whole
         # dict and leave EVERY button dead (that's exactly how all the buttons can go silent).
         feature_methods = {
+            "__features__": "_open_features",
             "__voice_chat__": "_toggle_voice_chat",
             "__manual__": "_open_manual_mode",
             "__remote__": "_start_remote_control",
@@ -3846,6 +4014,28 @@ class EmberWindow(QWidget):
             return
         self.input_box.setPlainText(cmd)
         self._on_send()
+
+    def _open_features(self):
+        """Show the browsable, searchable Features directory."""
+        try:
+            FeaturesDialog(self._features_action, self).exec()
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.warning(self, "Features", f"{type(e).__name__}: {e}")
+
+    def _features_action(self, action):
+        """Perform a feature chosen in the Features directory."""
+        kind, val = action
+        if kind == "open":
+            self._run_slash(val)
+        elif kind == "type":
+            self.input_box.setPlainText(val)
+            cur = self.input_box.textCursor()
+            cur.movePosition(cur.MoveOperation.End)
+            self.input_box.setTextCursor(cur)
+            self.input_box.setFocus()
+        elif kind == "settings":
+            self._open_settings()
 
     def _show_usage_dashboard(self):
         show_usage_dashboard(self)

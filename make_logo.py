@@ -67,36 +67,51 @@ def _star4(cx, cy, R, r):
     return pts
 
 
+# macOS app-icon grid: the rounded-square artwork occupies ~80% of the canvas with
+# transparent padding around it (≈824/1024). Filling the whole canvas (as before) makes
+# Ember render ~10-20% larger than every neighbouring Dock icon. We render the design into
+# an inner square and composite it, centered, onto a transparent full-size canvas so Ember
+# matches the system grid.
+MARGIN_FRAC = 0.10
+
+
 def build():
-    # 1. Warm gradient fill, masked to the squircle.
-    grad = _diagonal_gradient(S, GRADIENT)
-    mask = _squircle_mask(S)
-    icon = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    icon.paste(grad, (0, 0), mask)
+    D = int(round(S * (1 - 2 * MARGIN_FRAC)))   # supersampled design size (~80% of the canvas)
+    off = (S - D) // 2                            # transparent margin on each side
+
+    # 1. Warm gradient fill, masked to the squircle (rendered at the inner design size).
+    grad = _diagonal_gradient(D, GRADIENT)
+    mask = _squircle_mask(D)
+    design = Image.new("RGBA", (D, D), (0, 0, 0, 0))
+    design.paste(grad, (0, 0), mask)
 
     # 2. Soft top-left gloss highlight.
-    gloss = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(gloss).ellipse([-S * 0.15, -S * 0.35, S * 0.95, S * 0.55], fill=(255, 255, 255, 34))
-    gloss = gloss.filter(ImageFilter.GaussianBlur(S // 60))
-    icon = Image.alpha_composite(icon, _apply_mask(gloss, mask))
+    gloss = Image.new("RGBA", (D, D), (0, 0, 0, 0))
+    ImageDraw.Draw(gloss).ellipse([-D * 0.15, -D * 0.35, D * 0.95, D * 0.55], fill=(255, 255, 255, 34))
+    gloss = gloss.filter(ImageFilter.GaussianBlur(D // 60))
+    design = Image.alpha_composite(design, _apply_mask(gloss, mask))
 
     # 3. Subtle drop shadow under the spark so it lifts off the gradient.
-    sh = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(sh).polygon(_star4(S // 2, int(S * 0.5 + S * 0.012), int(S * 0.27), int(S * 0.085)),
+    sh = Image.new("RGBA", (D, D), (0, 0, 0, 0))
+    ImageDraw.Draw(sh).polygon(_star4(D // 2, int(D * 0.5 + D * 0.012), int(D * 0.27), int(D * 0.085)),
                                fill=(70, 12, 0, 90))
-    sh = sh.filter(ImageFilter.GaussianBlur(S // 90))
-    icon = Image.alpha_composite(icon, _apply_mask(sh, mask))
+    sh = sh.filter(ImageFilter.GaussianBlur(D // 90))
+    design = Image.alpha_composite(design, _apply_mask(sh, mask))
 
     # 4. The AI spark: a large four-point star + a small companion spark.
-    d = ImageDraw.Draw(icon)
-    d.polygon(_star4(S // 2, int(S * 0.5), int(S * 0.27), int(S * 0.085)), fill=SPARK)
-    d.polygon(_star4(int(S * 0.72), int(S * 0.29), int(S * 0.085), int(S * 0.028)), fill=SPARK_SMALL)
+    d = ImageDraw.Draw(design)
+    d.polygon(_star4(D // 2, int(D * 0.5), int(D * 0.27), int(D * 0.085)), fill=SPARK)
+    d.polygon(_star4(int(D * 0.72), int(D * 0.29), int(D * 0.085), int(D * 0.028)), fill=SPARK_SMALL)
 
     # 5. Subtle inner border for definition.
-    r = int(S * 0.235)
-    ImageDraw.Draw(icon).rounded_rectangle(
-        [S // 200, S // 200, S - S // 200, S - S // 200], radius=r,
-        outline=(255, 255, 255, 34), width=max(2, S // 240))
+    r = int(D * 0.235)
+    ImageDraw.Draw(design).rounded_rectangle(
+        [D // 200, D // 200, D - D // 200, D - D // 200], radius=r,
+        outline=(255, 255, 255, 34), width=max(2, D // 240))
+
+    # 6. Composite the design, centered, onto a full transparent canvas (the macOS padding).
+    icon = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    icon.paste(design, (off, off), design)
 
     # Downsample for anti-aliasing and write the assets.
     final = icon.resize((OUT, OUT), Image.LANCZOS)
