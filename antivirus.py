@@ -231,6 +231,49 @@ _SCRIPT_EXTS = {
 }
 
 
+# AI second-opinion hook: callable(items) -> list[bool] (True = could cause REAL harm).
+# Set by the UI; lets a heuristic "suspicious" flag be cleared by the model so we don't
+# falsely flag source code / installers / docs.
+_AI_JUDGE = None
+
+
+def set_ai_judge(fn) -> None:
+    global _AI_JUDGE
+    _AI_JUDGE = fn
+
+
+def ai_review_flagged(flagged: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Second-opinion pass over flagged files. ONLY heuristic 'suspicious' items are reviewed
+    (definitive 'malicious' — EICAR / signature / AV / VT — are NEVER downgraded). The AI judge
+    reads a text excerpt of each and decides if it could cause REAL harm; items judged harmless
+    are returned as `cleared` (false positives) — the caller drops them and un-quarantines any
+    that were auto-quarantined. Returns (kept, cleared). One batched call, so it's rate-cheap."""
+    judge = _AI_JUDGE
+    review = [f for f in flagged if f.get("verdict") == "suspicious"]
+    definite = [f for f in flagged if f.get("verdict") != "suspicious"]
+    if not judge or not review:
+        return flagged, []
+    items = []
+    for f in review:
+        excerpt = ""
+        try:
+            excerpt = Path(f["path"]).read_bytes()[:4000].decode("utf-8", "replace")
+        except Exception:
+            pass
+        items.append({"name": Path(f["path"]).name, "reasons": f.get("reasons", []),
+                      "excerpt": excerpt})
+    try:
+        verdicts = judge(items)
+    except Exception:
+        return flagged, []
+    kept, cleared = [], []
+    for f, harmful in zip(review, verdicts):
+        (kept if harmful else cleared).append(f)
+    # Anything unjudged (short list) stays flagged, to be safe.
+    kept += review[len(verdicts):]
+    return definite + kept, cleared
+
+
 def _ember_own_dirs() -> list:
     """Directories that ARE Ember itself — never flag our own code/signature DB/tests
     (that's why antivirus.py, test_*.py, README, etc. lit up as 'malware')."""

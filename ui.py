@@ -394,6 +394,9 @@ def load_settings() -> dict:
         "voice_chat_auto_send": True,
         "voice_chat_continue_after_silence": True,
         "voice_chat_phrase_timeout": 8,
+        "tts_engine": "system",       # read-aloud engine: system | gemini | soundtools
+        "gemini_tts_voice": "Kore",
+        "soundtools_api_key": "",
         "wake_word": True,            # always-on "hey ember" wake listening
         "glow_animation": True,       # Siri-style flowing glow while listening/thinking/speaking
         "bubble_animation": True,     # grow-in animation for new chat bubbles
@@ -1214,6 +1217,27 @@ class SettingsDialog(QDialog):
         self.voice_check = QCheckBox("Speak assistant replies aloud")
         self.voice_check.setChecked(bool(self.settings.get("voice_output", False)))
         layout.addRow(self.voice_check)
+
+        # --- Text-to-speech voice/engine ---
+        self.tts_engine_combo = QComboBox()
+        for label, val in (("System voice (free, built-in)", "system"),
+                           ("Gemini TTS — most natural (uses your Gemini key; rate-limited)", "gemini"),
+                           ("Soundtools.io (configure key below)", "soundtools")):
+            self.tts_engine_combo.addItem(label, userData=val)
+        cur_tts = self.settings.get("tts_engine", "system")
+        for i in range(self.tts_engine_combo.count()):
+            if self.tts_engine_combo.itemData(i) == cur_tts:
+                self.tts_engine_combo.setCurrentIndex(i)
+        layout.addRow("Read-aloud voice:", self.tts_engine_combo)
+
+        self.gemini_voice_input = QLineEdit(self.settings.get("gemini_tts_voice", "Kore"))
+        self.gemini_voice_input.setPlaceholderText("Gemini voice name, e.g. Kore, Puck, Charon, Aoede")
+        layout.addRow("Gemini voice:", self.gemini_voice_input)
+
+        self.soundtools_key_input = QLineEdit(self.settings.get("soundtools_api_key", ""))
+        self.soundtools_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.soundtools_key_input.setPlaceholderText("Soundtools.io API key (optional)")
+        layout.addRow("Soundtools key:", self.soundtools_key_input)
 
         self.voice_chat_reply_check = QCheckBox("Voice chat always speaks replies")
         self.voice_chat_reply_check.setChecked(bool(self.settings.get("voice_chat_spoken_replies", True)))
@@ -2188,6 +2212,10 @@ class SettingsDialog(QDialog):
         if hasattr(self, "glow_anim_check"):
             self.settings["glow_animation"] = self.glow_anim_check.isChecked()
         self.settings["voice_output"] = self.voice_check.isChecked()
+        if hasattr(self, "tts_engine_combo"):
+            self.settings["tts_engine"] = self.tts_engine_combo.currentData() or "system"
+            self.settings["gemini_tts_voice"] = self.gemini_voice_input.text().strip() or "Kore"
+            self.settings["soundtools_api_key"] = self.soundtools_key_input.text().strip()
         self.settings["voice_chat_spoken_replies"] = self.voice_chat_reply_check.isChecked()
         self.settings["voice_chat_auto_send"] = self.voice_auto_send_check.isChecked()
         self.settings["voice_chat_continue_after_silence"] = self.voice_continue_check.isChecked()
@@ -2423,6 +2451,7 @@ class AntivirusDialog(QDialog):
     Settings. Scans run off the UI thread and report back via _scan_done."""
     _scan_done = pyqtSignal(dict)
     _progress_sig = pyqtSignal(int, int, str)
+    _reviewed_sig = pyqtSignal(object, object)   # (kept, cleared) after AI false-positive review
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -2434,6 +2463,12 @@ class AntivirusDialog(QDialog):
         self.setMinimumSize(720, 720)
         self._scan_done.connect(self._on_scan_done)
         self._progress_sig.connect(self._on_progress)
+        self._reviewed_sig.connect(self._on_reviewed)
+        # AI second opinion: clears heuristic false positives (source code, installers, docs).
+        try:
+            self._av.set_ai_judge(self._ai_judge)
+        except Exception:
+            pass
 
         v = QVBoxLayout(self)
         title = QLabel("🛡  Ember Antivirus")
@@ -2601,7 +2636,7 @@ class AntivirusDialog(QDialog):
             agg = {"scanned": 0, "flagged": [], "errors": []}
             for p in paths:
                 try:
-                    r = self._av.scan_directory(p, deep=True, max_files=5000, progress=_prog)
+                    r = self._av.scan_directory(p, deep=True, max_files=100000, progress=_prog)
                     if r.get("ok"):
                         agg["scanned"] += r.get("scanned", 0)
                         agg["flagged"] += r.get("flagged", []) or []
@@ -2669,6 +2704,74 @@ class AntivirusDialog(QDialog):
             self._progress.setText(f"✓ Scanned {agg.get('scanned', 0)} files — no threats found.")
         if agg.get("errors"):
             self._progress.setText(self._progress.text() + "  (some errors occurred)")
+        self._refresh()
+        # AI second opinion on the heuristic 'suspicious' flags — clears false positives.
+        if any(f.get("verdict") == "suspicious" for f in flagged) and self._ai_available():
+            self._progress.setText(self._progress.text() + "   🤖 AI is reviewing flagged files…")
+            items = list(flagged)
+            def review():
+                try:
+                    kept, cleared = self._av.ai_review_flagged(items)
+                except Exception:
+                    kept, cleared = items, []
+                self._reviewed_sig.emit(kept, cleared)
+            threading.Thread(target=review, daemon=True).start()
+
+    def _ai_available(self) -> bool:
+        return bool((self._settings.get("gemini_api_key") or self._settings.get("anthropic_api_key")
+                     or "").strip())
+
+    def _ai_judge(self, items):
+        """ONE batched model call: which flagged files could cause REAL harm? Returns list[bool]."""
+        import ai_detect
+        lines = []
+        for i, it in enumerate(items):
+            lines.append(f"[{i}] {it['name']} — flagged for: {', '.join(it.get('reasons', []))}\n"
+                         f"---content excerpt---\n{(it.get('excerpt') or '')[:1500]}\n---end---")
+        prompt = (
+            "You are a malware analyst. Each numbered item below is a file a HEURISTIC scanner "
+            "flagged as 'suspicious' (often a false positive). For EACH, decide if the file could "
+            "ACTUALLY cause real harm if opened or run. Source code, test files, documentation, "
+            "config, and normal app installers (.dmg/.pkg) are NOT harmful. Real malware "
+            "(reverse shells, ransomware, credential stealers, obfuscated droppers actually wired "
+            "to run) IS harmful. Reply with ONLY a JSON array of booleans in order "
+            "(true = could cause real harm), e.g. [false,true,false].\n\n" + "\n\n".join(lines))
+        raw = ai_detect._ask_model(prompt, self._settings)
+        import re as _re
+        m = _re.search(r"\[[^\]]*\]", raw or "")
+        if not m:
+            return [True] * len(items)   # uncertain -> keep flagged (safe)
+        try:
+            arr = json.loads(m.group(0))
+            out = [bool(x) for x in arr]
+            return out + [True] * (len(items) - len(out))
+        except Exception:
+            return [True] * len(items)
+
+    def _on_reviewed(self, kept, cleared):
+        """AI review came back: drop cleared (false-positive) rows + un-quarantine any that were
+        auto-quarantined, and show how many were cleared."""
+        cleared_paths = {f["path"] for f in (cleared or [])}
+        # Un-quarantine any cleared file that real-time protection had auto-quarantined.
+        for f in (cleared or []):
+            try:
+                for it in self._av.list_quarantine().get("items", []):
+                    if it.get("original_path") == f["path"]:
+                        self._av.restore_quarantined(it["id"])
+            except Exception:
+                pass
+        self._last_flagged = list(kept or [])
+        # Remove cleared rows from the list.
+        for row in range(self._threats_list.count() - 1, -1, -1):
+            it = self._threats_list.item(row)
+            if it and it.data(Qt.ItemDataRole.UserRole) in cleared_paths:
+                self._threats_list.takeItem(row)
+        n = len(cleared_paths)
+        base = self._progress.text().split("   🤖")[0]
+        if n:
+            self._progress.setText(base + f"   ✓ AI cleared {n} false positive(s).")
+        else:
+            self._progress.setText(base + "   ✓ AI confirmed the flags.")
         self._refresh()
 
     def _selected_threat_path(self):
@@ -2833,6 +2936,7 @@ class EmberWindow(QWidget):
         if self.settings.get("wake_word", True) and not _SAFE_MODE:
             # Always-on "Hey Ember" wake word — starts listening shortly after launch.
             QTimer.singleShot(2400, self._autostart_wake_word)
+        QTimer.singleShot(300, self._apply_tts_config)   # push read-aloud engine to voice
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
@@ -5043,6 +5147,21 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 self._orb = None
         return getattr(self, "_orb", None)
 
+    def _apply_tts_config(self):
+        """Push the read-aloud engine settings to the voice module."""
+        try:
+            import voice
+            voice.set_tts_config({
+                "tts_engine": self.settings.get("tts_engine", "system"),
+                "gemini_api_key": self.settings.get("gemini_api_key", ""),
+                "gemini_tts_voice": self.settings.get("gemini_tts_voice", "Kore"),
+                "soundtools_api_key": self.settings.get("soundtools_api_key", ""),
+                "soundtools_url": self.settings.get("soundtools_url", ""),
+                "soundtools_voice": self.settings.get("soundtools_voice", ""),
+            })
+        except Exception:
+            pass
+
     def _orb_speak(self, text: str):
         """Always speak (orb turns are voice interactions), regardless of the TTS setting."""
         try:
@@ -5057,6 +5176,12 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         """'Hey Ember' was heard. Show a small FLOATING ORB over whatever app you're using —
         DON'T switch apps or bring the whole Ember window forward — then listen, and caption +
         speak the reply on the orb (like the macOS Siri orb)."""
+        # Barge-in: saying "Hey Ember" interrupts whatever it's currently saying.
+        try:
+            import voice
+            voice.stop_speaking()
+        except Exception:
+            pass
         orb = self._ensure_orb()
         if not self.agent:
             if orb:
@@ -5566,6 +5691,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             # colour AND chat text size take effect immediately (both used to "do nothing").
             self._apply_glow()
             self._apply_glass_effect()
+            self._apply_tts_config()   # read-aloud engine may have changed
             new_hotkey = (self.settings.get("hotkey") or "ctrl+shift+space").lower()
             if new_hotkey != old_hotkey:
                 self._install_hotkey()

@@ -12,6 +12,7 @@ never take down the app.
 from __future__ import annotations
 
 import math
+import sys
 
 from PyQt6.QtCore import Qt, QRectF, QTimer, QPointF
 from PyQt6.QtGui import (QColor, QPainter, QPen, QBrush, QConicalGradient, QPainterPath,
@@ -274,23 +275,33 @@ class _Orb(QWidget):
             p.setBrush(QBrush(sphere))
             p.drawEllipse(QRectF(cx - r, cy - r, 2 * r, 2 * r))
 
-            # 2. Flowing iridescent light streak across the middle (the 'Siri energy').
+            # 2. A refined horizontal LIGHT BEAM across the middle — mostly silver-white with a
+            # faint iridescent tint (more premium/Siri-like than a rainbow band).
             p.setClipPath(self._circle_path(cx, cy, r))
             ang = (self._t * self._speed * 360.0) % 360.0
+            # subtle spectral wash underneath
             grad = QConicalGradient(cx, cy, ang)
             n = len(self._palette)
             for i, base in enumerate(self._palette + [self._palette[0]]):
                 c = QColor(base)
-                c.setAlpha(int(150 + 90 * breathe))
+                c.setAlpha(int(70 + 55 * breathe))
                 grad.setColorAt(min(1.0, i / n), c)
-            streak_h = r * (0.62 + 0.20 * breathe)
+            wash_h = r * (0.5 + 0.16 * breathe)
             p.setBrush(QBrush(grad))
-            p.drawEllipse(QRectF(cx - r * 1.05, cy - streak_h / 2, 2 * r * 1.05, streak_h))
-            # soften: a dark veil top & bottom so it reads as a horizontal beam
+            p.drawEllipse(QRectF(cx - r * 1.05, cy - wash_h / 2, 2 * r * 1.05, wash_h))
+            # bright white core beam on top
+            beam_h = r * (0.26 + 0.10 * breathe)
+            core = QLinearGradient(cx - r, cy, cx + r, cy)
+            core.setColorAt(0.0, QColor(255, 255, 255, 0))
+            core.setColorAt(0.5, QColor(255, 255, 255, int(180 + 60 * breathe)))
+            core.setColorAt(1.0, QColor(255, 255, 255, 0))
+            p.setBrush(QBrush(core))
+            p.drawEllipse(QRectF(cx - r, cy - beam_h / 2, 2 * r, beam_h))
+            # dark veil top & bottom so it reads as a contained beam, not a glowing disc
             veil = QLinearGradient(0, cy - r, 0, cy + r)
-            veil.setColorAt(0.0, QColor(12, 12, 18, 210))
-            veil.setColorAt(0.5, QColor(12, 12, 18, 0))
-            veil.setColorAt(1.0, QColor(12, 12, 18, 210))
+            veil.setColorAt(0.0, QColor(9, 9, 14, 235))
+            veil.setColorAt(0.5, QColor(9, 9, 14, 0))
+            veil.setColorAt(1.0, QColor(9, 9, 14, 235))
             p.setBrush(QBrush(veil))
             p.drawRect(QRectF(cx - r, cy - r, 2 * r, 2 * r))
             p.setClipping(False)
@@ -360,6 +371,24 @@ class SiriOrb(QWidget):
         self._reposition()
         self.show()
         self.raise_()          # on top, but WA_ShowWithoutActivating means focus stays put
+        self._elevate()        # float over ALL apps / spaces / fullscreen (macOS)
+
+    def _elevate(self):
+        """macOS: raise the orb above every app and make it visible on all Spaces + over
+        fullscreen apps, so it's a true system-wide overlay (best-effort)."""
+        if sys.platform != "darwin":
+            return
+        try:
+            import objc
+            from ctypes import c_void_p
+            win = objc.objc_object(c_void_p=int(self.winId())).window()
+            if win is None:
+                return
+            win.setLevel_(25)   # NSStatusWindowLevel — above normal app windows
+            # canJoinAllSpaces | stationary | fullScreenAuxiliary
+            win.setCollectionBehavior_((1 << 0) | (1 << 4) | (1 << 8))
+        except Exception:
+            pass
 
     def set_state(self, state: str):
         self._orb.set_state(state)

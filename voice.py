@@ -4,14 +4,25 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
+import time
+from pathlib import Path
 from typing import Callable
 
 
 _tts_engine = None
 _tts_lock = threading.Lock()
 _tts_thread: threading.Thread | None = None
-_say_proc = None            # current macOS `say` subprocess (so stop_speaking can kill it)
+_say_proc = None            # current macOS `say` / audio-player subprocess (stop_speaking kills it)
 _mac_voice = None           # cached best macOS voice name ("" = system default, None = unprobed)
+_TTS_CONFIG: dict = {}      # set by the UI: {tts_engine, gemini_api_key, gemini_tts_voice,
+                            #                  soundtools_api_key, soundtools_url, soundtools_voice}
+
+
+def set_tts_config(cfg: dict) -> None:
+    """The UI passes the relevant settings so speak() can pick the engine (system/gemini/
+    soundtools) without every call site threading settings through."""
+    global _TTS_CONFIG
+    _TTS_CONFIG = dict(cfg or {})
 
 
 def _best_mac_voice() -> str:
@@ -87,10 +98,27 @@ def _ensure_tts():
 
 
 def speak(text: str):
-    """Speak `text` aloud. On macOS uses the native `say` engine with the best installed
-    voice (far more natural than pyttsx3); elsewhere uses pyttsx3 in a background thread."""
+    """Speak `text` aloud using the configured engine. Engines (tts_engine setting):
+      • 'gemini'     — Gemini TTS (very natural; needs a Gemini key; rate-limited)
+      • 'soundtools' — a configurable HTTP TTS endpoint (soundtools.io etc.)
+      • 'system'/auto — native macOS `say` (premium voice) / pyttsx3 elsewhere (free, default)
+    Any engine falls back to the system voice on error so speech never silently dies."""
     if not text or not text.strip():
         return
+    engine = (_TTS_CONFIG.get("tts_engine") or "system").lower()
+    try:
+        if engine == "gemini" and (_TTS_CONFIG.get("gemini_api_key") or "").strip():
+            if _gemini_tts(text):
+                return
+        elif engine == "soundtools" and (_TTS_CONFIG.get("soundtools_api_key") or "").strip():
+            if _soundtools_tts(text):
+                return
+    except Exception:
+        pass
+    _system_tts(text)
+
+
+def _system_tts(text: str):
     if sys.platform == "darwin":
         _mac_say(text)
         return
@@ -103,8 +131,97 @@ def speak(text: str):
                 eng.runAndWait()
         except Exception:
             pass
-
     threading.Thread(target=_run, daemon=True).start()
+
+
+def _play_audio_file(path: str):
+    """Play an audio file via the OS player, tracked in _say_proc so stop_speaking() can cut it."""
+    global _say_proc
+    stop_speaking()
+    try:
+        if sys.platform == "darwin":
+            cmd = ["afplay", path]
+        elif sys.platform.startswith("win"):
+            cmd = ["powershell", "-NoProfile", "-c",
+                   f"(New-Object Media.SoundPlayer '{path}').PlaySync()"]
+        else:
+            cmd = ["aplay", path]
+        _say_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def _pcm_to_wav(pcm: bytes, path: str, rate: int = 24000):
+    import wave
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+
+
+def _gemini_tts(text: str) -> bool:
+    """Gemini TTS — natural neural voice. Returns True if it spoke."""
+    try:
+        from google import genai
+        from google.genai import types
+        key = "".join((_TTS_CONFIG.get("gemini_api_key") or "").split())
+        voice = (_TTS_CONFIG.get("gemini_tts_voice") or "Kore").strip() or "Kore"
+        client = genai.Client(api_key=key)
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash-preview-tts",
+            contents=text[:1500],
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice)))),
+        )
+        pcm = resp.candidates[0].content.parts[0].inline_data.data
+        if not pcm:
+            return False
+        import tempfile
+        out = str(Path(tempfile.gettempdir()) / f"ember_tts_{int(time.time() * 1000)}.wav")
+        _pcm_to_wav(pcm, out)
+        _play_audio_file(out)
+        return True
+    except Exception:
+        return False
+
+
+def _soundtools_tts(text: str) -> bool:
+    """A configurable HTTP TTS endpoint (e.g. soundtools.io). POSTs {text, voice} with a Bearer
+    key; accepts either raw audio bytes or JSON {audio_url|url}. Best-effort + fully optional."""
+    try:
+        import requests
+        url = (_TTS_CONFIG.get("soundtools_url") or "https://soundtools.io/api/text-to-speech").strip()
+        key = (_TTS_CONFIG.get("soundtools_api_key") or "").strip()
+        voice = (_TTS_CONFIG.get("soundtools_voice") or "").strip()
+        payload = {"text": text[:2000]}
+        if voice:
+            payload["voice"] = voice
+        r = requests.post(url, json=payload,
+                          headers={"Authorization": f"Bearer {key}", "Accept": "audio/mpeg"},
+                          timeout=30)
+        if r.status_code != 200:
+            return False
+        ctype = r.headers.get("Content-Type", "")
+        import tempfile
+        if "application/json" in ctype:
+            j = r.json()
+            audio_url = j.get("audio_url") or j.get("url") or j.get("output")
+            if not audio_url:
+                return False
+            r = requests.get(audio_url, timeout=30)
+            if r.status_code != 200:
+                return False
+        ext = ".mp3" if "mpeg" in (ctype or r.headers.get("Content-Type", "")) else ".wav"
+        out = str(Path(tempfile.gettempdir()) / f"ember_tts_{int(time.time() * 1000)}{ext}")
+        Path(out).write_bytes(r.content)
+        _play_audio_file(out)
+        return True
+    except Exception:
+        return False
 
 
 def _mac_say(text: str):

@@ -126,6 +126,15 @@ use the built-in double-click controls: smart_click(..., double=true), click(...
 browser_click_text(..., mode="double"). If the first click does not activate the target, try double-click or
 keyboard Enter before giving up. Use zoom_screenshot/read_screen_text for small or ambiguous controls.
 
+# Just chatting? Then DON'T touch any tools (this is critical — the free tier is ~5 calls/min)
+If the user is making conversation, greeting you, asking who/what you are, or asking a question
+you can answer from what you already know, just REPLY in words — do NOT call get_performance,
+get_system_info, get_folder_size, take_screenshot or any other tool. Running tools "to be
+helpful" during a normal chat is wrong: it wastes scarce API calls and surprises the user (they
+asked about a bug and suddenly got a disk-space report). Only use tools when the user asks you to
+DO something on the computer, or when answering genuinely REQUIRES live data you don't have.
+When in doubt, answer first and offer to check — don't auto-check.
+
 # Speed — every step costs ONE model API call, so minimize steps (THIS IS A HARD RULE)
 - The free tier allows only ~15 calls PER MINUTE. Each round-trip of tool calls is one call. Many small
   one-tool-at-a-time rounds is the single biggest waste. Treat 1-2 tool steps as the target for a normal turn,
@@ -2893,7 +2902,7 @@ class Agent:
         return [r for r in results if r is not None]
 
     def _process_response(self, response):
-        max_steps = 12
+        max_steps = 8   # tighter cap: fewer tool rounds = fewer API calls on the free tier
         steps = 0
         _econ_nudged = False  # only inject the "wrap it up" hint once per turn
         while steps < max_steps and not self._stop_flag.is_set():
