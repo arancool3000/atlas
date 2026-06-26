@@ -18,16 +18,22 @@ from PyQt6.QtGui import QColor, QPainter, QPen, QBrush, QConicalGradient, QPaint
 from PyQt6.QtWidgets import QWidget
 
 
-# Warm-leaning rainbow that flows around the edge (Ember gold/orange/red first).
-_PALETTE_HEX = ["#ffcf6b", "#ef6c34", "#dc5826", "#b02628", "#fb7185",
-                "#c061ff", "#6c9eff", "#36d2c3", "#ffcf6b"]
+# Vibrant spectral flow in the spirit of Apple's 2019 "wonderful things" / "By
+# innovation only" event — saturated, liquid, alive — but kept ember-warm at the
+# seam (gold first AND last) so the conical loop is seamless.
+_PALETTE_HEX = ["#ffd23f", "#ff8c1a", "#ff5e3a", "#ff2d55", "#ff375f",
+                "#bf5af2", "#5e5ce6", "#0a84ff", "#32d0c6", "#ffd23f"]
 
 # Per-state tuning: (rotation speed, breath speed, min alpha, max alpha, stroke px)
+# Snappier + brighter than before so the band reads as energetic, not sleepy.
 _STATES = {
-    "listening": (0.018, 3.2, 0.42, 0.95, 3.2),
-    "thinking":  (0.007, 1.6, 0.30, 0.62, 2.6),
-    "speaking":  (0.013, 5.0, 0.45, 1.00, 3.6),
+    "listening": (0.022, 3.6, 0.50, 1.00, 3.4),
+    "thinking":  (0.010, 1.8, 0.34, 0.70, 2.8),
+    "speaking":  (0.016, 5.4, 0.52, 1.00, 3.8),
 }
+
+# How fast the whole glow fades in / out (per ~60fps frame). ~0.09 -> ≈190ms.
+_FADE_STEP = 0.09
 
 
 class SiriGlow(QWidget):
@@ -41,6 +47,8 @@ class SiriGlow(QWidget):
         self._phase = 0.0          # rotation phase (0..1)
         self._t = 0.0              # time accumulator for breathing
         self._active = False
+        self._intensity = 0.0      # current global opacity envelope (0..1) — drives the fade
+        self._target = 0.0         # where the envelope is heading (1 = on, 0 = fading out)
         self._corner = 22
         self._inset = 5
         self._layers = 5
@@ -66,18 +74,29 @@ class SiriGlow(QWidget):
         self.set_state(state)
         self.cover()
         self._active = True
+        self._target = 1.0          # fade up to full
         self.show()
         self.raise_()
         if not self._timer.isActive():
             self._timer.start()
 
     def stop(self):
-        self._active = False
-        if self._timer.isActive():
-            self._timer.stop()
-        self.hide()
+        # Don't pop off — fade out, then hide when the envelope reaches zero (in _tick).
+        self._target = 0.0
 
     def _tick(self):
+        # Ease the opacity envelope toward its target so the glow fades in/out.
+        if self._intensity < self._target:
+            self._intensity = min(self._target, self._intensity + _FADE_STEP)
+        elif self._intensity > self._target:
+            self._intensity = max(self._target, self._intensity - _FADE_STEP)
+        # Fully faded out -> stop animating and hide to save CPU.
+        if self._target == 0.0 and self._intensity <= 0.0:
+            self._active = False
+            if self._timer.isActive():
+                self._timer.stop()
+            self.hide()
+            return
         self._phase = (self._phase + self._speed) % 1.0
         self._t += 0.016
         try:
@@ -97,11 +116,18 @@ class SiriGlow(QWidget):
         return g
 
     def paintEvent(self, _ev):
-        if not self._active:
+        if not self._active or self._intensity <= 0.0:
             return
         try:
             w, h = self.width(), self.height()
             if w < 24 or h < 24:
+                return
+            cx, cy = w / 2.0, h / 2.0
+            angle = self._phase * 360.0
+            breathe = 0.5 + 0.5 * math.sin(self._t * self._breath)
+            # The global intensity envelope scales everything so the band fades in/out.
+            base_alpha = (self._min_a + (self._max_a - self._min_a) * breathe) * 255.0 * self._intensity
+            if base_alpha < 1.0:
                 return
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -109,10 +135,6 @@ class SiriGlow(QWidget):
             rect = QRectF(inset, inset, w - 2 * inset, h - 2 * inset)
             path = QPainterPath()
             path.addRoundedRect(rect, self._corner, self._corner)
-            cx, cy = w / 2.0, h / 2.0
-            angle = self._phase * 360.0
-            breathe = 0.5 + 0.5 * math.sin(self._t * self._breath)
-            base_alpha = (self._min_a + (self._max_a - self._min_a) * breathe) * 255.0
             # Widest + faintest layer first, brightest thin core last -> soft bloom.
             for layer in range(self._layers, 0, -1):
                 width = self._stroke * (0.7 + layer)
@@ -141,7 +163,7 @@ class ThinkingDots(QWidget):
         self._gap = gap          # spacing between dot centers
         self._t = 0.0
         self._amp = gap * 0.55   # how far dots drift (enough to cross / rearrange)
-        self._palette = [QColor(h) for h in ("#ffcf6b", "#ef6c34", "#fb7185", "#c061ff")]
+        self._palette = [QColor(h) for h in ("#ffd23f", "#ff5e3a", "#ff2d55", "#bf5af2")]
         pad = 14
         self.setFixedSize(int((n - 1) * gap + 2 * dot + 2 * self._amp + pad),
                           int(2 * dot + pad))

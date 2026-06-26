@@ -9,6 +9,43 @@ _tts_engine = None
 _tts_lock = threading.Lock()
 _tts_thread: threading.Thread | None = None
 
+# A SINGLE process-wide lock guarding the microphone. Both this module's
+# listen_once() AND the always-on wake-word loop (wake_word.py) acquire it before
+# opening an input stream, so the two never fight for the device. On macOS, two
+# simultaneous CoreAudio input streams routinely fail or return silence — that was
+# the root cause of "voice chat does nothing" / "Hey Ember never triggers" when the
+# wake word and a voice turn both grabbed the mic at once.
+MIC_LOCK = threading.RLock()
+
+
+def mic_available() -> tuple[bool, str]:
+    """Best-effort check that a microphone can actually be opened. Returns (ok, detail).
+    detail is a short, user-facing reason when not ok (missing deps / permission / no device).
+
+    Safe to call on the UI thread: it never blocks on MIC_LOCK. If the lock is already held
+    (the wake-word loop is actively capturing), that itself proves the mic works -> ok."""
+    try:
+        import speech_recognition as sr
+    except Exception as e:
+        return False, f"SpeechRecognition not installed ({e}). Run: pip install SpeechRecognition"
+    got = MIC_LOCK.acquire(timeout=0.1)
+    if not got:
+        return True, "ok"   # something is already using the mic -> it's available
+    try:
+        mic = sr.Microphone()
+        with mic:
+            pass
+        return True, "ok"
+    except Exception as e:
+        msg = str(e).lower()
+        if "pyaudio" in msg:
+            return False, "PyAudio is missing. Run: pip install pyaudio"
+        # The classic macOS symptom: a device exists but mic permission was never granted.
+        return False, ("Could not open the microphone — grant microphone permission to the app "
+                       "(macOS: System Settings → Privacy & Security → Microphone) and try again.")
+    finally:
+        MIC_LOCK.release()
+
 
 def _ensure_tts():
     global _tts_engine
@@ -72,10 +109,13 @@ def listen_once(on_transcript: Callable[[str, str | None], None],
             on_transcript("", f"no microphone: {hint}")
             return
         try:
-            with mic as source:
-                rec.adjust_for_ambient_noise(source, duration=0.3)
-                audio = rec.listen(source, timeout=listen_timeout,
-                                   phrase_time_limit=phrase_timeout)
+            # Hold the shared mic lock for the whole capture so the wake-word loop
+            # can't open a competing input stream underneath us.
+            with MIC_LOCK:
+                with mic as source:
+                    rec.adjust_for_ambient_noise(source, duration=0.3)
+                    audio = rec.listen(source, timeout=listen_timeout,
+                                       phrase_time_limit=phrase_timeout)
         except sr.WaitTimeoutError:
             on_transcript("", "no speech detected")
             return

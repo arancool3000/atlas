@@ -2494,6 +2494,13 @@ class EmberWindow(QWidget):
             QMessageBox.warning(self, "Voice not available",
                 "Voice deps missing. Run: pip install SpeechRecognition pyttsx3 pyaudio")
             return
+        # Fail loudly + helpfully instead of silently looping "no speech" forever when the
+        # mic can't be opened (the #1 cause: macOS microphone permission not granted).
+        ok, detail = voice.mic_available()
+        if not ok:
+            QMessageBox.warning(self, "Microphone unavailable", detail)
+            self._set_status("Mic unavailable")
+            return
         self._voice_chat_enabled = True
         self._voice_waiting_for_reply = False
         self._voice_turns = 0
@@ -3455,14 +3462,34 @@ class EmberWindow(QWidget):
         return frame
 
     def _animate_bubble_in(self, frame):
-        """Grow a new bubble in (0 -> natural height) with an easing curve, then release the
+        """Snappy grow-in (0 -> natural height) with an easing curve, then release the
         height cap. Layout-safe: no QGraphicsEffect (those regressed bubble width/word-wrap),
-        and the cap always ends unbounded so a bubble can never be left collapsed."""
+        and the cap always ends unbounded so a bubble can never be left collapsed.
+
+        Crucially, the target height is measured AFTER the bubble's word-wrap width is locked
+        in (clamp + layout activate). Measuring too early returned a single-line height, so the
+        old animation grew to a stub and then SNAPPED to full height — that ugly jump was the
+        'random fade' the bubbles seemed to do."""
         QWIDGET_MAX = 16777215
         try:
+            # Lock THIS bubble's width (and its labels' wrap width) and force the layout to
+            # compute the real wrapped height NOW, so we animate to the final height.
+            try:
+                view_w = self.chat_scroll.viewport().width() - 24
+                if view_w > 100:
+                    frame.setMaximumWidth(view_w)
+                    from PyQt6.QtWidgets import QLabel
+                    for lbl in frame.findChildren(QLabel):
+                        lbl.setFixedWidth(max(60, view_w - 24))
+            except Exception:
+                pass
+            lay = frame.layout()
+            if lay is not None:
+                lay.activate()
+            frame.adjustSize()
             h = max(1, frame.sizeHint().height())
             anim = QPropertyAnimation(frame, b"maximumHeight", self)
-            anim.setDuration(240)
+            anim.setDuration(200)          # snappy
             anim.setStartValue(0)
             anim.setEndValue(h)
             anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -4235,12 +4262,25 @@ class EmberWindow(QWidget):
             print(f"[Agent scheduler autostart failed: {e}]")
 
     def _autostart_wake_word(self):
-        """Start always-on 'Hey Ember' wake-word listening. Failure-silent."""
+        """Start always-on 'Hey Ember' wake-word listening. Failure-visible: if the mic
+        can't be opened, tell the user once (usually a macOS permission prompt) instead of
+        leaving 'Hey Ember' silently dead."""
         try:
             import wake_word
             wake_word.start(on_wake=lambda: self._bridge.wake_detected.emit())
-            print("[Wake word on: listening for 'Hey Ember']" if wake_word.is_running()
-                  else "[Wake word: mic unavailable]")
+            if wake_word.is_running():
+                print("[Wake word on: listening for 'Hey Ember']")
+                return
+            print("[Wake word: mic unavailable]")
+            try:
+                import voice
+                ok, detail = voice.mic_available()
+            except Exception:
+                ok, detail = False, "microphone unavailable"
+            if not ok and not self.settings.get("_warned_mic_perm"):
+                self.settings["_warned_mic_perm"] = True
+                self._add_bubble("system",
+                    "🎙️ “Hey Ember” couldn’t start: " + detail)
         except Exception as e:
             print(f"[Wake word autostart failed: {e}]")
 

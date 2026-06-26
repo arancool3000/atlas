@@ -70,8 +70,8 @@ def detect_wake(text: str, threshold: int = _DEFAULT_THRESHOLD) -> bool:
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
-_PHRASE_LIMIT = 3.0       # max seconds of audio per wake-listen chunk
-_LISTEN_TIMEOUT = 6.0     # seconds to wait for speech before looping
+_PHRASE_LIMIT = 2.5       # max seconds of audio per wake-listen chunk
+_LISTEN_TIMEOUT = 3.0     # short chunks so the loop yields the mic quickly to a voice turn
 _COOLDOWN = 1.2           # pause after a hit so one "hey ember" fires once
 _EVENTS_MAXLEN = 60
 
@@ -87,6 +87,8 @@ _paused = False
 _detections = 0
 _events: "deque[dict]" = deque(maxlen=_EVENTS_MAXLEN)
 _on_wake = None
+_last_heard = ""          # most recent non-empty transcript (diagnostic: is the mic hearing anything?)
+_heard_count = 0          # how many non-empty transcripts we've captured
 
 
 def _now_iso() -> str:
@@ -125,10 +127,18 @@ def _real_capture_factory():
     except Exception:
         return None
 
+    # Share the process-wide mic lock with voice.listen_once so the always-on loop
+    # and an active voice/dictation turn never open competing input streams.
+    try:
+        from voice import MIC_LOCK
+    except Exception:
+        MIC_LOCK = threading.RLock()
+
     def _capture() -> str:
         try:
-            with mic as source:
-                audio = rec.listen(source, timeout=_LISTEN_TIMEOUT, phrase_time_limit=_PHRASE_LIMIT)
+            with MIC_LOCK:
+                with mic as source:
+                    audio = rec.listen(source, timeout=_LISTEN_TIMEOUT, phrase_time_limit=_PHRASE_LIMIT)
         except sr.WaitTimeoutError:
             return ""
         except Exception:
@@ -165,6 +175,13 @@ def _loop(stop: "threading.Event") -> None:
         except Exception:
             stop.wait(0.5)
             continue
+        if text:
+            # Record that the mic produced *something* (separate from wake hits) so a
+            # diagnostic can distinguish "mic is dead/denied" from "just no wake phrase".
+            global _last_heard, _heard_count
+            with _LOCK:
+                _last_heard = text[:80]
+                _heard_count += 1
         if text and detect_wake(text):
             _record(text)
             cb = _on_wake
@@ -241,5 +258,8 @@ def status() -> dict:
         running = bool(_running and _thread is not None and _thread.is_alive())
         last = _events[-1] if _events else None
         n = _detections
+        heard = _heard_count
+        last_heard = _last_heard
     return {"ok": True, "running": running, "paused": _paused,
-            "detections": n, "last": last}
+            "detections": n, "last": last,
+            "heard_count": heard, "last_heard": last_heard}
