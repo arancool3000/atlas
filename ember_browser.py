@@ -148,6 +148,21 @@ def _ddg(query: str):
         return []
 
 
+def _fetch_page_text(url: str, limit: int = 3500) -> str:
+    """Best-effort fetch + strip of a result page's readable text (for grounding the AI
+    answer in CURRENT web content instead of the model's training data)."""
+    try:
+        import re
+        import requests
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0 (EmberBrowser)"}, timeout=8)
+        t = re.sub(r"(?is)<(script|style|noscript|svg|header|footer|nav).*?</\1>", " ", r.text)
+        t = re.sub(r"(?s)<[^>]+>", " ", t)
+        t = re.sub(r"\s+", " ", _html.unescape(t)).strip()
+        return t[:limit]
+    except Exception:
+        return ""
+
+
 def _instant_answer(query: str):
     """Compute a quick local answer for arithmetic queries (e.g. '12*8+3')."""
     import re
@@ -340,7 +355,7 @@ class EmberBrowser(QWidget):
         if low.startswith("ai ") or text.endswith("?"):
             q = text[3:].strip() if low.startswith("ai ") else text
             self._ai_panel.setVisible(True)
-            self._ask_ai(q)
+            self._ask_web(q)
             return
         url = self._to_url(text)
         if url:
@@ -531,14 +546,31 @@ class EmberBrowser(QWidget):
                   QUrl(f"https://{SEARCH_HOST}/"))
         threading.Thread(target=self._search_thread, args=(query,), daemon=True).start()
 
+    def _grounded_answer(self, query: str, results):
+        """Answer a query GROUNDED in live web content: pull text from the top results and
+        have the model answer from THAT (with citations) rather than its training data."""
+        context = ""
+        for i, (title, href) in enumerate(results[:3], 1):
+            snippet = _fetch_page_text(href)
+            if snippet:
+                context += f"\n\n[{i}] {title} — {href}\n{snippet}"
+        if not context:
+            return self._model_text(
+                "Answer this concisely and factually. If it needs current data you may not "
+                "have, say so.\n\nQuery: " + query)
+        return self._model_text(
+            "You are Ember's web search. Answer the user's query using ONLY the live web "
+            "results below (they are current — prefer them over your own memory). Be concise "
+            "and cite sources inline as [1], [2], [3] matching the numbering. If the results "
+            "don't answer it, say so.\n\n"
+            f"WEB RESULTS:{context}\n\nQUERY: {query}")
+
     def _search_thread(self, query: str):
-        answer = self._model_text(
-            "Answer this search query concisely and factually in 2-4 sentences. "
-            "If it needs current data you may not have, say so briefly.\n\nQuery: " + query)
+        results = _ddg(query)
+        answer = self._grounded_answer(query, results)
         inst = _instant_answer(query)
         if inst:
             answer = f"{inst}\n\n{answer}"
-        results = _ddg(query)
         self._search_result.emit(query, self._search_results_html(query, answer, results))
 
     def _search_results_html(self, query, answer, results):
@@ -585,20 +617,45 @@ class EmberBrowser(QWidget):
         sb.clicked.connect(lambda: self._ask_ai("Summarize this page in a few clear bullet points."))
         cb = QPushButton("AI-check page")
         cb.clicked.connect(self._ai_check_page)
+        wb = QPushButton("🌐 Web")
+        wb.setToolTip("Search the live web to answer what's in the box")
+        wb.clicked.connect(lambda: self._ask_web(self._ai_in.text().strip()))
         row.addWidget(sb)
         row.addWidget(cb)
+        row.addWidget(wb)
         lay.addLayout(row)
         self._ai_out = QTextBrowser()
         self._ai_out.setOpenExternalLinks(True)
         lay.addWidget(self._ai_out, 1)
         self._ai_in = QLineEdit()
-        self._ai_in.setPlaceholderText("Ask about this page…")
+        self._ai_in.setPlaceholderText("Ask about this page  ·  or click 🌐 Web to search the internet")
+        # Enter = ask about the current page; 🌐 Web = search the internet.
         self._ai_in.returnPressed.connect(lambda: self._ask_ai(self._ai_in.text().strip()))
         lay.addWidget(self._ai_in)
         return panel
 
     def _toggle_ai(self):
         self._ai_panel.setVisible(not self._ai_panel.isVisible())
+
+    def _ask_web(self, question: str):
+        """Answer a general question by SEARCHING THE WEB (live results), not just the model's
+        memory. Used for address-bar 'ai …' / '?' queries and the AI panel's 🌐 Web button."""
+        if not question:
+            return
+        self._ai_panel.setVisible(True)
+        self._ai_in.clear()
+        self._ai_out.append(f"<b>You:</b> {_html.escape(question)}")
+        self._ai_out.append("<i>🌐 Searching the web…</i>")
+
+        def work():
+            results = _ddg(question)
+            ans = self._grounded_answer(question, results)
+            if results:
+                src = "<br>".join(f"[{i}] <a href='{_html.escape(h)}'>{_html.escape(t)}</a>"
+                                  for i, (t, h) in enumerate(results[:3], 1))
+                ans = ans + "\n\n<b>Sources:</b><br>" + src
+            self._ai_result.emit(ans)
+        threading.Thread(target=work, daemon=True).start()
 
     def _ask_ai(self, question: str):
         if not question:

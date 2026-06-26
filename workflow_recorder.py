@@ -180,6 +180,23 @@ def record_workflow_start(name: str) -> dict:
         except Exception:
             return {"ok": False, "error": _PYNPUT_HINT}
 
+        # CRITICAL macOS guard: pynput's global event tap HARD-CRASHES the whole process
+        # ("Python quit unexpectedly") if started without Input Monitoring permission. So we
+        # preflight it and refuse to start (with guidance) instead of crashing.
+        import sys as _sys
+        if _sys.platform == "darwin":
+            try:
+                import mac_permissions
+                if not mac_permissions.has_input_monitoring(prompt=True):
+                    mac_permissions.open_input_monitoring_settings()
+                    return {"ok": False, "needs_permission": "input_monitoring",
+                            "error": "Recording needs macOS Input Monitoring permission. I opened "
+                                     "System Settings → Privacy & Security → Input Monitoring — turn "
+                                     "Ember ON there, then start recording again. (Without it, the "
+                                     "recorder would crash the app.)"}
+            except Exception:
+                pass
+
         _recording = True
         _events = []
         _workflow_name = name

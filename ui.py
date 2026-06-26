@@ -72,6 +72,7 @@ SLASH_COMMANDS = {
     "/link": "__remote__",
     "/browser": "__browser_app__",
     "/manual": "__manual__",
+    "/antivirus": "__antivirus__",
     "/features": "__features__",
     "/help": "__help__",
     "/clear": "__clear__",
@@ -177,7 +178,7 @@ COMMAND_CENTER_GROUPS = [
     ("Apps & tools", [
         ("📱 Phone Link",     "__remote__",      "Control this Mac from your phone (Ember Link)"),
         ("🌐 Ember Browser",  "__browser_app__", "Open the secure AI browser — tab groups + password manager"),
-        ("🛡 Antivirus",      "__scan_folder__", "Scan a folder for malware"),
+        ("🛡 Antivirus",      "__antivirus__",   "Open the Antivirus app — scan, quarantine, real-time protection"),
         ("📦 Sandbox",        "__sandbox__",     "Run a file safely in an isolated sandbox"),
         ("🔐 Passwords",      "__passwords__",   "Saved website logins (encrypted)"),
         ("🌍 VPN",            "__vpn__",         "Connect / disconnect your WireGuard VPN"),
@@ -247,7 +248,7 @@ FEATURE_CATALOG = [
         ("🔊", "Spoken replies", "Have Ember read its answers aloud. Settings ▸ Voice.", ("settings", "Voice")),
     ]),
     ("Security & privacy", [
-        ("🛡️", "Antivirus scan", "Scan a folder for malware (entropy + IOC + signatures).", ("open", "__scan_folder__")),
+        ("🛡️", "Antivirus", "Scan, manage quarantine, and toggle real-time protection.", ("open", "__antivirus__")),
         ("📦", "Sandbox a file", "Run a risky file in an isolated sandbox.", ("open", "__sandbox__")),
         ("🔒", "Real-time protection", "Always-on download, fileless & Security-Center scanning. Settings ▸ Security.", ("settings", "Security")),
         ("🌍", "VPN", "Connect/disconnect your WireGuard VPN.", ("open", "__vpn__")),
@@ -2403,6 +2404,251 @@ class FeaturesDialog(QDialog):
             sec.setVisible(True if not q else any(r.isVisible() for r in rows))
 
 
+class AntivirusDialog(QDialog):
+    """A standalone graphical Antivirus app: scan, quarantine management, real-time
+    protection toggles, process scan and sandbox — all in one window instead of buried in
+    Settings. Scans run off the UI thread and report back via _scan_done."""
+    _scan_done = pyqtSignal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        import antivirus
+        self._av = antivirus
+        self._settings = getattr(parent, "settings", {}) or {}
+        self.setWindowTitle("Ember Antivirus")
+        self.setMinimumSize(700, 640)
+        self._scan_done.connect(self._on_scan_done)
+
+        v = QVBoxLayout(self)
+        title = QLabel("🛡  Ember Antivirus")
+        title.setObjectName("title")
+        v.addWidget(title)
+        self._status = QLabel("")
+        self._status.setStyleSheet("color:#9aa0b5; font-size:12px;")
+        self._status.setWordWrap(True)
+        v.addWidget(self._status)
+
+        scan_row = QHBoxLayout()
+        for label, fn, primary in (("🔍  Scan a folder…", self._scan_folder, True),
+                                   ("⚡  Quick scan", self._quick_scan, False),
+                                   ("🧠  Scan processes", self._scan_processes, False),
+                                   ("📦  Sandbox a file…", self._sandbox, False)):
+            b = QPushButton(label)
+            if primary:
+                b.setObjectName("send")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(fn)
+            scan_row.addWidget(b)
+        v.addLayout(scan_row)
+
+        self._progress = QLabel("")
+        self._progress.setStyleSheet("color:#e0af68; font-size:12px;")
+        v.addWidget(self._progress)
+
+        rt = QLabel("Real-time protection")
+        rt.setObjectName("sectionTitle")
+        rt.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:8px;")
+        v.addWidget(rt)
+        self._chk_dl = QCheckBox("Download protection — auto-scan new downloads")
+        self._chk_fl = QCheckBox("Fileless / behavioral protection (process monitor)")
+        self._chk_sc = QCheckBox("Always-on Security Center (files · network · persistence)")
+        self._chk_dl.setChecked(bool(self._settings.get("download_protection", True)))
+        self._chk_fl.setChecked(bool(self._settings.get("fileless_protection", True)))
+        self._chk_sc.setChecked(bool(self._settings.get("realtime_security_center", True)))
+        self._chk_dl.stateChanged.connect(lambda s: self._toggle_guard("download", bool(s)))
+        self._chk_fl.stateChanged.connect(lambda s: self._toggle_guard("fileless", bool(s)))
+        self._chk_sc.stateChanged.connect(lambda s: self._toggle_guard("center", bool(s)))
+        for c in (self._chk_dl, self._chk_fl, self._chk_sc):
+            v.addWidget(c)
+
+        q = QLabel("Quarantine")
+        q.setObjectName("sectionTitle")
+        q.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:8px;")
+        v.addWidget(q)
+        self._qlist = QListWidget()
+        v.addWidget(self._qlist, 1)
+        qrow = QHBoxLayout()
+        rb = QPushButton("Restore selected")
+        rb.clicked.connect(self._restore)
+        db = QPushButton("Delete selected")
+        db.clicked.connect(self._delete)
+        rf = QPushButton("Refresh")
+        rf.clicked.connect(self._refresh)
+        qrow.addWidget(rb)
+        qrow.addWidget(db)
+        qrow.addStretch()
+        qrow.addWidget(rf)
+        v.addLayout(qrow)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        v.addWidget(close)
+        self.setStyleSheet(STYLE)
+        self._refresh()
+
+    # ---- status / quarantine ----
+    def _refresh(self):
+        try:
+            st = self._av.security_status()
+            eng = ", ".join(st.get("engines_available", []) or []) or "built-in heuristics"
+            self._status.setText(
+                f"Engines: {eng}    ·    Sandbox: {st.get('sandbox_available')}    ·    "
+                f"Quarantine: {st.get('quarantine_count', 0)} item(s)")
+        except Exception as e:
+            self._status.setText(f"status unavailable: {e}")
+        self._qlist.clear()
+        try:
+            for it in self._av.list_quarantine().get("items", []):
+                name = Path(it.get("original_path", "?")).name
+                reasons = ", ".join(it.get("reasons", []) or [])[:90]
+                item = QListWidgetItem(f"{name}   —   {reasons or 'flagged'}   ({it.get('quarantined_at','')})")
+                item.setData(Qt.ItemDataRole.UserRole, it.get("id"))
+                self._qlist.addItem(item)
+        except Exception:
+            pass
+
+    def _selected_quarantine_id(self):
+        it = self._qlist.currentItem()
+        return it.data(Qt.ItemDataRole.UserRole) if it else None
+
+    def _restore(self):
+        qid = self._selected_quarantine_id()
+        if not qid:
+            return
+        if QMessageBox.question(self, "Restore file",
+                "Restore this file to its original location? It was flagged as dangerous."
+                ) != QMessageBox.StandardButton.Yes:
+            return
+        r = self._av.restore_quarantined(qid)
+        QMessageBox.information(self, "Restore", "Restored." if r.get("ok") else f"Failed: {r.get('error')}")
+        self._refresh()
+
+    def _delete(self):
+        qid = self._selected_quarantine_id()
+        if not qid:
+            return
+        r = self._av.delete_quarantined(qid)
+        QMessageBox.information(self, "Delete", "Deleted." if r.get("ok") else f"Failed: {r.get('error')}")
+        self._refresh()
+
+    # ---- scans (off the UI thread) ----
+    def _scan_folder(self):
+        d = QFileDialog.getExistingDirectory(self, "Choose a folder to scan", str(Path.home()))
+        if d:
+            self._run_scan([d])
+
+    def _quick_scan(self):
+        roots = [str(Path.home() / "Downloads"), str(Path.home() / "Desktop")]
+        roots = [r for r in roots if Path(r).exists()]
+        if roots:
+            self._run_scan(roots)
+
+    def _run_scan(self, paths):
+        self._progress.setText("🔄 Scanning… (this can take a moment)")
+        def work():
+            agg = {"scanned": 0, "flagged": [], "errors": []}
+            for p in paths:
+                try:
+                    r = self._av.scan_directory(p, deep=True, max_files=5000)
+                    if r.get("ok"):
+                        agg["scanned"] += r.get("scanned", 0)
+                        agg["flagged"] += r.get("flagged", []) or []
+                    else:
+                        agg["errors"].append(r.get("error", "scan failed"))
+                except Exception as e:
+                    agg["errors"].append(str(e))
+            self._scan_done.emit(agg)
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_scan_done(self, agg):
+        self._progress.setText("")
+        # Process-scan result.
+        if "_processes" in agg:
+            r = agg["_processes"]
+            if not r.get("ok"):
+                QMessageBox.warning(self, "Process scan", r.get("error", "could not scan"))
+                return
+            flagged = r.get("flagged", [])
+            if flagged:
+                lines = "\n".join(f"• {f.get('name')} (pid {f.get('pid')}): {f.get('verdict')}"
+                                  for f in flagged[:15])
+                QMessageBox.warning(self, "Process scan",
+                                    f"⚠ {len(flagged)} suspicious process(es):\n\n{lines}")
+            else:
+                QMessageBox.information(self, "Process scan",
+                                       f"✓ Scanned {r.get('scanned', 0)} processes — nothing malicious.")
+            return
+        # Sandbox result.
+        if "_sandbox" in agg:
+            r = agg["_sandbox"]
+            if r.get("refused"):
+                QMessageBox.warning(self, "Sandbox", r.get("message", "Refused: file is malicious."))
+            elif not r.get("ok"):
+                QMessageBox.warning(self, "Sandbox", r.get("error", "Could not run in the sandbox."))
+            else:
+                QMessageBox.information(self, "Sandbox",
+                    f"Ran via {r.get('method', 'sandbox')} · verdict: {r.get('verdict_hint', '?')} · "
+                    f"exit {r.get('exit_code')}")
+            return
+        flagged = agg.get("flagged", [])
+        mal = [f for f in flagged if f.get("verdict") == "malicious"]
+        msg = f"Scanned {agg.get('scanned', 0)} files.\n"
+        if flagged:
+            msg += f"⚠ {len(flagged)} flagged ({len(mal)} malicious — quarantined, rest suspicious)."
+            sample = "\n".join(f"• {Path(f['path']).name}: {f.get('verdict')}" for f in flagged[:12])
+            msg += "\n\n" + sample
+        else:
+            msg += "✓ No threats found."
+        if agg.get("errors"):
+            msg += "\n\n(errors: " + "; ".join(agg["errors"][:3]) + ")"
+        QMessageBox.information(self, "Scan complete", msg)
+        self._refresh()
+
+    def _scan_processes(self):
+        self._progress.setText("🔄 Scanning running processes…")
+        def work():
+            try:
+                import fileless_guard
+                r = fileless_guard.scan_processes()
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            self._scan_done.emit({"_processes": r})
+        threading.Thread(target=work, daemon=True).start()
+
+    def _sandbox(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a file to run safely in the sandbox")
+        if not path:
+            return
+        self._progress.setText("🔄 Running in sandbox…")
+        def work():
+            try:
+                r = self._av.run_in_sandbox(path)
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            self._scan_done.emit({"_sandbox": r})
+        threading.Thread(target=work, daemon=True).start()
+
+    # _on_scan_done also handles the process/sandbox payloads:
+    def _toggle_guard(self, which, on):
+        try:
+            if which == "download":
+                import download_guard
+                self._settings["download_protection"] = on
+                download_guard.start() if on else download_guard.download_guard_stop()
+            elif which == "fileless":
+                import fileless_guard
+                self._av.set_config(fileless_protection=on)
+                self._settings["fileless_protection"] = on
+                fileless_guard.start() if on else fileless_guard.fileless_guard_stop()
+            elif which == "center":
+                import security_center
+                self._av.set_config(realtime_security_center=on)
+                self._settings["realtime_security_center"] = on
+                security_center.start() if on else security_center.security_center_stop()
+        except Exception as e:
+            QMessageBox.warning(self, "Protection", f"{type(e).__name__}: {e}")
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -3977,6 +4223,7 @@ class EmberWindow(QWidget):
         # dict and leave EVERY button dead (that's exactly how all the buttons can go silent).
         feature_methods = {
             "__features__": "_open_features",
+            "__antivirus__": "_open_antivirus_app",
             "__voice_chat__": "_toggle_voice_chat",
             "__manual__": "_open_manual_mode",
             "__remote__": "_start_remote_control",
@@ -4014,6 +4261,14 @@ class EmberWindow(QWidget):
             return
         self.input_box.setPlainText(cmd)
         self._on_send()
+
+    def _open_antivirus_app(self):
+        """Open the standalone graphical Antivirus app."""
+        try:
+            AntivirusDialog(self).exec()
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.warning(self, "Antivirus", f"{type(e).__name__}: {e}")
 
     def _open_features(self):
         """Show the browsable, searchable Features directory."""
