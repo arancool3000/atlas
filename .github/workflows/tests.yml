@@ -51,7 +51,9 @@ jobs:
             test_browser_extensions.py \
             test_live_voice.py \
             test_hotkey_daemon.py \
-            test_icons.py; do
+            test_icons.py \
+            test_memory.py \
+            test_voice_tts.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"

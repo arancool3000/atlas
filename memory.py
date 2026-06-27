@@ -159,3 +159,153 @@ def log_action(name: str, args: dict, result_summary: str):
 def get_recent_actions(n: int = 10) -> list:
     data = _load()
     return data.get("actions_log", [])[-n:]
+
+
+# ---------------------------------------------------------------------------
+# Learning about the user — auto-extract durable facts from what they say, and
+# surface the RELEVANT ones into each turn (not just the newest).
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with", "is",
+    "are", "was", "were", "be", "you", "your", "my", "me", "i", "it", "this", "that",
+    "please", "can", "could", "would", "should", "do", "does", "did", "have", "has",
+    "want", "need", "make", "get", "got", "use", "using", "now", "then", "so", "just",
+    "what", "when", "where", "why", "how", "who", "which", "ember",
+}
+
+# High-precision patterns: (regex, key-builder, value-builder, category). The capture is
+# bounded to one clause — it stops at sentence enders, commas, and " and " so two facts in
+# one sentence ("my name is Sam and my timezone is GMT") don't bleed into each other.
+_CLAUSE = r"([^.!?;\n,]{2,120}?)(?=\s+and\s|,|[.!?;\n]|$)"
+_LEARN_PATTERNS = [
+    (_re.compile(r"\b(?:remember|note|keep in mind|don'?t forget|for future reference|fyi)"
+                 r"(?: that)?[:,]?\s+" + _CLAUSE, _re.I),
+     lambda m: "note:" + _slug(m.group(1)), lambda m: m.group(1).strip(), "note"),
+    (_re.compile(r"\bmy ([a-z][\w ]{1,28}?) (?:is|are|=)\s+" + _CLAUSE, _re.I),
+     lambda m: _slug(m.group(1)), lambda m: m.group(2).strip(), "identity"),
+    (_re.compile(r"\b(?:i'?m|i am) (?:called|named)\s+([A-Za-z][\w'-]{1,30})", _re.I),
+     lambda m: "name", lambda m: m.group(1).strip(), "identity"),
+    (_re.compile(r"\bcall me\s+([A-Za-z][\w'-]{1,30})", _re.I),
+     lambda m: "name", lambda m: m.group(1).strip(), "identity"),
+    (_re.compile(r"\bi (?:prefer|like|love|enjoy|usually|always)\s+" + _CLAUSE, _re.I),
+     lambda m: "pref:" + _slug(m.group(1)), lambda m: "prefers " + m.group(1).strip(), "preference"),
+    (_re.compile(r"\bi (?:hate|dislike|don'?t like|do not like)\s+" + _CLAUSE, _re.I),
+     lambda m: "pref:" + _slug(m.group(1)), lambda m: "dislikes " + m.group(1).strip(), "preference"),
+    # Directive form, anchored to the clause start so "the app always crashes" doesn't match.
+    (_re.compile(r"^(?:please\s+)?(?:always|never)\s+" + _CLAUSE, _re.I),
+     lambda m: "pref:rule-" + _slug(m.group(1)), lambda m: "rule: " + m.group(0).strip(), "preference"),
+    (_re.compile(r"\bi work (?:at|for)\s+" + _CLAUSE, _re.I),
+     lambda m: "employer", lambda m: m.group(1).strip(), "identity"),
+]
+
+# Never auto-memorise anything that smells like a credential.
+_SECRET_RE = _re.compile(r"\b(password|passwd|api[\s_-]?key|secret|token|credential|otp|2fa)\b", _re.I)
+
+
+def _slug(s: str, words: int = 5) -> str:
+    toks = [t for t in _re.split(r"[^a-z0-9]+", (s or "").lower()) if t]
+    return "-".join(toks[:words])[:48] or "x"
+
+
+def _tokens(s: str) -> set:
+    return {t for t in _re.split(r"[^a-z0-9]+", (s or "").lower())
+            if len(t) >= 3 and t not in _STOPWORDS}
+
+
+def extract_facts(text: str) -> list[tuple[str, str, str]]:
+    """Pure: pull durable (key, value, category) facts out of a user message. Conservative —
+    only clear preference/identity/note statements, never secrets or questions."""
+    out: list[tuple[str, str, str]] = []
+    if not text or not text.strip():
+        return out
+    seen_keys = set()
+    for sentence in _re.split(r"(?<=[.!?;\n])\s+", text):
+        s = sentence.strip()
+        if not s or "?" in s or _SECRET_RE.search(s):
+            continue   # skip questions and anything credential-shaped
+        for rx, keyf, valf, cat in _LEARN_PATTERNS:
+            for m in rx.finditer(s):   # multiple facts can share one sentence
+                value = valf(m).strip().rstrip(".,!;:")
+                key = keyf(m).strip()
+                if not value or len(value) < 2 or len(value) > 120 or key in seen_keys:
+                    continue
+                if _SECRET_RE.search(value):
+                    continue
+                seen_keys.add(key)
+                out.append((key, value, cat))
+    return out
+
+
+def learn_from_message(text: str) -> dict:
+    """Auto-learn durable facts from a user message (called every turn). Idempotent: an
+    unchanged fact isn't re-saved, so repeats don't churn the file or reorder recency."""
+    learned = []
+    try:
+        candidates = extract_facts(text)
+        if not candidates:
+            return {"ok": True, "learned": []}
+        with _LOCK:
+            existing = _load().get("facts", {})
+            for key, value, cat in candidates:
+                cur = existing.get(key)
+                if isinstance(cur, dict) and cur.get("value") == value:
+                    continue   # already known, unchanged
+                remember(key, value, category=cat)
+                learned.append(key)
+    except Exception:
+        pass
+    return {"ok": True, "learned": learned}
+
+
+def get_relevant_facts(query: str | None = None, max_facts: int = 12) -> str:
+    """Compact summary of the facts most RELEVANT to `query` (token overlap), padded with the
+    newest facts for general context. Falls back to newest-first when query is empty."""
+    data = _load()
+    facts = data.get("facts", {})
+    if not facts:
+        return ""
+    items = list(facts.items())
+
+    def _recency(kv):
+        v = kv[1]
+        return v.get("saved_at", 0) if isinstance(v, dict) else 0
+
+    def _val(v):
+        return v.get("value", "") if isinstance(v, dict) else str(v)
+
+    if query and query.strip():
+        q = _tokens(query)
+        scored = []
+        for k, v in items:
+            overlap = len(q & _tokens(k + " " + _val(v)))
+            scored.append((overlap, _recency((k, v)), k, v))
+        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+        chosen = [(k, v) for ov, _r, k, v in scored if ov > 0][:max_facts]
+        if len(chosen) < min(6, len(items)):   # always carry a little general context
+            for k, v in sorted(items, key=_recency, reverse=True):
+                if (k, v) not in chosen:
+                    chosen.append((k, v))
+                if len(chosen) >= min(max_facts, max(6, len(chosen) + 1)):
+                    break
+        ordered = chosen[:max_facts]
+    else:
+        ordered = sorted(items, key=_recency, reverse=True)[:max_facts]
+
+    lines = [f"- {k}: {_val(v)}" for k, v in ordered]
+    return "\n".join(lines)
+
+
+def profile() -> dict:
+    """Everything Ember has learned about the user, grouped by category (for a 'what do you
+    know about me?' view + the agent's recall tool)."""
+    data = _load()
+    facts = data.get("facts", {})
+    by_cat: dict[str, list] = {}
+    for k, v in facts.items():
+        cat = v.get("category", "general") if isinstance(v, dict) else "general"
+        val = v.get("value", "") if isinstance(v, dict) else str(v)
+        by_cat.setdefault(cat, []).append({"key": k, "value": val})
+    return {"ok": True, "count": len(facts), "by_category": by_cat}

@@ -396,7 +396,8 @@ def load_settings() -> dict:
         "voice_chat_auto_send": True,
         "voice_chat_continue_after_silence": True,
         "voice_chat_phrase_timeout": 8,
-        "tts_engine": "system",       # read-aloud engine: system | gemini | soundtools
+        "tts_engine": "system",       # read-aloud engine: system | edge | gemini | soundtools
+        "edge_tts_voice": "en-US-AriaNeural",  # Microsoft Edge neural voice (free, no key)
         "gemini_tts_voice": "Kore",
         "soundtools_api_key": "",
         "live_voice_enabled": False,  # use the Gemini Live API for real-time natural voice chat
@@ -415,6 +416,8 @@ def load_settings() -> dict:
         "lean_tools": True,
         "hotkey": "ctrl+shift+space",
         "hotkey_daemon": False,       # always-on login helper so the hotkey works even when quit
+        "mouse_humanize": True,       # curved/eased human-like pointer movement
+        "mouse_speed": 1.0,           # pointer movement speed multiplier (0.25x–3.0x)
         "request_timeout_seconds": 15,
         "animations_enabled": True,
         "glow_enabled": True,
@@ -454,6 +457,23 @@ def save_settings(settings: dict):
 
 def _new_chat_id() -> str:
     return f"chat_{int(time.time() * 1000)}"
+
+
+def _fix_assistant_name(text: str) -> str:
+    """Correct 'amber'-style mishearings of 'Ember' (delegates to voice; importable + tested)."""
+    try:
+        import voice
+        return voice.fix_assistant_name(text)
+    except Exception:
+        return text
+
+
+def _is_stop_phrase(text: str) -> bool:
+    try:
+        import voice
+        return voice.is_stop_phrase(text)
+    except Exception:
+        return False
 
 
 def _make_chat(title: str = "New chat") -> dict:
@@ -1227,8 +1247,9 @@ class SettingsDialog(QDialog):
         # --- Text-to-speech voice/engine ---
         self.tts_engine_combo = QComboBox()
         for label, val in (("System voice (free, built-in)", "system"),
+                           ("Edge Neural TTS — natural & free, NO key needed (recommended)", "edge"),
                            ("Gemini TTS — most natural (uses your Gemini key; rate-limited)", "gemini"),
-                           ("Soundtools.io (configure key below)", "soundtools")):
+                           ("Custom HTTP endpoint (advanced)", "soundtools")):
             self.tts_engine_combo.addItem(label, userData=val)
         cur_tts = self.settings.get("tts_engine", "system")
         for i in range(self.tts_engine_combo.count()):
@@ -1236,14 +1257,24 @@ class SettingsDialog(QDialog):
                 self.tts_engine_combo.setCurrentIndex(i)
         layout.addRow("Read-aloud voice:", self.tts_engine_combo)
 
+        self.edge_voice_input = QLineEdit(self.settings.get("edge_tts_voice", "en-US-AriaNeural"))
+        self.edge_voice_input.setPlaceholderText(
+            "Edge voice, e.g. en-US-AriaNeural, en-GB-SoniaNeural, en-US-GuyNeural")
+        self.edge_voice_input.setToolTip(
+            "Microsoft Edge neural voices — free, no API key, not rate-limited. Needs the "
+            "'edge-tts' package (pip install edge-tts). Falls back to the system voice if missing.")
+        layout.addRow("Edge voice:", self.edge_voice_input)
+
         self.gemini_voice_input = QLineEdit(self.settings.get("gemini_tts_voice", "Kore"))
         self.gemini_voice_input.setPlaceholderText("Gemini voice name, e.g. Kore, Puck, Charon, Aoede")
         layout.addRow("Gemini voice:", self.gemini_voice_input)
 
-        self.soundtools_key_input = QLineEdit(self.settings.get("soundtools_api_key", ""))
-        self.soundtools_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.soundtools_key_input.setPlaceholderText("Soundtools.io API key (optional)")
-        layout.addRow("Soundtools key:", self.soundtools_key_input)
+        # soundtools.io has no public API key, so the old key field is gone. This is now an
+        # optional CUSTOM endpoint URL for power users running their own/any HTTP TTS service.
+        self.soundtools_url_input = QLineEdit(self.settings.get("soundtools_url", ""))
+        self.soundtools_url_input.setPlaceholderText(
+            "Custom TTS endpoint URL (optional, for 'Custom HTTP endpoint') — leave blank")
+        layout.addRow("Custom TTS URL:", self.soundtools_url_input)
 
         # --- Natural voice (Gemini Live API, real-time full-duplex) ---
         self.live_voice_check = QCheckBox(
@@ -1739,9 +1770,35 @@ class SettingsDialog(QDialog):
             import human_mouse
             self._human_mouse_chk = QCheckBox("Human-like mouse movement (curved, eased, natural)")
             self._human_mouse_chk.setChecked(bool(human_mouse.get_options().get("enabled", True)))
-            self._human_mouse_chk.stateChanged.connect(
-                lambda s: human_mouse.set_options(enabled=bool(s)))
+            self._human_mouse_chk.stateChanged.connect(self._on_mouse_humanize_toggled)
             v.addWidget(self._human_mouse_chk)
+
+            # Mouse movement speed (0.25x slow & deliberate → 3.0x snappy). Applies live.
+            cur_speed = float(self.settings.get("mouse_speed",
+                                                human_mouse.get_options().get("speed", 1.0)))
+            self._mouse_speed_slider = QSlider(Qt.Orientation.Horizontal)
+            self._mouse_speed_slider.setRange(25, 300)   # value/100 = speed multiplier
+            self._mouse_speed_slider.setValue(int(round(max(0.25, min(3.0, cur_speed)) * 100)))
+            self._mouse_speed_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+            self._mouse_speed_slider.setTickInterval(25)
+            self._mouse_speed_value = QLabel(f"{self._mouse_speed_slider.value() / 100:.2f}×")
+            self._mouse_speed_slider.valueChanged.connect(self._on_mouse_speed_changed)
+            self._mouse_speed_slider.sliderReleased.connect(self._persist_mouse_speed)
+            srow = QHBoxLayout()
+            slow = QLabel("slow")
+            slow.setStyleSheet("color:#565f89; font-size:11px;")
+            fast = QLabel("fast")
+            fast.setStyleSheet("color:#565f89; font-size:11px;")
+            srow.addWidget(slow)
+            srow.addWidget(self._mouse_speed_slider, 1)
+            srow.addWidget(fast)
+            srow.addWidget(self._mouse_speed_value)
+            swrap = QWidget()
+            swrap.setLayout(srow)
+            mlbl = QLabel("Mouse movement speed")
+            mlbl.setStyleSheet("color:#9aa0b4; font-size:12px;")
+            v.addWidget(mlbl)
+            v.addWidget(swrap)
         except Exception:
             pass
 
@@ -2020,6 +2077,38 @@ class SettingsDialog(QDialog):
         except Exception as e:
             QMessageBox.warning(self, "Launch at login", str(e))
 
+    def _on_mouse_humanize_toggled(self, state):
+        on = bool(state)
+        self.settings["mouse_humanize"] = on
+        try:
+            import human_mouse
+            human_mouse.set_options(enabled=on)
+        except Exception:
+            pass
+        try:
+            save_settings(self.settings)   # this tab applies live + sticks immediately
+        except Exception:
+            pass
+
+    def _on_mouse_speed_changed(self, value):
+        # Applies live on every tick; persistence happens on release (see _persist_mouse_speed)
+        # so dragging doesn't hammer the settings file.
+        speed = max(0.25, min(3.0, value / 100.0))
+        self.settings["mouse_speed"] = speed
+        if hasattr(self, "_mouse_speed_value"):
+            self._mouse_speed_value.setText(f"{speed:.2f}×")
+        try:
+            import human_mouse
+            human_mouse.set_options(speed=speed)
+        except Exception:
+            pass
+
+    def _persist_mouse_speed(self):
+        try:
+            save_settings(self.settings)
+        except Exception:
+            pass
+
     def _toggle_hotkey_daemon(self, state):
         on = bool(state)
         self.settings["hotkey_daemon"] = on
@@ -2263,8 +2352,9 @@ class SettingsDialog(QDialog):
         self.settings["voice_output"] = self.voice_check.isChecked()
         if hasattr(self, "tts_engine_combo"):
             self.settings["tts_engine"] = self.tts_engine_combo.currentData() or "system"
+            self.settings["edge_tts_voice"] = self.edge_voice_input.text().strip() or "en-US-AriaNeural"
             self.settings["gemini_tts_voice"] = self.gemini_voice_input.text().strip() or "Kore"
-            self.settings["soundtools_api_key"] = self.soundtools_key_input.text().strip()
+            self.settings["soundtools_url"] = self.soundtools_url_input.text().strip()
         if hasattr(self, "live_voice_check"):
             self.settings["live_voice_enabled"] = self.live_voice_check.isChecked()
             self.settings["live_voice_voice"] = self.live_voice_voice_input.text().strip() or "Zephyr"
@@ -2928,6 +3018,216 @@ class AntivirusDialog(QDialog):
             QMessageBox.warning(self, "Protection", f"{type(e).__name__}: {e}")
 
 
+class AdBlockerDialog(QDialog):
+    """A standalone graphical Ad Blocker app (like the Antivirus window): toggle system-wide
+    ad/tracker blocking, manage your custom blocked + allow-listed domains, and pull a much
+    stronger public list — instead of a one-shot message box. The slow ops (hosts write +
+    admin prompt + network fetch) run off the UI thread and report back via _done_sig."""
+    _done_sig = pyqtSignal(str, dict)   # (op, result)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        import network_adblock as ab
+        self._ab = ab
+        self._busy = False
+        self.setWindowTitle("Ember Ad Blocker")
+        self.setMinimumSize(620, 640)
+        self._done_sig.connect(self._on_done)
+
+        v = QVBoxLayout(self)
+        title = QLabel("🚫  Ember Ad Blocker")
+        title.setObjectName("title")
+        v.addWidget(title)
+        sub = QLabel("Blocks ads & trackers for EVERY app (like Pi-hole) by sinkholing their "
+                     "domains in your computer's hosts file. Turning it on or off asks for your "
+                     "password once.")
+        sub.setStyleSheet("color:#9aa0b5; font-size:12px;")
+        sub.setWordWrap(True)
+        v.addWidget(sub)
+
+        self._status = QLabel("")
+        self._status.setStyleSheet("font-size:14px; font-weight:700; margin-top:4px;")
+        self._status.setWordWrap(True)
+        v.addWidget(self._status)
+
+        row = QHBoxLayout()
+        self._toggle_btn = QPushButton("…")
+        self._toggle_btn.setObjectName("send")
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self._toggle)
+        self._stronger_btn = QPushButton("⬇  Use stronger list")
+        self._stronger_btn.setToolTip("Merge a large public blocklist (StevenBlack) for far more coverage")
+        self._stronger_btn.clicked.connect(self._stronger)
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self._refresh)
+        row.addWidget(self._toggle_btn)
+        row.addWidget(self._stronger_btn)
+        row.addStretch()
+        row.addWidget(refresh)
+        v.addLayout(row)
+
+        self._progress = QLabel("")
+        self._progress.setStyleSheet("color:#e0af68; font-size:12px;")
+        self._progress.setWordWrap(True)
+        v.addWidget(self._progress)
+        self._bar = QProgressBar()
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(6)
+        self._bar.setRange(0, 0)   # indeterminate (these ops have no measurable %)
+        self._bar.setVisible(False)
+        v.addWidget(self._bar)
+
+        addrow = QHBoxLayout()
+        self._add_in = QLineEdit()
+        self._add_in.setPlaceholderText("Block another domain, e.g. ads.example.com")
+        self._add_in.returnPressed.connect(self._add)
+        addb = QPushButton("Block")
+        addb.clicked.connect(self._add)
+        addrow.addWidget(self._add_in, 1)
+        addrow.addWidget(addb)
+        v.addLayout(addrow)
+
+        alrow = QHBoxLayout()
+        self._allow_in = QLineEdit()
+        self._allow_in.setPlaceholderText("Allow (whitelist) a domain the blocker would catch")
+        self._allow_in.returnPressed.connect(self._allow)
+        alb = QPushButton("Allow")
+        alb.clicked.connect(self._allow)
+        alrow.addWidget(self._allow_in, 1)
+        alrow.addWidget(alb)
+        v.addLayout(alrow)
+
+        bl = QLabel("Your blocked domains (custom)")
+        bl.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:8px;")
+        v.addWidget(bl)
+        self._blocked_list = QListWidget()
+        v.addWidget(self._blocked_list, 1)
+
+        al = QLabel("Allowed (whitelisted)")
+        al.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:8px;")
+        v.addWidget(al)
+        self._allow_list = QListWidget()
+        self._allow_list.setMaximumHeight(110)
+        v.addWidget(self._allow_list)
+
+        remrow = QHBoxLayout()
+        rmb = QPushButton("Remove selected")
+        rmb.setToolTip("Forget the selected custom/allowed domain (back to default behaviour)")
+        rmb.clicked.connect(self._remove_selected)
+        remrow.addStretch()
+        remrow.addWidget(rmb)
+        v.addLayout(remrow)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        v.addWidget(close)
+        self.setStyleSheet(STYLE)
+        self._refresh()
+
+    # -- helpers ----------------------------------------------------------
+    def _set_busy(self, on: bool, label: str = ""):
+        self._busy = on
+        for b in (self._toggle_btn, self._stronger_btn):
+            b.setEnabled(not on)
+        self._bar.setVisible(on)
+        self._progress.setText(label)
+        if on:
+            self._progress.setStyleSheet("color:#e0af68; font-size:12px;")
+
+    def _run_async(self, op: str, fn, busy_label: str):
+        if self._busy:
+            return
+        self._set_busy(True, busy_label)
+
+        def work():
+            try:
+                r = fn()
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            self._done_sig.emit(op, r or {})
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_done(self, op: str, result: dict):
+        self._set_busy(False, "")
+        if result.get("ok"):
+            if op == "stronger":
+                msg = f"Added {result.get('added', 0)} domains ({result.get('blocked_domains', 0):,} total)."
+            else:
+                msg = result.get("message") or "Done."
+            self._progress.setText("✓ " + msg)
+            self._progress.setStyleSheet("color:#9ece6a; font-size:12px;")
+        else:
+            self._progress.setText("⚠ " + (result.get("error") or "failed"))
+            self._progress.setStyleSheet("color:#ff6b6b; font-size:12px;")
+        self._refresh()
+
+    def _refresh(self):
+        try:
+            st = self._ab.adblock_status()
+            on = bool(st.get("enabled"))
+            self._status.setText(
+                ("🟢  ON" if on else "⚫  OFF")
+                + f"  —  {st.get('blocked_domains', 0):,} domains blocked"
+                + f"   ·   {st.get('user_added', 0)} custom · {st.get('allowlisted', 0)} allowed")
+            self._status.setStyleSheet(
+                ("color:#9ece6a;" if on else "color:#9aa0b5;") + " font-size:14px; font-weight:700;")
+            self._toggle_btn.setText("Disable ad blocking" if on else "Enable ad blocking")
+            lists = self._ab.adblock_lists()
+            self._blocked_list.clear()
+            extra = lists.get("extra", []) or []
+            if extra:
+                self._blocked_list.addItems(extra)
+            else:
+                it = QListWidgetItem("(no custom domains yet)")
+                it.setFlags(Qt.ItemFlag.NoItemFlags)
+                self._blocked_list.addItem(it)
+            self._allow_list.clear()
+            allow = lists.get("allow", []) or []
+            if allow:
+                self._allow_list.addItems(allow)
+            else:
+                it = QListWidgetItem("(nothing whitelisted)")
+                it.setFlags(Qt.ItemFlag.NoItemFlags)
+                self._allow_list.addItem(it)
+        except Exception as e:
+            self._status.setText(f"Ad blocker unavailable: {e}")
+
+    # -- actions ----------------------------------------------------------
+    def _toggle(self):
+        on = bool(self._ab.adblock_status().get("enabled"))
+        if on:
+            self._run_async("disable", self._ab.adblock_disable, "Turning OFF — enter your password if asked…")
+        else:
+            self._run_async("enable", self._ab.adblock_enable, "Turning ON — enter your password if asked…")
+
+    def _stronger(self):
+        self._run_async("stronger", self._ab.adblock_update_from_url,
+                        "Fetching a large public blocklist (StevenBlack)…")
+
+    def _add(self):
+        d = self._add_in.text().strip()
+        if not d:
+            return
+        self._add_in.clear()
+        self._run_async("add", lambda: self._ab.adblock_add_domain(d), f"Blocking {d}…")
+
+    def _allow(self):
+        d = self._allow_in.text().strip()
+        if not d:
+            return
+        self._allow_in.clear()
+        self._run_async("allow", lambda: self._ab.adblock_allow_domain(d), f"Allowing {d}…")
+
+    def _remove_selected(self):
+        for lw in (self._blocked_list, self._allow_list):
+            it = lw.currentItem()
+            if it and (it.flags() & Qt.ItemFlag.ItemIsEnabled):
+                d = it.text().strip()
+                if d and not d.startswith("("):
+                    self._run_async("remove", lambda d=d: self._ab.adblock_remove(d), f"Removing {d}…")
+                    return
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -2963,6 +3263,7 @@ class EmberWindow(QWidget):
         self._live_voice = None          # active LiveVoice session (natural voice), if any
         self._lv_user_buf = ""           # accumulates the user's live transcript for the turn
         self._lv_ember_buf = ""          # accumulates Ember's live transcript for the turn
+        self._orb_conversation = False   # True during a hands-free "Hey Ember" conversation
         self._title_jobs: set[str] = set()
         self._build_ui()
         self._restore_position()
@@ -3000,6 +3301,7 @@ class EmberWindow(QWidget):
             # Always-on "Hey Ember" wake word — starts listening shortly after launch.
             QTimer.singleShot(2400, self._autostart_wake_word)
         QTimer.singleShot(300, self._apply_tts_config)   # push read-aloud engine to voice
+        QTimer.singleShot(350, self._apply_mouse_options)  # restore saved pointer speed/humanize
         if self.settings.get("auto_update", True):
             # Auto-update on every launch. Frozen .app: check + auto-install a published
             # release. Git/source checkout: fast-forward to the latest commit. Both are
@@ -3560,7 +3862,7 @@ class EmberWindow(QWidget):
             else:
                 self._stop_voice_chat("Voice chat paused")
             return
-        text = (text or "").strip()
+        text = _fix_assistant_name((text or "").strip())   # "amber" -> "Ember"
         if not text:
             self._update_voice_chat_ui("No speech captured")
             QTimer.singleShot(850, lambda: self._start_voice_listen(mode="voice_chat"))
@@ -4002,6 +4304,15 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self.chat_layout.addStretch(1)
         self.chat_scroll.setWidget(self.chat_container)
         layout.addWidget(self.chat_scroll, 1)
+        # "Stick to bottom": auto-follow new content (incl. streaming growth) UNLESS the user
+        # has scrolled up. rangeChanged fires whenever the content height changes, so we always
+        # catch the FINAL height (fixes "have to scroll to see the latest message" caused by
+        # scrolling on a stale, pre-layout maximum). valueChanged tells us if the user left the
+        # bottom (programmatic scroll-to-max keeps us stuck; dragging up un-sticks).
+        self._chat_stick_bottom = True
+        _csb = self.chat_scroll.verticalScrollBar()
+        _csb.rangeChanged.connect(lambda _mn, _mx: self._chat_follow_bottom())
+        _csb.valueChanged.connect(self._on_chat_scrolled)
 
         # Input row
         input_row = QHBoxLayout()
@@ -4083,6 +4394,8 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._history_loading = False
 
     def _clear_chat_view(self):
+        # A fresh/loaded chat should land at the bottom (latest message visible).
+        self._chat_stick_bottom = True
         while self.chat_layout.count() > 1:
             item = self.chat_layout.takeAt(0)
             w = item.widget()
@@ -4206,10 +4519,25 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._load_active_chat_into_view()
 
     def _agent_contextual_text(self, text: str) -> str:
+        # Learn durable facts from what the user just said (preferences/identity/notes), and
+        # surface the ones relevant to THIS message so Ember stays personalised even for facts
+        # learned mid-session (the init-time system prompt can't see those).
+        mem_block = ""
+        try:
+            import memory
+            memory.learn_from_message(text)
+            mem_block = memory.get_relevant_facts(text, max_facts=12)
+        except Exception:
+            mem_block = ""
+        prefix = ""
+        if mem_block:
+            prefix = ("[What Ember has learned about this user — use it to personalise the reply; "
+                      "don't recite it back unless asked]\n" + mem_block + "\n[/user memory]\n\n")
+
         chat = self._active_chat()
         messages = [m for m in (chat.get("messages") or []) if m.get("role") in {"user", "assistant"}]
         if not messages:
-            return text
+            return (prefix + text) if prefix else text
         recent = messages[-10:]
         lines = []
         for m in recent:
@@ -4218,9 +4546,10 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             if body:
                 lines.append(f"{role}: {body[:600]}")
         if not lines:
-            return text
+            return (prefix + text) if prefix else text
         return (
-            "[Ember UI conversation context. Use this as active chat history whenever relevant; "
+            prefix
+            + "[Ember UI conversation context. Use this as active chat history whenever relevant; "
             "follow-ups like 'that', 'it', 'continue', and 'do the same' refer to this context.]\n"
             + "\n".join(lines)
             + "\n[/Ember UI conversation context]\n\nCurrent user message:\n"
@@ -4356,6 +4685,9 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         frame = QFrame()
         if kind == "user":
             frame.setObjectName("bubbleUser")
+            # The user just spoke — they want to see it + the reply, so re-follow the bottom
+            # even if they'd scrolled up earlier.
+            self._chat_stick_bottom = True
         elif kind == "tool":
             frame.setObjectName("bubbleTool")
         elif kind == "error":
@@ -4529,9 +4861,32 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         (showEvent, window-level opacity) is unaffected."""
         return
 
+    def _on_chat_scrolled(self, value: int):
+        """Track whether the user is parked at the bottom. Programmatic scroll-to-max keeps
+        us stuck; dragging up by more than a small tolerance un-sticks (so we stop yanking
+        them back down while they read history); returning to the bottom re-sticks."""
+        try:
+            bar = self.chat_scroll.verticalScrollBar()
+            self._chat_stick_bottom = (bar.maximum() - value) <= 48
+        except Exception:
+            pass
+
+    def _chat_follow_bottom(self):
+        """Snap to the bottom when content grows, but only if we're sticking (user at bottom)."""
+        if not getattr(self, "_chat_stick_bottom", True):
+            return
+        try:
+            bar = self.chat_scroll.verticalScrollBar()
+            bar.setValue(bar.maximum())
+        except Exception:
+            pass
+
     def _scroll_to_bottom_smooth(self, duration: int = 190):
         try:
             bar = self.chat_scroll.verticalScrollBar()
+            # Respect the user reading history — don't yank them down if they scrolled up.
+            if not getattr(self, "_chat_stick_bottom", True):
+                return
             end = bar.maximum()
             if not bool(self.settings.get("animations_enabled", True)):
                 bar.setValue(end)
@@ -4748,44 +5103,17 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             QMessageBox.warning(self, "Antivirus", f"{type(e).__name__}: {e}")
 
     def _open_adblock(self):
-        """Toggle / manage the system-wide ad blocker (hosts-file sinkhole, all apps)."""
+        """Open the standalone graphical Ad Blocker app (its own window, like the Antivirus)."""
         try:
-            import network_adblock as ab
-            st = ab.adblock_status()
+            import network_adblock  # noqa: F401 — ensure the module is importable first
         except Exception as e:
             QMessageBox.warning(self, "Ad blocker", f"unavailable: {e}")
             return
-        on = bool(st.get("enabled"))
-        box = QMessageBox(self)
-        box.setWindowTitle("System-wide Ad Blocker")
-        box.setText(("✅ ON" if on else "⛔ OFF")
-                    + f"  —  {st.get('blocked_domains', 0)} ad/tracker domains")
-        box.setInformativeText(
-            "Blocks ads & trackers for EVERY app (like Pi-hole) by sinkholing their domains in "
-            "your computer's hosts file. Turning it on/off asks for your password once.")
-        act = (box.addButton("Disable", QMessageBox.ButtonRole.DestructiveRole) if on
-               else box.addButton("Enable", QMessageBox.ButtonRole.AcceptRole))
-        stronger = box.addButton("Use stronger list", QMessageBox.ButtonRole.ActionRole)
-        box.addButton(QMessageBox.StandardButton.Close)
-        box.exec()
-        clicked = box.clickedButton()
         try:
-            if clicked is act:
-                r = ab.adblock_disable() if on else ab.adblock_enable()
-                self._add_bubble("system" if r.get("ok") else "error",
-                                 r.get("message") or r.get("error") or "done")
-            elif clicked is stronger:
-                self._add_bubble("system", "Fetching a large public blocklist (StevenBlack)…")
-
-                def work():
-                    r = ab.adblock_update_from_url()
-                    self._bridge.notice.emit(
-                        f"🚫 Ad blocker: added {r.get('added', 0)} domains "
-                        f"({r.get('blocked_domains', 0)} total)." if r.get("ok")
-                        else f"Ad blocker update failed: {r.get('error')}")
-                threading.Thread(target=work, daemon=True).start()
+            AdBlockerDialog(self).exec()
         except Exception as e:
-            QMessageBox.warning(self, "Ad blocker", str(e))
+            traceback.print_exc()
+            QMessageBox.warning(self, "Ad blocker", f"{type(e).__name__}: {e}")
 
     def _open_features(self):
         """Show the browsable, searchable Features directory."""
@@ -5376,12 +5704,23 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 self._orb = None
         return getattr(self, "_orb", None)
 
+    def _apply_mouse_options(self):
+        """Push the saved pointer speed + humanize flag into human_mouse on launch."""
+        try:
+            import human_mouse
+            human_mouse.set_options(
+                enabled=bool(self.settings.get("mouse_humanize", True)),
+                speed=max(0.25, min(3.0, float(self.settings.get("mouse_speed", 1.0)))))
+        except Exception:
+            pass
+
     def _apply_tts_config(self):
         """Push the read-aloud engine settings to the voice module."""
         try:
             import voice
             voice.set_tts_config({
                 "tts_engine": self.settings.get("tts_engine", "system"),
+                "edge_tts_voice": self.settings.get("edge_tts_voice", "en-US-AriaNeural"),
                 "gemini_api_key": self.settings.get("gemini_api_key", ""),
                 "gemini_tts_voice": self.settings.get("gemini_tts_voice", "Kore"),
                 "soundtools_api_key": self.settings.get("soundtools_api_key", ""),
@@ -5424,12 +5763,16 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         if orb:
             orb.popup("listening")
             orb.set_caption("Listening…")
+        # Start a hands-free CONVERSATION: after this first turn you can keep chatting
+        # without repeating "Hey Ember" until you go quiet or say "stop".
+        self._orb_conversation = True
         self._orb_active = True
         self._start_orb_turn()
 
-    def _start_orb_turn(self):
-        """Listen once for a wake-word turn and send it to the agent. The reply is captioned +
-        spoken on the orb (handled in the agent-event handler), never opening the window."""
+    def _start_orb_turn(self, follow_up: bool = False):
+        """Listen for one voice turn and send it to the agent. The reply is captioned + spoken
+        on the FLOATING ORB only — it never opens or focuses the main window. In a conversation
+        (follow_up=True) a shorter silence window ends the chat naturally."""
         try:
             import voice
             ok, detail = voice.mic_available()
@@ -5440,15 +5783,17 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             if orb:
                 orb.set_caption(detail or "Microphone unavailable")
                 orb.dismiss_after(4000)
-            self._orb_active = False
+            self._end_orb_conversation()
             return
         self._listening = True
         self._listening_mode = "orb"
         try:
             import wake_word
-            wake_word.pause()
+            wake_word.pause()   # we own the mic for the whole conversation
         except Exception:
             pass
+        # First turn waits a bit longer; follow-ups end sooner if you don't say anything.
+        listen_timeout = 7.0 if follow_up else 10.0
 
         def _cb(text, err):
             self._bridge.transcript.emit(text or "", err or "")
@@ -5458,35 +5803,38 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             try:
                 import audio_level
                 # Metered capture publishes the live mic level so the orb pulses with your voice.
-                started = audio_level.listen_metered(_cb, phrase_timeout=8.0, listen_timeout=10.0)
+                started = audio_level.listen_metered(_cb, phrase_timeout=8.0,
+                                                     listen_timeout=listen_timeout)
             except Exception:
                 started = False
             if not started:
-                voice.listen_once(_cb, phrase_timeout=8.0, listen_timeout=10.0)
+                voice.listen_once(_cb, phrase_timeout=8.0, listen_timeout=listen_timeout)
         except Exception:
             self._listening = False
-            self._orb_active = False
+            self._end_orb_conversation()
 
     def _handle_orb_transcript(self, text: str, err: str):
-        """The wake-word turn's speech came back: send it to the agent (reply is captioned +
-        spoken on the orb via the event handler). Resume the wake word listener afterward."""
+        """A voice turn came back. In conversation mode, keep going turn after turn (no repeated
+        "Hey Ember") until silence or a stop phrase. Everything stays on the orb."""
         orb = self._ensure_orb()
-        try:
-            import wake_word
-            wake_word.resume()
-        except Exception:
-            pass
-        text = (text or "").strip()
+        text = _fix_assistant_name((text or "").strip())   # "amber" -> "Ember"
+        convo = getattr(self, "_orb_conversation", False)
+        # Nothing heard -> in a conversation that means you're done; otherwise prompt again.
         if err or not text:
-            if orb:
-                orb.set_caption("Didn't catch that — say “Hey Ember” again.")
-                orb.dismiss_after(3000)
-            self._orb_active = False
+            if convo:
+                self._end_orb_conversation()
+            else:
+                self._resume_wake_word()
+                if orb:
+                    orb.set_caption("Didn't catch that — say “Hey Ember” again.")
+                    orb.dismiss_after(3000)
+                self._orb_active = False
+            return
+        if convo and _is_stop_phrase(text):
+            self._end_orb_conversation(spoken="Okay, bye.")
             return
         if not self.agent:
-            self._orb_active = False
-            if orb:
-                orb.dismiss()
+            self._end_orb_conversation()
             return
         if orb:
             orb.set_state("thinking")
@@ -5498,8 +5846,49 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         except Exception as e:
             if orb:
                 orb.set_caption(f"Error: {e}")
-                orb.dismiss_after(4000)
-            self._orb_active = False
+            self._end_orb_conversation()
+
+    def _resume_wake_word(self):
+        try:
+            import wake_word
+            wake_word.resume()
+        except Exception:
+            pass
+
+    def _continue_orb_conversation(self):
+        """Listen for the next turn once Ember has FINISHED speaking (so the mic doesn't catch
+        its own voice). Called after each reply while a conversation is active."""
+        if not getattr(self, "_orb_conversation", False):
+            return
+        try:
+            import voice
+            if voice.is_speaking():
+                QTimer.singleShot(220, self._continue_orb_conversation)
+                return
+        except Exception:
+            pass
+        self._orb_active = True
+        orb = self._ensure_orb()
+        if orb:
+            orb.set_state("listening")
+            orb.set_caption("Listening…")
+        self._start_orb_turn(follow_up=True)
+
+    def _end_orb_conversation(self, spoken: str = ""):
+        """Wrap up the hands-free conversation: optionally say a closer, fade the orb, and hand
+        the mic back to the always-on wake word."""
+        self._orb_conversation = False
+        self._orb_active = False
+        self._listening = False
+        orb = self._ensure_orb()
+        if spoken:
+            if orb:
+                orb.set_state("speaking")
+                orb.set_caption(spoken)
+            self._orb_speak(spoken)
+        if orb:
+            orb.dismiss_after(2600 if spoken else 1600)
+        self._resume_wake_word()
 
     # --- Siri-style glow ------------------------------------------------------
     def _ensure_siri(self):
@@ -5522,7 +5911,11 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         return getattr(self, "_siri", None)
 
     def _set_siri(self, state):
-        """Drive the glow: state in {'listening','thinking','speaking'} or None to hide."""
+        """Drive the main-window edge glow: state in {'listening','thinking','speaking'} or None.
+        Suppressed during a floating-orb turn — the orb is the visual then, and we must not
+        touch (or surface) the main window. The orb has its own animation."""
+        if state and (getattr(self, "_orb_active", False) or getattr(self, "_orb_conversation", False)):
+            return
         try:
             if not self.settings.get("glow_animation", True):
                 return
@@ -6119,9 +6512,9 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 if getattr(self, "_streaming_bubble_label", None):
                     self._streaming_buffer += ev.payload or ""
                     self._streaming_bubble_label.setText(_md_to_html(self._streaming_buffer))
-                    QTimer.singleShot(0, lambda: self.chat_scroll.verticalScrollBar().setValue(
-                        self.chat_scroll.verticalScrollBar().maximum()
-                    ))
+                    # Follow the stream only if the user is parked at the bottom (don't yank
+                    # them down mid-read). rangeChanged also fires on growth as a backstop.
+                    QTimer.singleShot(0, self._chat_follow_bottom)
                 return
             if ev.kind == "stream_end":
                 # Lock in the final text and clear streaming state.
@@ -6217,16 +6610,17 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 self._hide_typing_indicator()
                 self._set_status(f"Ready ({self.settings.get('model_id') or self.settings.get('gemini_model')})")
                 if getattr(self, "_orb_active", False):
-                    # Wake-word orb turn finished — leave the reply up briefly, then fade.
                     self._orb_active = False
-                    orb = self._ensure_orb()
-                    if orb:
-                        orb.dismiss_after(7000)
-                    try:
-                        import wake_word
-                        wake_word.resume()
-                    except Exception:
-                        pass
+                    if getattr(self, "_orb_conversation", False):
+                        # Conversational mode: keep chatting — listen again (after Ember finishes
+                        # speaking) without needing another "Hey Ember". The delay gives TTS time
+                        # to start so is_speaking() gates correctly (mic won't catch Ember).
+                        QTimer.singleShot(600, self._continue_orb_conversation)
+                    else:
+                        orb = self._ensure_orb()
+                        if orb:
+                            orb.dismiss_after(7000)
+                        self._resume_wake_word()
                 elif self._voice_chat_enabled:
                     self._voice_waiting_for_reply = False
                     self._update_voice_chat_ui("Listening again")
@@ -6327,9 +6721,8 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         v.addLayout(btn_row)
 
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, frame)
-        QTimer.singleShot(50, lambda: self.chat_scroll.verticalScrollBar().setValue(
-            self.chat_scroll.verticalScrollBar().maximum()
-        ))
+        self._chat_stick_bottom = True   # an action prompt the user must see
+        QTimer.singleShot(50, self._chat_follow_bottom)
 
     def _show_confirm_inline(self, pending: PendingConfirmation):
         frame = QFrame()
@@ -6371,9 +6764,8 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         v.addLayout(btn_row)
 
         self.chat_layout.insertWidget(self.chat_layout.count() - 1, frame)
-        QTimer.singleShot(50, lambda: self.chat_scroll.verticalScrollBar().setValue(
-            self.chat_scroll.verticalScrollBar().maximum()
-        ))
+        self._chat_stick_bottom = True   # an action prompt the user must see
+        QTimer.singleShot(50, self._chat_follow_bottom)
 
 
 def main(instance_listener=None):

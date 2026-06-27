@@ -81,6 +81,33 @@ def test_status_shape():
     assert {"ok", "enabled", "blocked_domains", "hosts_file"} <= set(s)
 
 
+def test_lists_reports_custom_and_allow():
+    _reset()
+    ab.adblock_add_domain("ads.foo.com")
+    ab.adblock_allow_domain("doubleclick.net")
+    lists = ab.adblock_lists()
+    assert "ads.foo.com" in lists["extra"]
+    assert "doubleclick.net" in lists["allow"]
+    assert lists["blocked_domains"] >= 1
+
+
+def test_remove_forgets_from_both_lists():
+    _reset()
+    ab.adblock_enable()
+    ab.adblock_add_domain("ads.foo.com")
+    assert "0.0.0.0 ads.foo.com" in _hosts()
+    r = ab.adblock_remove("ads.foo.com")
+    assert r["ok"] is True
+    assert "ads.foo.com" not in ab.adblock_lists()["extra"]
+    assert "0.0.0.0 ads.foo.com" not in _hosts()      # re-applied without it
+    # allow-listed entries are removable too
+    ab.adblock_allow_domain("doubleclick.net")
+    assert ab.adblock_remove("doubleclick.net")["ok"] is True
+    assert "doubleclick.net" not in ab.adblock_lists()["allow"]
+    # removing something not in our lists is a no-op error
+    assert ab.adblock_remove("nothere.example")["ok"] is False
+
+
 def test_wiring_contract():
     names = {d["name"] for d in ab.TOOL_DECLARATIONS}
     assert {"adblock_enable", "adblock_disable", "adblock_status"} <= names
