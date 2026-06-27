@@ -98,7 +98,7 @@ SAFE_READONLY = {
     "get_installed_drivers", "get_running_processes", "get_performance", "get_windows_updates",
     "get_screen_size", "mouse_position", "find_ui_elements", "list_windows",
     "wait", "wait_for_screen_change", "move_mouse", "zoom_screenshot",
-    "ask_claude", "recall", "list_quick_fixes",
+    "ask_claude", "recall", "what_you_know", "list_quick_fixes",
     "browser_get_page", "browser_check_captcha", "browser_screenshot", "browser_current",
     "browser_list_tabs", "pause_for_human",
     "get_folder_size", "folder_tree", "find_duplicate_files", "find_large_files",
@@ -158,7 +158,7 @@ SAFE_READONLY = {
 SAFE_INTERACTION = {
     "click", "click_element_by_text", "drag", "type_text", "paste_text",
     "press_key", "scroll", "open_url", "open_app", "open_path", "focus_window",
-    "remember", "forget",
+    "remember", "forget", "forget_all_facts",
     "browser_open", "browser_navigate", "browser_click_text", "browser_click_selector",
     "browser_fill", "browser_scroll", "browser_back", "browser_forward", "browser_reload",
     "browser_dismiss_cookies", "browser_new_tab", "browser_switch_tab", "browser_close_tab",

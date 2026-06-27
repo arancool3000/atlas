@@ -803,6 +803,18 @@ TOOL_DECLARATIONS = [
             "required": ["key"],
         },
     },
+    {
+        "name": "what_you_know",
+        "description": ("Everything Ember has learned about the user (preferences, identity, notes), "
+                        "grouped by category. Use for 'what do you know about me?'. Ember also "
+                        "auto-learns durable facts from chat, so this grows over time."),
+        "parameters": {"type": "OBJECT", "properties": {}, "required": []},
+    },
+    {
+        "name": "forget_all_facts",
+        "description": "Erase everything Ember has learned about the user (clears all saved facts).",
+        "parameters": {"type": "OBJECT", "properties": {}, "required": []},
+    },
     # ---- File organization ----
     {
         "name": "organize_folder",
@@ -1830,6 +1842,8 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "remember": memory.remember,
     "recall": memory.recall,
     "forget": memory.forget,
+    "what_you_know": lambda **_kw: memory.profile(),
+    "forget_all_facts": lambda **_kw: memory.forget_all(),
     "browser_open": tools.browser_open,
     "browser_navigate": tools.browser_navigate,
     "browser_get_page": tools.browser_get_page,
@@ -2122,7 +2136,7 @@ PARALLEL_SAFE_TOOLS = frozenset({
     "diff_files", "count_lines", "json_query", "csv_read", "pdf_extract_text",
     "excel_read", "ocr_image", "ocr_screen", "get_event_logs", "get_reliability_events",
     "get_minidumps", "get_system_info", "get_installed_drivers", "get_running_processes",
-    "get_performance", "get_windows_updates", "list_quick_fixes", "recall",
+    "get_performance", "get_windows_updates", "list_quick_fixes", "recall", "what_you_know",
     "http_get", "public_ip", "dns_lookup", "network_ping", "web_search",
     "wikipedia_summary", "weather_lookup", "define_word", "currency_convert",
     "stock_quote", "github_search_repos", "calculator", "now", "hash_text", "hash_file",

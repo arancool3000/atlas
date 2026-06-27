@@ -4278,10 +4278,25 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._load_active_chat_into_view()
 
     def _agent_contextual_text(self, text: str) -> str:
+        # Learn durable facts from what the user just said (preferences/identity/notes), and
+        # surface the ones relevant to THIS message so Ember stays personalised even for facts
+        # learned mid-session (the init-time system prompt can't see those).
+        mem_block = ""
+        try:
+            import memory
+            memory.learn_from_message(text)
+            mem_block = memory.get_relevant_facts(text, max_facts=12)
+        except Exception:
+            mem_block = ""
+        prefix = ""
+        if mem_block:
+            prefix = ("[What Ember has learned about this user — use it to personalise the reply; "
+                      "don't recite it back unless asked]\n" + mem_block + "\n[/user memory]\n\n")
+
         chat = self._active_chat()
         messages = [m for m in (chat.get("messages") or []) if m.get("role") in {"user", "assistant"}]
         if not messages:
-            return text
+            return (prefix + text) if prefix else text
         recent = messages[-10:]
         lines = []
         for m in recent:
@@ -4290,9 +4305,10 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             if body:
                 lines.append(f"{role}: {body[:600]}")
         if not lines:
-            return text
+            return (prefix + text) if prefix else text
         return (
-            "[Ember UI conversation context. Use this as active chat history whenever relevant; "
+            prefix
+            + "[Ember UI conversation context. Use this as active chat history whenever relevant; "
             "follow-ups like 'that', 'it', 'continue', and 'do the same' refer to this context.]\n"
             + "\n".join(lines)
             + "\n[/Ember UI conversation context]\n\nCurrent user message:\n"
