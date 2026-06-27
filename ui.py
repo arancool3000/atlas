@@ -4438,6 +4438,14 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             w = item.widget()
             if w:
                 w.deleteLater()
+        # The typing indicator + streaming bubble were just deleted above — drop their stale
+        # references too, or the next turn's "thinking" bubble never shows (the is-not-None
+        # guard sees a dead widget) and streaming appends to a deleted label.
+        self._typing_frame = None
+        self._typing_dots = None
+        self._typing_label = None
+        self._streaming_bubble_label = None
+        self._streaming_buffer = ""
 
     def _load_active_chat_into_view(self):
         self._clear_chat_view()
@@ -4945,8 +4953,13 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         """Pulsing dots that appear while the agent is thinking. Removed when first text arrives."""
         # Light the Siri glow while Ember is working (covers typed + voice turns).
         self._set_siri("thinking")
-        if getattr(self, "_typing_frame", None) is not None:
-            return
+        existing = getattr(self, "_typing_frame", None)
+        if existing is not None:
+            try:
+                existing.isVisible()   # touches the C++ object; raises if it was deleted
+                return                 # a live indicator is already showing
+            except RuntimeError:
+                self._typing_frame = None   # stale (deleted) ref -> recreate below
         frame = QFrame()
         frame.setObjectName("typingIndicator")
         h = QHBoxLayout(frame)
@@ -4982,8 +4995,11 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._typing_dots = None
         f = getattr(self, "_typing_frame", None)
         if f is not None:
-            f.setParent(None)
-            f.deleteLater()
+            try:                       # the frame may already be deleted (e.g. chat cleared)
+                f.setParent(None)
+                f.deleteLater()
+            except RuntimeError:
+                pass
         self._typing_frame = None
         self._typing_label = None
 
@@ -6363,7 +6379,27 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
 
     def _reset_chat(self):
         if self.agent:
+            # CANCEL any in-flight turn first. Without this, resetting mid-task (e.g. a long
+            # `ollama pull`) leaves that turn running on the single-turn worker, so new messages
+            # queue behind it and the assistant looks frozen / "100x slower". stop() also clears
+            # the queued turns; reset() then rebuilds a clean chat.
+            try:
+                self.agent.stop()
+            except Exception:
+                pass
             self.agent.reset()
+        # Reset the UI turn state so the next message shows a thinking bubble + reply normally.
+        self._hide_typing_indicator()
+        self._streaming_bubble_label = None
+        self._streaming_buffer = ""
+        self._orb_active = False
+        self._orb_conversation = False
+        self._listening = False
+        try:
+            self.send_btn.setEnabled(True)
+        except Exception:
+            pass
+        self._set_siri(None)
         chat = self._active_chat()
         chat["messages"] = []
         chat["updated"] = int(time.time())
@@ -6371,6 +6407,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._refresh_history_sidebar()
         self._load_active_chat_into_view()
         self._add_bubble("system", "Conversation reset.")
+        self._set_status(f"Ready ({self.settings.get('model_id') or self.settings.get('gemini_model')})")
 
     def _open_settings(self):
         old_hotkey = (self.settings.get("hotkey") or "ctrl+shift+space").lower()
