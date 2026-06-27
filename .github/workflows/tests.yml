@@ -53,7 +53,8 @@ jobs:
             test_hotkey_daemon.py \
             test_icons.py \
             test_memory.py \
-            test_voice_tts.py; do
+            test_voice_tts.py \
+            test_styles.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"
