@@ -295,6 +295,40 @@ def adblock_allow_domain(domain: str = "") -> dict:
     return res
 
 
+def adblock_lists() -> dict:
+    """The user-managed lists (for a management UI): custom-blocked + allowlisted domains,
+    plus totals. The built-in/StevenBlack domains aren't enumerated (too many) — just counted."""
+    st = _load_state()
+    extra = sorted(st.get("extra", []))
+    allow = sorted(st.get("allow", []))
+    total = len(blocklist())
+    return {"ok": True, "extra": extra, "allow": allow,
+            "blocked_domains": total, "builtin": max(0, total - len(extra)),
+            "enabled": bool(_BEGIN in _read_hosts())}
+
+
+def adblock_remove(domain: str = "") -> dict:
+    """Forget a domain entirely — drop it from BOTH the custom-block and allow lists (so it
+    falls back to default behaviour). Re-applies if the blocker is on."""
+    d = _normalize_domain(domain)
+    if not d:
+        return {"ok": False, "error": "give a domain to remove"}
+    st = _load_state()
+    changed = False
+    for key in ("extra", "allow"):
+        if d in st.get(key, []):
+            st[key].remove(d)
+            changed = True
+    if not changed:
+        return {"ok": False, "error": f"{d} isn't in your custom lists"}
+    _save_state(st)
+    res = {"ok": True, "removed": d, "blocked_domains": len(blocklist())}
+    if _BEGIN in _read_hosts():
+        adblock_enable()
+        res["reapplied"] = True
+    return res
+
+
 def adblock_update_from_url(url: str = "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts") -> dict:
     """Pull a big public hosts blocklist (default: StevenBlack) and merge its domains in.
     Re-applies if the blocker is currently on."""
@@ -349,6 +383,12 @@ TOOL_DECLARATIONS = [
     {"name": "adblock_update_from_url",
      "description": "Merge a big public hosts blocklist (default StevenBlack) for far stronger coverage.",
      "parameters": {"type": "OBJECT", "properties": {"url": {"type": "STRING"}}, "required": []}},
+    {"name": "adblock_lists",
+     "description": "List the user's custom-blocked + allow-listed domains and totals.",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "adblock_remove",
+     "description": "Forget a domain entirely (drop it from both the custom-block and allow lists).",
+     "parameters": {"type": "OBJECT", "properties": {"domain": {"type": "STRING"}}, "required": ["domain"]}},
 ]
 
 TOOL_DISPATCH = {
@@ -358,8 +398,10 @@ TOOL_DISPATCH = {
     "adblock_add_domain": adblock_add_domain,
     "adblock_allow_domain": adblock_allow_domain,
     "adblock_update_from_url": adblock_update_from_url,
+    "adblock_lists": adblock_lists,
+    "adblock_remove": adblock_remove,
 }
 
-READONLY_TOOLS = {"adblock_status"}
+READONLY_TOOLS = {"adblock_status", "adblock_lists"}
 INTERACTION_TOOLS = {"adblock_enable", "adblock_disable", "adblock_add_domain",
-                     "adblock_allow_domain", "adblock_update_from_url"}
+                     "adblock_allow_domain", "adblock_update_from_url", "adblock_remove"}

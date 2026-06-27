@@ -3018,6 +3018,216 @@ class AntivirusDialog(QDialog):
             QMessageBox.warning(self, "Protection", f"{type(e).__name__}: {e}")
 
 
+class AdBlockerDialog(QDialog):
+    """A standalone graphical Ad Blocker app (like the Antivirus window): toggle system-wide
+    ad/tracker blocking, manage your custom blocked + allow-listed domains, and pull a much
+    stronger public list — instead of a one-shot message box. The slow ops (hosts write +
+    admin prompt + network fetch) run off the UI thread and report back via _done_sig."""
+    _done_sig = pyqtSignal(str, dict)   # (op, result)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        import network_adblock as ab
+        self._ab = ab
+        self._busy = False
+        self.setWindowTitle("Ember Ad Blocker")
+        self.setMinimumSize(620, 640)
+        self._done_sig.connect(self._on_done)
+
+        v = QVBoxLayout(self)
+        title = QLabel("🚫  Ember Ad Blocker")
+        title.setObjectName("title")
+        v.addWidget(title)
+        sub = QLabel("Blocks ads & trackers for EVERY app (like Pi-hole) by sinkholing their "
+                     "domains in your computer's hosts file. Turning it on or off asks for your "
+                     "password once.")
+        sub.setStyleSheet("color:#9aa0b5; font-size:12px;")
+        sub.setWordWrap(True)
+        v.addWidget(sub)
+
+        self._status = QLabel("")
+        self._status.setStyleSheet("font-size:14px; font-weight:700; margin-top:4px;")
+        self._status.setWordWrap(True)
+        v.addWidget(self._status)
+
+        row = QHBoxLayout()
+        self._toggle_btn = QPushButton("…")
+        self._toggle_btn.setObjectName("send")
+        self._toggle_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._toggle_btn.clicked.connect(self._toggle)
+        self._stronger_btn = QPushButton("⬇  Use stronger list")
+        self._stronger_btn.setToolTip("Merge a large public blocklist (StevenBlack) for far more coverage")
+        self._stronger_btn.clicked.connect(self._stronger)
+        refresh = QPushButton("Refresh")
+        refresh.clicked.connect(self._refresh)
+        row.addWidget(self._toggle_btn)
+        row.addWidget(self._stronger_btn)
+        row.addStretch()
+        row.addWidget(refresh)
+        v.addLayout(row)
+
+        self._progress = QLabel("")
+        self._progress.setStyleSheet("color:#e0af68; font-size:12px;")
+        self._progress.setWordWrap(True)
+        v.addWidget(self._progress)
+        self._bar = QProgressBar()
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(6)
+        self._bar.setRange(0, 0)   # indeterminate (these ops have no measurable %)
+        self._bar.setVisible(False)
+        v.addWidget(self._bar)
+
+        addrow = QHBoxLayout()
+        self._add_in = QLineEdit()
+        self._add_in.setPlaceholderText("Block another domain, e.g. ads.example.com")
+        self._add_in.returnPressed.connect(self._add)
+        addb = QPushButton("Block")
+        addb.clicked.connect(self._add)
+        addrow.addWidget(self._add_in, 1)
+        addrow.addWidget(addb)
+        v.addLayout(addrow)
+
+        alrow = QHBoxLayout()
+        self._allow_in = QLineEdit()
+        self._allow_in.setPlaceholderText("Allow (whitelist) a domain the blocker would catch")
+        self._allow_in.returnPressed.connect(self._allow)
+        alb = QPushButton("Allow")
+        alb.clicked.connect(self._allow)
+        alrow.addWidget(self._allow_in, 1)
+        alrow.addWidget(alb)
+        v.addLayout(alrow)
+
+        bl = QLabel("Your blocked domains (custom)")
+        bl.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:8px;")
+        v.addWidget(bl)
+        self._blocked_list = QListWidget()
+        v.addWidget(self._blocked_list, 1)
+
+        al = QLabel("Allowed (whitelisted)")
+        al.setStyleSheet("color:#cdd3ea; font-weight:600; margin-top:8px;")
+        v.addWidget(al)
+        self._allow_list = QListWidget()
+        self._allow_list.setMaximumHeight(110)
+        v.addWidget(self._allow_list)
+
+        remrow = QHBoxLayout()
+        rmb = QPushButton("Remove selected")
+        rmb.setToolTip("Forget the selected custom/allowed domain (back to default behaviour)")
+        rmb.clicked.connect(self._remove_selected)
+        remrow.addStretch()
+        remrow.addWidget(rmb)
+        v.addLayout(remrow)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        v.addWidget(close)
+        self.setStyleSheet(STYLE)
+        self._refresh()
+
+    # -- helpers ----------------------------------------------------------
+    def _set_busy(self, on: bool, label: str = ""):
+        self._busy = on
+        for b in (self._toggle_btn, self._stronger_btn):
+            b.setEnabled(not on)
+        self._bar.setVisible(on)
+        self._progress.setText(label)
+        if on:
+            self._progress.setStyleSheet("color:#e0af68; font-size:12px;")
+
+    def _run_async(self, op: str, fn, busy_label: str):
+        if self._busy:
+            return
+        self._set_busy(True, busy_label)
+
+        def work():
+            try:
+                r = fn()
+            except Exception as e:
+                r = {"ok": False, "error": str(e)}
+            self._done_sig.emit(op, r or {})
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_done(self, op: str, result: dict):
+        self._set_busy(False, "")
+        if result.get("ok"):
+            if op == "stronger":
+                msg = f"Added {result.get('added', 0)} domains ({result.get('blocked_domains', 0):,} total)."
+            else:
+                msg = result.get("message") or "Done."
+            self._progress.setText("✓ " + msg)
+            self._progress.setStyleSheet("color:#9ece6a; font-size:12px;")
+        else:
+            self._progress.setText("⚠ " + (result.get("error") or "failed"))
+            self._progress.setStyleSheet("color:#ff6b6b; font-size:12px;")
+        self._refresh()
+
+    def _refresh(self):
+        try:
+            st = self._ab.adblock_status()
+            on = bool(st.get("enabled"))
+            self._status.setText(
+                ("🟢  ON" if on else "⚫  OFF")
+                + f"  —  {st.get('blocked_domains', 0):,} domains blocked"
+                + f"   ·   {st.get('user_added', 0)} custom · {st.get('allowlisted', 0)} allowed")
+            self._status.setStyleSheet(
+                ("color:#9ece6a;" if on else "color:#9aa0b5;") + " font-size:14px; font-weight:700;")
+            self._toggle_btn.setText("Disable ad blocking" if on else "Enable ad blocking")
+            lists = self._ab.adblock_lists()
+            self._blocked_list.clear()
+            extra = lists.get("extra", []) or []
+            if extra:
+                self._blocked_list.addItems(extra)
+            else:
+                it = QListWidgetItem("(no custom domains yet)")
+                it.setFlags(Qt.ItemFlag.NoItemFlags)
+                self._blocked_list.addItem(it)
+            self._allow_list.clear()
+            allow = lists.get("allow", []) or []
+            if allow:
+                self._allow_list.addItems(allow)
+            else:
+                it = QListWidgetItem("(nothing whitelisted)")
+                it.setFlags(Qt.ItemFlag.NoItemFlags)
+                self._allow_list.addItem(it)
+        except Exception as e:
+            self._status.setText(f"Ad blocker unavailable: {e}")
+
+    # -- actions ----------------------------------------------------------
+    def _toggle(self):
+        on = bool(self._ab.adblock_status().get("enabled"))
+        if on:
+            self._run_async("disable", self._ab.adblock_disable, "Turning OFF — enter your password if asked…")
+        else:
+            self._run_async("enable", self._ab.adblock_enable, "Turning ON — enter your password if asked…")
+
+    def _stronger(self):
+        self._run_async("stronger", self._ab.adblock_update_from_url,
+                        "Fetching a large public blocklist (StevenBlack)…")
+
+    def _add(self):
+        d = self._add_in.text().strip()
+        if not d:
+            return
+        self._add_in.clear()
+        self._run_async("add", lambda: self._ab.adblock_add_domain(d), f"Blocking {d}…")
+
+    def _allow(self):
+        d = self._allow_in.text().strip()
+        if not d:
+            return
+        self._allow_in.clear()
+        self._run_async("allow", lambda: self._ab.adblock_allow_domain(d), f"Allowing {d}…")
+
+    def _remove_selected(self):
+        for lw in (self._blocked_list, self._allow_list):
+            it = lw.currentItem()
+            if it and (it.flags() & Qt.ItemFlag.ItemIsEnabled):
+                d = it.text().strip()
+                if d and not d.startswith("("):
+                    self._run_async("remove", lambda d=d: self._ab.adblock_remove(d), f"Removing {d}…")
+                    return
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -4893,44 +5103,17 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             QMessageBox.warning(self, "Antivirus", f"{type(e).__name__}: {e}")
 
     def _open_adblock(self):
-        """Toggle / manage the system-wide ad blocker (hosts-file sinkhole, all apps)."""
+        """Open the standalone graphical Ad Blocker app (its own window, like the Antivirus)."""
         try:
-            import network_adblock as ab
-            st = ab.adblock_status()
+            import network_adblock  # noqa: F401 — ensure the module is importable first
         except Exception as e:
             QMessageBox.warning(self, "Ad blocker", f"unavailable: {e}")
             return
-        on = bool(st.get("enabled"))
-        box = QMessageBox(self)
-        box.setWindowTitle("System-wide Ad Blocker")
-        box.setText(("✅ ON" if on else "⛔ OFF")
-                    + f"  —  {st.get('blocked_domains', 0)} ad/tracker domains")
-        box.setInformativeText(
-            "Blocks ads & trackers for EVERY app (like Pi-hole) by sinkholing their domains in "
-            "your computer's hosts file. Turning it on/off asks for your password once.")
-        act = (box.addButton("Disable", QMessageBox.ButtonRole.DestructiveRole) if on
-               else box.addButton("Enable", QMessageBox.ButtonRole.AcceptRole))
-        stronger = box.addButton("Use stronger list", QMessageBox.ButtonRole.ActionRole)
-        box.addButton(QMessageBox.StandardButton.Close)
-        box.exec()
-        clicked = box.clickedButton()
         try:
-            if clicked is act:
-                r = ab.adblock_disable() if on else ab.adblock_enable()
-                self._add_bubble("system" if r.get("ok") else "error",
-                                 r.get("message") or r.get("error") or "done")
-            elif clicked is stronger:
-                self._add_bubble("system", "Fetching a large public blocklist (StevenBlack)…")
-
-                def work():
-                    r = ab.adblock_update_from_url()
-                    self._bridge.notice.emit(
-                        f"🚫 Ad blocker: added {r.get('added', 0)} domains "
-                        f"({r.get('blocked_domains', 0)} total)." if r.get("ok")
-                        else f"Ad blocker update failed: {r.get('error')}")
-                threading.Thread(target=work, daemon=True).start()
+            AdBlockerDialog(self).exec()
         except Exception as e:
-            QMessageBox.warning(self, "Ad blocker", str(e))
+            traceback.print_exc()
+            QMessageBox.warning(self, "Ad blocker", f"{type(e).__name__}: {e}")
 
     def _open_features(self):
         """Show the browsable, searchable Features directory."""
