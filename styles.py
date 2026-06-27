@@ -592,9 +592,9 @@ QPushButton#commandAction:hover {
     border-color: rgba(255,255,255,0.36);
 }
 QPushButton#commandTask {
-    background-color: rgba(255,255,255,0.04);
-    color: rgba(40,42,54,0.85);
-    border: 1px solid rgba(0,0,0,0.10);
+    background-color: rgba(255,255,255,0.045);
+    color: #c3c9db;
+    border: 1px solid rgba(255,255,255,0.10);
     border-left: 3px solid rgba(122,162,247,0.85);
     border-radius: 9px;
     padding: 6px 10px;
@@ -604,8 +604,9 @@ QPushButton#commandTask {
     text-align: left;
 }
 QPushButton#commandTask:hover {
-    background-color: rgba(122,162,247,0.16);
-    color: #08080a;
+    background-color: rgba(122,162,247,0.18);
+    color: #ffffff;
+    border-color: rgba(122,162,247,0.55);
 }
 QPushButton#voiceToggle {
     background-color: rgba(238,241,248,0.92);

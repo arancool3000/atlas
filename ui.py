@@ -403,6 +403,7 @@ def load_settings() -> dict:
         "live_voice_enabled": False,  # use the Gemini Live API for real-time natural voice chat
         "live_voice_voice": "Zephyr", # Live API prebuilt voice name
         "wake_word": True,            # always-on "hey ember" wake listening
+        "wake_visual": "glow",        # "Hey Ember" shows: glow around Ember (default) | floating orb
         "glow_animation": True,       # Siri-style flowing glow while listening/thinking/speaking
         "bubble_animation": True,     # grow-in animation for new chat bubbles
         "keep_running_in_background": True,  # closing the window hides to tray so wake word keeps working
@@ -1236,6 +1237,19 @@ class SettingsDialog(QDialog):
         self.wake_word_check.setChecked(bool(self.settings.get("wake_word", True)))
         layout.addRow(self.wake_word_check)
 
+        self.wake_visual_combo = QComboBox()
+        for label, val in (("Glow around Ember (recommended)", "glow"),
+                           ("Floating orb", "orb")):
+            self.wake_visual_combo.addItem(label, userData=val)
+        cur_wv = (self.settings.get("wake_visual", "glow") or "glow").lower()
+        for i in range(self.wake_visual_combo.count()):
+            if self.wake_visual_combo.itemData(i) == cur_wv:
+                self.wake_visual_combo.setCurrentIndex(i)
+        self.wake_visual_combo.setToolTip(
+            "What to show when you say 'Hey Ember': the Siri-style glow around the Ember window, "
+            "or a separate floating orb. Neither brings the app to the front.")
+        layout.addRow("“Hey Ember” shows:", self.wake_visual_combo)
+
         self.glow_anim_check = QCheckBox("Siri-style glow animation while listening / thinking / speaking")
         self.glow_anim_check.setChecked(bool(self.settings.get("glow_animation", True)))
         layout.addRow(self.glow_anim_check)
@@ -1257,16 +1271,35 @@ class SettingsDialog(QDialog):
                 self.tts_engine_combo.setCurrentIndex(i)
         layout.addRow("Read-aloud voice:", self.tts_engine_combo)
 
-        self.edge_voice_input = QLineEdit(self.settings.get("edge_tts_voice", "en-US-AriaNeural"))
-        self.edge_voice_input.setPlaceholderText(
-            "Edge voice, e.g. en-US-AriaNeural, en-GB-SoniaNeural, en-US-GuyNeural")
-        self.edge_voice_input.setToolTip(
-            "Microsoft Edge neural voices — free, no API key, not rate-limited. Needs the "
-            "'edge-tts' package (pip install edge-tts). Falls back to the system voice if missing.")
+        def _voice_picker(options, current, tip=""):
+            """An editable dropdown: pick a known voice, or type a custom one."""
+            cb = QComboBox()
+            cb.setEditable(True)
+            cb.addItems(options)
+            cur = (current or "").strip()
+            if cur and cur not in options:
+                cb.insertItem(0, cur)
+            cb.setCurrentText(cur or (options[0] if options else ""))
+            if tip:
+                cb.setToolTip(tip)
+            return cb
+
+        self.edge_voice_input = _voice_picker(
+            ["en-US-AriaNeural", "en-US-JennyNeural", "en-US-EmmaNeural", "en-US-AvaNeural",
+             "en-US-GuyNeural", "en-US-AndrewNeural", "en-US-BrianNeural", "en-GB-SoniaNeural",
+             "en-GB-LibbyNeural", "en-GB-RyanNeural", "en-AU-NatashaNeural", "en-AU-WilliamNeural",
+             "en-CA-ClaraNeural", "en-IN-NeerjaNeural", "en-IE-EmilyNeural"],
+            self.settings.get("edge_tts_voice", "en-US-AriaNeural"),
+            tip=("Microsoft Edge neural voices — free, no API key, not rate-limited. Needs the "
+                 "'edge-tts' package (pip install edge-tts). Falls back to the system voice if missing."))
         layout.addRow("Edge voice:", self.edge_voice_input)
 
-        self.gemini_voice_input = QLineEdit(self.settings.get("gemini_tts_voice", "Kore"))
-        self.gemini_voice_input.setPlaceholderText("Gemini voice name, e.g. Kore, Puck, Charon, Aoede")
+        self.gemini_voice_input = _voice_picker(
+            ["Kore", "Puck", "Charon", "Aoede", "Zephyr", "Fenrir", "Leda", "Orus", "Callirrhoe",
+             "Autonoe", "Enceladus", "Iapetus", "Umbriel", "Algieba", "Despina", "Erinome",
+             "Algenib", "Rasalgethi", "Laomedeia", "Achernar", "Schedar", "Gacrux", "Sulafat"],
+            self.settings.get("gemini_tts_voice", "Kore"),
+            tip="Gemini TTS prebuilt voice (used when Read-aloud voice = Gemini TTS).")
         layout.addRow("Gemini voice:", self.gemini_voice_input)
 
         # soundtools.io has no public API key, so the old key field is gone. This is now an
@@ -1286,8 +1319,10 @@ class SettingsDialog(QDialog):
             "per-message rate limit. Needs a Gemini key + pyaudio.")
         layout.addRow(self.live_voice_check)
 
-        self.live_voice_voice_input = QLineEdit(self.settings.get("live_voice_voice", "Zephyr"))
-        self.live_voice_voice_input.setPlaceholderText("Live voice name, e.g. Zephyr, Puck, Charon, Kore, Aoede")
+        self.live_voice_voice_input = _voice_picker(
+            ["Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Aoede", "Leda", "Orus"],
+            self.settings.get("live_voice_voice", "Zephyr"),
+            tip="Gemini Live API (native-audio) voice for real-time natural voice chat.")
         layout.addRow("Natural voice name:", self.live_voice_voice_input)
 
         self.voice_chat_reply_check = QCheckBox("Voice chat always speaks replies")
@@ -2347,17 +2382,19 @@ class SettingsDialog(QDialog):
             self.settings["use_key_vault"] = self.vault_check.isChecked()
         if hasattr(self, "wake_word_check"):
             self.settings["wake_word"] = self.wake_word_check.isChecked()
+        if hasattr(self, "wake_visual_combo"):
+            self.settings["wake_visual"] = self.wake_visual_combo.currentData() or "glow"
         if hasattr(self, "glow_anim_check"):
             self.settings["glow_animation"] = self.glow_anim_check.isChecked()
         self.settings["voice_output"] = self.voice_check.isChecked()
         if hasattr(self, "tts_engine_combo"):
             self.settings["tts_engine"] = self.tts_engine_combo.currentData() or "system"
-            self.settings["edge_tts_voice"] = self.edge_voice_input.text().strip() or "en-US-AriaNeural"
-            self.settings["gemini_tts_voice"] = self.gemini_voice_input.text().strip() or "Kore"
+            self.settings["edge_tts_voice"] = self.edge_voice_input.currentText().strip() or "en-US-AriaNeural"
+            self.settings["gemini_tts_voice"] = self.gemini_voice_input.currentText().strip() or "Kore"
             self.settings["soundtools_url"] = self.soundtools_url_input.text().strip()
         if hasattr(self, "live_voice_check"):
             self.settings["live_voice_enabled"] = self.live_voice_check.isChecked()
-            self.settings["live_voice_voice"] = self.live_voice_voice_input.text().strip() or "Zephyr"
+            self.settings["live_voice_voice"] = self.live_voice_voice_input.currentText().strip() or "Zephyr"
         self.settings["voice_chat_spoken_replies"] = self.voice_chat_reply_check.isChecked()
         self.settings["voice_chat_auto_send"] = self.voice_auto_send_check.isChecked()
         self.settings["voice_chat_continue_after_silence"] = self.voice_continue_check.isChecked()
@@ -4401,6 +4438,14 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             w = item.widget()
             if w:
                 w.deleteLater()
+        # The typing indicator + streaming bubble were just deleted above — drop their stale
+        # references too, or the next turn's "thinking" bubble never shows (the is-not-None
+        # guard sees a dead widget) and streaming appends to a deleted label.
+        self._typing_frame = None
+        self._typing_dots = None
+        self._typing_label = None
+        self._streaming_bubble_label = None
+        self._streaming_buffer = ""
 
     def _load_active_chat_into_view(self):
         self._clear_chat_view()
@@ -4908,8 +4953,13 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         """Pulsing dots that appear while the agent is thinking. Removed when first text arrives."""
         # Light the Siri glow while Ember is working (covers typed + voice turns).
         self._set_siri("thinking")
-        if getattr(self, "_typing_frame", None) is not None:
-            return
+        existing = getattr(self, "_typing_frame", None)
+        if existing is not None:
+            try:
+                existing.isVisible()   # touches the C++ object; raises if it was deleted
+                return                 # a live indicator is already showing
+            except RuntimeError:
+                self._typing_frame = None   # stale (deleted) ref -> recreate below
         frame = QFrame()
         frame.setObjectName("typingIndicator")
         h = QHBoxLayout(frame)
@@ -4945,8 +4995,11 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._typing_dots = None
         f = getattr(self, "_typing_frame", None)
         if f is not None:
-            f.setParent(None)
-            f.deleteLater()
+            try:                       # the frame may already be deleted (e.g. chat cleared)
+                f.setParent(None)
+                f.deleteLater()
+            except RuntimeError:
+                pass
         self._typing_frame = None
         self._typing_label = None
 
@@ -5750,40 +5803,75 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             voice.stop_speaking()
         except Exception:
             pass
-        orb = self._ensure_orb()
         if not self.agent:
-            if orb:
-                orb.popup("speaking")
-                orb.set_caption("Add your API key to start.")
-                orb.dismiss_after(3500)
+            self._voice_begin("Add your API key to start.")
+            self._voice_state("speaking")
             self._orb_speak("Add your API key to start.")
+            self._voice_end(delay_ms=3500)
             return
         if self._listening:
             return   # already mid-turn
-        if orb:
-            orb.popup("listening")
-            orb.set_caption("Listening…")
         # Start a hands-free CONVERSATION: after this first turn you can keep chatting
         # without repeating "Hey Ember" until you go quiet or say "stop".
         self._orb_conversation = True
         self._orb_active = True
+        self._voice_begin("Listening…")
         self._start_orb_turn()
 
+    # ---- voice visual: the glow AROUND Ember (default) or the floating orb ----
+    def _wake_visual(self) -> str:
+        return (self.settings.get("wake_visual") or "glow").lower()
+
+    def _voice_begin(self, caption: str = "Listening…"):
+        if self._wake_visual() == "orb":
+            orb = self._ensure_orb()
+            if orb:
+                orb.popup("listening")
+                orb.set_caption(caption)
+        else:
+            self._set_siri("listening")
+            self._set_status(caption)
+
+    def _voice_state(self, state: str, caption: str | None = None):
+        if self._wake_visual() == "orb":
+            orb = self._ensure_orb()
+            if orb:
+                orb.set_state(state)
+                if caption is not None:
+                    orb.set_caption(caption)
+        else:
+            self._set_siri(state)
+            if caption:
+                self._set_status(caption)
+
+    def _voice_end(self, caption: str = "", delay_ms: int = 1600):
+        if self._wake_visual() == "orb":
+            orb = self._ensure_orb()
+            if orb:
+                if caption:
+                    orb.set_state("speaking")
+                    orb.set_caption(caption)
+                orb.dismiss_after(delay_ms)
+        else:
+            if caption:
+                self._set_status(caption)
+            self._set_siri(None)
+
     def _start_orb_turn(self, follow_up: bool = False):
-        """Listen for one voice turn and send it to the agent. The reply is captioned + spoken
-        on the FLOATING ORB only — it never opens or focuses the main window. In a conversation
-        (follow_up=True) a shorter silence window ends the chat naturally."""
+        """Listen for one voice turn and send it to the agent. The reply shows on the chosen
+        wake visual (glow around Ember, or the floating orb) — never opening/focusing the main
+        window. In a conversation (follow_up=True) a shorter silence window ends it naturally."""
         try:
             import voice
             ok, detail = voice.mic_available()
         except Exception:
             ok, detail = True, ""
         if not ok:
-            orb = self._ensure_orb()
-            if orb:
-                orb.set_caption(detail or "Microphone unavailable")
-                orb.dismiss_after(4000)
-            self._end_orb_conversation()
+            self._voice_end(detail or "Microphone unavailable", delay_ms=4000)
+            self._orb_conversation = False
+            self._orb_active = False
+            self._listening = False
+            self._resume_wake_word()
             return
         self._listening = True
         self._listening_mode = "orb"
@@ -5802,7 +5890,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             started = False
             try:
                 import audio_level
-                # Metered capture publishes the live mic level so the orb pulses with your voice.
+                # Metered capture publishes the live mic level so the glow/orb pulses with you.
                 started = audio_level.listen_metered(_cb, phrase_timeout=8.0,
                                                      listen_timeout=listen_timeout)
             except Exception:
@@ -5815,8 +5903,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
 
     def _handle_orb_transcript(self, text: str, err: str):
         """A voice turn came back. In conversation mode, keep going turn after turn (no repeated
-        "Hey Ember") until silence or a stop phrase. Everything stays on the orb."""
-        orb = self._ensure_orb()
+        "Hey Ember") until silence or a stop phrase."""
         text = _fix_assistant_name((text or "").strip())   # "amber" -> "Ember"
         convo = getattr(self, "_orb_conversation", False)
         # Nothing heard -> in a conversation that means you're done; otherwise prompt again.
@@ -5825,9 +5912,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 self._end_orb_conversation()
             else:
                 self._resume_wake_word()
-                if orb:
-                    orb.set_caption("Didn't catch that — say “Hey Ember” again.")
-                    orb.dismiss_after(3000)
+                self._voice_end("Didn't catch that — say “Hey Ember” again.", delay_ms=3000)
                 self._orb_active = False
             return
         if convo and _is_stop_phrase(text):
@@ -5836,16 +5921,13 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         if not self.agent:
             self._end_orb_conversation()
             return
-        if orb:
-            orb.set_state("thinking")
-            orb.set_caption("Thinking…")
+        self._voice_state("thinking", "Thinking…")
         # Record the turn + send. The window stays where it is; reply comes back via events.
         self._append_history("user", text)
         try:
             self.agent.send_user_message(self._agent_contextual_text(text))
         except Exception as e:
-            if orb:
-                orb.set_caption(f"Error: {e}")
+            self._voice_end(f"Error: {e}", delay_ms=4000)
             self._end_orb_conversation()
 
     def _resume_wake_word(self):
@@ -5868,26 +5950,18 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         except Exception:
             pass
         self._orb_active = True
-        orb = self._ensure_orb()
-        if orb:
-            orb.set_state("listening")
-            orb.set_caption("Listening…")
+        self._voice_state("listening", "Listening…")
         self._start_orb_turn(follow_up=True)
 
     def _end_orb_conversation(self, spoken: str = ""):
-        """Wrap up the hands-free conversation: optionally say a closer, fade the orb, and hand
-        the mic back to the always-on wake word."""
+        """Wrap up the hands-free conversation: optionally say a closer, fade the visual, and
+        hand the mic back to the always-on wake word."""
         self._orb_conversation = False
         self._orb_active = False
         self._listening = False
-        orb = self._ensure_orb()
         if spoken:
-            if orb:
-                orb.set_state("speaking")
-                orb.set_caption(spoken)
             self._orb_speak(spoken)
-        if orb:
-            orb.dismiss_after(2600 if spoken else 1600)
+        self._voice_end(spoken, delay_ms=2600 if spoken else 1600)
         self._resume_wake_word()
 
     # --- Siri-style glow ------------------------------------------------------
@@ -5912,9 +5986,11 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
 
     def _set_siri(self, state):
         """Drive the main-window edge glow: state in {'listening','thinking','speaking'} or None.
-        Suppressed during a floating-orb turn — the orb is the visual then, and we must not
-        touch (or surface) the main window. The orb has its own animation."""
-        if state and (getattr(self, "_orb_active", False) or getattr(self, "_orb_conversation", False)):
+        Suppressed during a voice turn ONLY when the user chose the floating ORB as the wake
+        visual (then the orb is the visual and we must not touch the main window). In glow mode
+        this is exactly the wake visual, so it runs."""
+        if (state and self._wake_visual() == "orb"
+                and (getattr(self, "_orb_active", False) or getattr(self, "_orb_conversation", False))):
             return
         try:
             if not self.settings.get("glow_animation", True):
@@ -6119,11 +6195,19 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             return
         if frozen:
             try:
-                import updater
+                import updater, version
                 if not updater.can_self_update():
+                    site = version.site_url()
+                    dl = version.latest_download_url()
                     self._add_bubble("system",
-                        "This build can't self-update (it isn't writable or the release feed "
-                        "isn't published yet). Download the newest build from the Ember website.")
+                        "This installed build can't update itself — usually because macOS is "
+                        "running it from a read-only/quarantined location (Gatekeeper), or no "
+                        "release is published yet.\n\n"
+                        f"• **Newest build:** {dl}\n"
+                        f"• **Website:** {site}\n\n"
+                        "Tip: for updates that ‘just work’, run Ember from source — double-click "
+                        "**RUN_FROM_SOURCE.command** in the repo. It pulls the latest on every "
+                        "launch, so you never have to download again.")
                     return
             except Exception as e:
                 self._add_bubble("error", f"Updater unavailable: {e}")
@@ -6153,7 +6237,9 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             site = "the Ember website"
         self._add_bubble("system",
             "This copy of Ember isn't a git checkout or an installed app, so it can't update "
-            f"itself. Get the latest build from {site}.")
+            f"itself. Get the latest build from {site} — or, for updates that ‘just work’, run "
+            "from source: double-click **RUN_FROM_SOURCE.command** (it pulls the latest on every "
+            "launch).")
 
     def _git_update_verbose(self, base: str):
         """Fetch + fast-forward a source checkout and report the exact outcome (up to date /
@@ -6293,7 +6379,27 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
 
     def _reset_chat(self):
         if self.agent:
+            # CANCEL any in-flight turn first. Without this, resetting mid-task (e.g. a long
+            # `ollama pull`) leaves that turn running on the single-turn worker, so new messages
+            # queue behind it and the assistant looks frozen / "100x slower". stop() also clears
+            # the queued turns; reset() then rebuilds a clean chat.
+            try:
+                self.agent.stop()
+            except Exception:
+                pass
             self.agent.reset()
+        # Reset the UI turn state so the next message shows a thinking bubble + reply normally.
+        self._hide_typing_indicator()
+        self._streaming_bubble_label = None
+        self._streaming_buffer = ""
+        self._orb_active = False
+        self._orb_conversation = False
+        self._listening = False
+        try:
+            self.send_btn.setEnabled(True)
+        except Exception:
+            pass
+        self._set_siri(None)
         chat = self._active_chat()
         chat["messages"] = []
         chat["updated"] = int(time.time())
@@ -6301,6 +6407,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._refresh_history_sidebar()
         self._load_active_chat_into_view()
         self._add_bubble("system", "Conversation reset.")
+        self._set_status(f"Ready ({self.settings.get('model_id') or self.settings.get('gemini_model')})")
 
     def _open_settings(self):
         old_hotkey = (self.settings.get("hotkey") or "ctrl+shift+space").lower()
@@ -6548,13 +6655,10 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 self._append_history("assistant", text)
                 if _remote:
                     _remote.push_chat("assistant", text)
-                # Floating-orb turn ("Hey Ember"): caption the reply on the orb and ALWAYS
-                # speak it (it's a voice interaction), without bringing the window forward.
+                # Wake-word voice turn ("Hey Ember"): show 'speaking' on the chosen visual
+                # (glow around Ember, or the orb) and ALWAYS speak it — never surfacing the window.
                 if getattr(self, "_orb_active", False):
-                    orb = self._ensure_orb()
-                    if orb:
-                        orb.set_state("speaking")
-                        orb.set_caption(text)
+                    self._voice_state("speaking", text)
                     self._orb_speak(text)
                 else:
                     self._speak_reply(text)
@@ -6617,9 +6721,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                         # to start so is_speaking() gates correctly (mic won't catch Ember).
                         QTimer.singleShot(600, self._continue_orb_conversation)
                     else:
-                        orb = self._ensure_orb()
-                        if orb:
-                            orb.dismiss_after(7000)
+                        self._voice_end(delay_ms=7000)
                         self._resume_wake_word()
                 elif self._voice_chat_enabled:
                     self._voice_waiting_for_reply = False
