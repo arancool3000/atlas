@@ -2634,8 +2634,9 @@ class Agent:
                         continue
                     if not retryable_ke:
                         raise
-            if last_err:
-                raise last_err
+            # Every backup key was also rate-limited/unavailable on this model. Return None
+            # (not raise) so the caller falls through to the wait + different-model fallback —
+            # i.e. we ALWAYS exhaust the same model on all keys before changing models.
             return None
 
         # First attempt: NON-streaming send_message.

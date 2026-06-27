@@ -4579,42 +4579,17 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._load_active_chat_into_view()
 
     def _agent_contextual_text(self, text: str) -> str:
-        # Learn durable facts from what the user just said (preferences/identity/notes), and
-        # surface the ones relevant to THIS message so Ember stays personalised even for facts
-        # learned mid-session (the init-time system prompt can't see those).
-        mem_block = ""
+        # Just learn durable facts from what the user said. We deliberately do NOT prepend a
+        # "[Ember UI conversation context]" / memory block to the message anymore — weaker models
+        # echoed that scaffolding straight back into their replies. The agent keeps its own chat
+        # history (so follow-ups like "that"/"continue" still work), and learned facts live in the
+        # system prompt, so the model keeps context WITHOUT the visible leak.
         try:
             import memory
             memory.learn_from_message(text)
-            mem_block = memory.get_relevant_facts(text, max_facts=12)
         except Exception:
-            mem_block = ""
-        prefix = ""
-        if mem_block:
-            prefix = ("[What Ember has learned about this user — use it to personalise the reply; "
-                      "don't recite it back unless asked]\n" + mem_block + "\n[/user memory]\n\n")
-
-        chat = self._active_chat()
-        messages = [m for m in (chat.get("messages") or []) if m.get("role") in {"user", "assistant"}]
-        if not messages:
-            return (prefix + text) if prefix else text
-        recent = messages[-10:]
-        lines = []
-        for m in recent:
-            role = "User" if m.get("role") == "user" else "Ember"
-            body = re.sub(r"\s+", " ", m.get("text", "")).strip()
-            if body:
-                lines.append(f"{role}: {body[:600]}")
-        if not lines:
-            return (prefix + text) if prefix else text
-        return (
-            prefix
-            + "[Ember UI conversation context. Use this as active chat history whenever relevant; "
-            "follow-ups like 'that', 'it', 'continue', and 'do the same' refer to this context.]\n"
-            + "\n".join(lines)
-            + "\n[/Ember UI conversation context]\n\nCurrent user message:\n"
-            + text
-        )
+            pass
+        return text
 
     def _refresh_welcome_line(self):
         """No-op placeholder kept for the hotkey-change callback - the welcome message
@@ -5822,6 +5797,19 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             })
         except Exception:
             pass
+        # If they picked the free Edge neural voice but the package isn't installed, it would
+        # silently fall back to the device default — tell them how to enable it (once).
+        if (self.settings.get("tts_engine") == "edge"
+                and not getattr(self, "_edge_warned", False)):
+            try:
+                import edge_tts  # noqa: F401
+            except Exception:
+                self._edge_warned = True
+                self._add_bubble("system",
+                    "🔊 The free Edge neural voice needs a small package that isn't installed, so "
+                    "Ember is using your device's default voice for now. To enable it, run:\n"
+                    "    pip install edge-tts\nthen reopen Ember. (New installs include it "
+                    "automatically.)")
 
     def _orb_speak(self, text: str):
         """Always speak (orb turns are voice interactions), regardless of the TTS setting."""
@@ -6563,8 +6551,10 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 except Exception:
                     continue
         from agent import Agent  # already warm from the background thread -> fast here
-        model_id = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
-        provider = self.settings.get("provider") or model_catalog.provider_for(model_id)
+        raw_model = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
+        # "Auto" -> resolve to the best free model; the rate-limit fail-over chain handles the rest.
+        model_id = model_catalog.resolve(raw_model)
+        provider = self.settings.get("provider") or model_catalog.provider_for(raw_model)
         try:
             if provider == "ollama":
                 from ollama_agent import OllamaAgent

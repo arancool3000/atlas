@@ -26,9 +26,21 @@ CLAUDE_MODELS = [
 ]
 
 
+# "Auto" resolves to the best free model and leans on the rate-limit fail-over chain.
+RECOMMENDED_FREE = "gemini-3.1-flash-lite"
+
+
+def resolve(model_id: str | None) -> str:
+    """Map the 'auto' sentinel to a concrete model; pass everything else through."""
+    if not model_id or model_id == "auto":
+        return RECOMMENDED_FREE
+    return model_id
+
+
 def all_choices() -> list[tuple[str, str, str, str]]:
     """Returns flat list of (provider, model_id, display_label, hint) for UI dropdowns."""
-    out = []
+    out = [("gemini", "auto", "✨ Auto — best available",
+            "picks the best free model and auto-fails-over on rate limits")]
     for mid, name, rpm, rpd, tpm, tier, notes in GEMINI_MODELS:
         if tier == "free":
             hint = f"{rpm} req/min, {rpd} req/day · free tier"
@@ -49,7 +61,7 @@ def provider_for(model_id: str) -> str:
         return "ollama"
     if model_id.startswith("claude"):
         return "claude"
-    return "gemini"
+    return "gemini"   # "auto" + all Gemini ids run on the Gemini provider
 
 
 def supports_tool_use(model_id: str) -> bool:
