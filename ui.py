@@ -18,7 +18,7 @@ from pathlib import Path
 _SAFE_MODE = os.environ.get("EMBER_SAFE_MODE", "").strip().lower() not in ("", "0", "false", "no")
 
 from PyQt6.QtCore import (
-    Qt, QPoint, QRect, QSize, pyqtSignal, QObject, QTimer,
+    Qt, QPoint, QRect, QSize, pyqtSignal, QObject, QTimer, QThread,
     QPropertyAnimation, QEasingCurve, QAbstractAnimation,
 )
 from PyQt6.QtGui import QFont, QIcon, QTextCursor, QAction, QPainter, QColor, QPixmap, QKeySequence, QShortcut
@@ -74,6 +74,7 @@ SLASH_COMMANDS = {
     "/manual": "__manual__",
     "/antivirus": "__antivirus__",
     "/adblock": "__adblock__",
+    "/setup": "__setup_tour__",
     "/features": "__features__",
     "/help": "__help__",
     "/clear": "__clear__",
@@ -222,6 +223,9 @@ COMMAND_CENTER_GROUPS = [
 #   ("info", "")         -> no button, purely informational
 # Keeping it data-driven means the directory, search, and launch buttons all stay in sync.
 FEATURE_CATALOG = [
+    ("Getting started", [
+        ("🧭", "Setup tour", "New here? A 1-minute guided setup that picks your AI in plain language and installs the free offline AI.", ("open", "__setup_tour__")),
+    ]),
     ("Automate your computer", [
         ("🤖", "Autopilot", "Hand Ember a whole task and it drives the mouse, keyboard and apps to finish it.", ("open", "/autopilot")),
         ("🪟", "Operate an app", "Tell Ember to do something in the app that's open right now.", ("open", "/apps")),
@@ -415,6 +419,7 @@ def load_settings() -> dict:
         "remote_autostart": True,
         "auto_update": True,
         "lean_tools": True,
+        "offline_mode": False,        # no internet: local brain + local tools, network tools fail fast
         "hotkey": "ctrl+shift+space",
         "hotkey_daemon": False,       # always-on login helper so the hotkey works even when quit
         "mouse_humanize": True,       # curved/eased human-like pointer movement
@@ -640,6 +645,184 @@ class EventBridge(QObject):
     wake_detected = pyqtSignal()  # the "hey ember" wake word was heard (from the wake thread)
     download_alert = pyqtSignal(object)  # a downloaded file was a threat / cautionary executable
     live_voice_event = pyqtSignal(str, str)  # (kind, text) from the Live API voice thread
+    timer_fired = pyqtSignal(str)  # a countdown timer elapsed (message) — from the timer thread
+
+
+# macOS virtual key codes -> pynput key-name tokens (so replay's _resolve_key matches). Only
+# the special (non-character) keys need mapping; printable keys use their character directly.
+_MAC_KEYCODE_NAMES = {
+    36: "enter", 76: "enter", 48: "tab", 49: "space", 51: "backspace", 53: "esc",
+    117: "delete", 123: "left", 124: "right", 125: "down", 126: "up",
+    115: "home", 119: "end", 116: "page_up", 121: "page_down",
+    122: "f1", 120: "f2", 99: "f3", 118: "f4", 96: "f5", 97: "f6", 98: "f7",
+    100: "f8", 101: "f9", 109: "f10", 103: "f11", 111: "f12",
+}
+
+
+def _mac_key_token(ev) -> str:
+    """Turn an NSEvent keyDown into a token compatible with workflow_recorder/pynput replay."""
+    try:
+        kc = int(ev.keyCode())
+    except Exception:
+        kc = -1
+    if kc in _MAC_KEYCODE_NAMES:
+        return _MAC_KEYCODE_NAMES[kc]
+    try:
+        ch = ev.charactersIgnoringModifiers() or ""
+    except Exception:
+        ch = ""
+    if len(ch) == 1 and ch.isprintable():
+        return ch
+    return ""
+
+
+class _MacInputRecorder(QObject):
+    """Captures global mouse/keyboard input via NSEvent monitors on the MAIN run loop and feeds
+    it to workflow_recorder. This REPLACES pynput on macOS for workflow recording: pynput's
+    background Quartz event tap builds NSEvents off the main thread, and macOS then asserts and
+    hard-crashes the process (SIGTRAP) — the same bug fixed for the global hotkey. NSEvent
+    monitors run on the run loop and are safe. Mouse coordinates are converted from Cocoa
+    (bottom-left origin) to top-left so they line up with the pynput Controller used at replay."""
+
+    _start_req = pyqtSignal(object)   # emitted from a worker thread -> installs on the main thread
+    _stop_req = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._monitors: list = []
+        self._handlers: dict | None = None
+        self._ok = False
+        self._screen_h = 0.0
+        self._dispatch_cb = None
+        # BlockingQueuedConnection: when emitted from a background thread the slot runs on the
+        # GUI thread and emit() blocks until it returns, so monitors are always installed on the
+        # run loop. We never emit these from the GUI thread (we'd call _do_* directly), so no
+        # self-deadlock.
+        self._start_req.connect(self._do_start, Qt.ConnectionType.BlockingQueuedConnection)
+        self._stop_req.connect(self._do_stop, Qt.ConnectionType.BlockingQueuedConnection)
+
+    # ---- public API (callable from any thread) -------------------------------
+    def start(self, handlers: dict) -> bool:
+        app = QApplication.instance()
+        if app is None:
+            return False
+        self._handlers = handlers
+        self._ok = False
+        if QThread.currentThread() == app.thread():
+            self._do_start()
+        else:
+            self._start_req.emit(handlers)
+        return self._ok
+
+    def stop(self):
+        app = QApplication.instance()
+        if app is None:
+            return
+        if QThread.currentThread() == app.thread():
+            self._do_stop()
+        else:
+            self._stop_req.emit()
+
+    # ---- main-thread implementation ------------------------------------------
+    def _do_start(self, handlers=None):
+        if handlers is not None:
+            self._handlers = handlers
+        try:
+            from AppKit import NSEvent, NSScreen
+        except Exception as e:
+            print(f"[workflow] AppKit unavailable: {e}")
+            self._ok = False
+            return
+        # Global key/mouse monitoring needs Accessibility (same as the hotkey). Prompt if missing
+        # — monitors still install either way (they just won't see global events until granted).
+        try:
+            import mac_permissions
+            if not mac_permissions.request_accessibility(prompt=False):
+                mac_permissions.request_accessibility(prompt=True)
+        except Exception:
+            pass
+        try:
+            self._screen_h = float(NSScreen.screens()[0].frame().size.height)
+        except Exception:
+            self._screen_h = 0.0
+
+        h = self._handlers or {}
+        on_move, on_click = h.get("move"), h.get("click")
+        on_scroll, on_key = h.get("scroll"), h.get("key")
+
+        def _pt():
+            try:
+                loc = NSEvent.mouseLocation()
+                x = int(loc.x)
+                y = int(self._screen_h - loc.y) if self._screen_h else int(loc.y)
+                return x, y
+            except Exception:
+                return 0, 0
+
+        def _dispatch(ev):
+            try:
+                et = int(ev.type())
+            except Exception:
+                return
+            if et in (5, 6, 7, 27):              # moved + L/R/other dragged
+                if on_move:
+                    x, y = _pt(); on_move(x, y)
+            elif et == 1:                         # left mouse down
+                if on_click:
+                    x, y = _pt(); on_click(x, y, "left", True)
+            elif et == 3:                         # right mouse down
+                if on_click:
+                    x, y = _pt(); on_click(x, y, "right", True)
+            elif et == 25:                        # other (middle) mouse down
+                if on_click:
+                    x, y = _pt(); on_click(x, y, "middle", True)
+            elif et == 22:                        # scroll wheel
+                if on_scroll:
+                    x, y = _pt()
+                    try:
+                        dx, dy = int(ev.scrollingDeltaX()), int(ev.scrollingDeltaY())
+                    except Exception:
+                        dx, dy = 0, 0
+                    on_scroll(x, y, dx, dy)
+            elif et == 10:                        # key down
+                if on_key:
+                    tok = _mac_key_token(ev)
+                    if tok:
+                        on_key(tok)
+
+        self._dispatch_cb = _dispatch
+        # Combined mask: mouse downs (L/R/other) + moved/drags + scroll + key-down.
+        MASK = ((1 << 1) | (1 << 3) | (1 << 25)
+                | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 27)
+                | (1 << 22) | (1 << 10))
+        try:
+            g = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(MASK, lambda ev: _dispatch(ev))
+
+            def _local(ev):
+                try:
+                    _dispatch(ev)
+                except Exception:
+                    pass
+                return ev   # MUST return the event so Ember's own UI still receives it
+            l = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(MASK, _local)
+            self._monitors = [m for m in (g, l) if m is not None]
+            self._ok = bool(self._monitors)
+        except Exception as e:
+            print(f"[workflow] NSEvent monitor failed: {e}")
+            self._ok = False
+
+    def _do_stop(self):
+        try:
+            from AppKit import NSEvent
+            for m in self._monitors:
+                try:
+                    NSEvent.removeMonitor_(m)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._monitors = []
+        self._dispatch_cb = None
 
 
 class MiniPill(QWidget):
@@ -1060,9 +1243,20 @@ class SettingsDialog(QDialog):
         self.model_combo = QComboBox()
         self._model_options = model_catalog.all_choices()
         current = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
+        # Show plain-language model names for non-experts (e.g. "Free offline AI") so the picker
+        # isn't a wall of jargon; experts see the technical id + rate limits.
+        _lvl = (self.settings.get("experience_level") or "expert")
+        try:
+            import setup_tour as _stour
+        except Exception:
+            _stour = None
         current_idx = 0
         for i, (_provider, mid, name, hint) in enumerate(self._model_options):
-            self.model_combo.addItem(f"{name}  -  {hint}", userData=mid)
+            if _stour is not None and _lvl in ("beginner", "some"):
+                label = _stour.friendly_model_label(mid, name, _lvl)
+            else:
+                label = f"{name}  -  {hint}"
+            self.model_combo.addItem(label, userData=mid)
             if mid == current:
                 current_idx = i
         self.model_combo.setCurrentIndex(current_idx)
@@ -1420,6 +1614,16 @@ class SettingsDialog(QDialog):
                                           "(loads only core tools, hides niche utilities)")
         self.lean_tools_check.setChecked(bool(self.settings.get("lean_tools", True)))
         layout.addRow(self.lean_tools_check)
+
+        self.offline_mode_check = QCheckBox("Offline Mode — no internet (local AI + local tools only)")
+        self.offline_mode_check.setChecked(bool(self.settings.get("offline_mode", False)))
+        self.offline_mode_check.setToolTip(
+            "Run with no internet: local brain (Ollama), offline voice, and all local tools "
+            "(files, shell, screen, system info). Web/search/email and cloud AI fail fast with a "
+            "clear notice instead of hanging, and Ember makes no outbound calls (no update check, "
+            "cloud sync, or VirusTotal). Switch the model to Ollama for a fully-offline brain.")
+        self.offline_mode_check.stateChanged.connect(self._toggle_offline_mode)
+        layout.addRow(self.offline_mode_check)
         # (Real-time download protection lives on the Security tab — it's on by default there.)
 
         usage_btn = QPushButton("📊 Show usage dashboard (calls / tokens vs free-tier limits)")
@@ -2377,6 +2581,9 @@ class SettingsDialog(QDialog):
             self.settings["launch_at_login"] = self.launch_login_check.isChecked()
         self.settings["auto_update"] = self.auto_update_check.isChecked()
         self.settings["lean_tools"] = self.lean_tools_check.isChecked()
+        if hasattr(self, "offline_mode_check"):
+            self.settings["offline_mode"] = self.offline_mode_check.isChecked()
+            self._apply_offline_mode()
         # download_protection is owned by the Security tab toggle (persisted live there).
         if hasattr(self, "vault_check"):
             self.settings["use_key_vault"] = self.vault_check.isChecked()
@@ -3265,6 +3472,188 @@ class AdBlockerDialog(QDialog):
                     return
 
 
+class SetupTourDialog(QDialog):
+    """A friendly first-run wizard for people new to AI. Asks how comfortable they are, then
+    sets up an AI brain in plain language — including a one-click install of the free offline
+    AI — and applies good defaults. Calls on_finish(updates) with the settings to save."""
+
+    def __init__(self, settings: dict, on_finish, parent=None):
+        super().__init__(parent)
+        from PyQt6.QtWidgets import QStackedWidget, QRadioButton, QButtonGroup
+        import setup_tour
+        self._st = setup_tour
+        self._settings = settings
+        self._on_finish = on_finish
+        self._level = (settings.get("experience_level") or "beginner")
+        self.setWindowTitle("Welcome to Ember")
+        self.setMinimumSize(560, 480)
+        self.setStyleSheet(STYLE)
+
+        root = QVBoxLayout(self)
+        self._stack = QStackedWidget()
+        root.addWidget(self._stack, 1)
+
+        # ---- Page 0: experience level ----
+        p0 = QWidget(); l0 = QVBoxLayout(p0)
+        t = QLabel("👋  Welcome to Ember"); t.setObjectName("title")
+        l0.addWidget(t)
+        l0.addWidget(self._wrap("Ember is your computer's AI assistant. Let's get you set up in "
+                                "under a minute — first, how comfortable are you with this stuff?"))
+        self._level_group = QButtonGroup(self)
+        for lvl in setup_tour.LEVELS:
+            rb = QRadioButton(setup_tour.LEVEL_LABELS[lvl])
+            rb.setProperty("level", lvl)
+            rb.setChecked(lvl == self._level)
+            self._level_group.addButton(rb)
+            l0.addWidget(rb)
+        l0.addStretch(1)
+        self._stack.addWidget(p0)
+
+        # ---- Page 1: choose the AI brain ----
+        p1 = QWidget(); l1 = QVBoxLayout(p1)
+        t1 = QLabel("Choose your AI"); t1.setObjectName("title")
+        l1.addWidget(t1)
+        l1.addWidget(self._wrap("Pick how Ember thinks. You can change this any time in Settings."))
+        self._brain_group = QButtonGroup(self)
+        self._rb_offline = QRadioButton("🟢  Free offline AI — runs on your computer (no internet, "
+                                        "no account, completely private)")
+        self._rb_offline.setChecked(True)
+        self._brain_group.addButton(self._rb_offline)
+        l1.addWidget(self._rb_offline)
+        self._offline_status = QLabel("")
+        self._offline_status.setStyleSheet("color:#9aa0b5; font-size:11px; margin-left:24px;")
+        self._offline_status.setWordWrap(True)
+        l1.addWidget(self._offline_status)
+        self._install_btn = QPushButton("⬇  Install the free offline AI")
+        self._install_btn.clicked.connect(self._install_offline_ai)
+        l1.addWidget(self._install_btn)
+
+        self._rb_gemini = QRadioButton("☁️  Free online AI (Google Gemini) — needs a free key")
+        self._brain_group.addButton(self._rb_gemini)
+        l1.addWidget(self._rb_gemini)
+        self._gemini_key = QLineEdit(self._settings.get("gemini_api_key", ""))
+        self._gemini_key.setPlaceholderText("Paste your free Google AI key here")
+        l1.addWidget(self._gemini_key)
+        getkey = QLabel('<a href="https://aistudio.google.com/apikey" '
+                        'style="color:#7aa2f7;">Get a free key →</a>')
+        getkey.setOpenExternalLinks(True)
+        getkey.setStyleSheet("font-size:11px; margin-left:2px;")
+        l1.addWidget(getkey)
+        l1.addStretch(1)
+        self._stack.addWidget(p1)
+
+        # ---- Page 2: finish ----
+        p2 = QWidget(); l2 = QVBoxLayout(p2)
+        t2 = QLabel("You're all set"); t2.setObjectName("title")
+        l2.addWidget(t2)
+        self._finish_note = QLabel("")
+        self._finish_note.setWordWrap(True)
+        l2.addWidget(self._finish_note)
+        l2.addStretch(1)
+        self._stack.addWidget(p2)
+
+        # ---- nav bar ----
+        nav = QHBoxLayout()
+        self._back_btn = QPushButton("Back")
+        self._back_btn.clicked.connect(lambda: self._goto(self._stack.currentIndex() - 1))
+        skip = QPushButton("Skip")
+        skip.clicked.connect(self.reject)
+        self._next_btn = QPushButton("Next")
+        self._next_btn.setObjectName("send")
+        self._next_btn.clicked.connect(self._next)
+        nav.addWidget(self._back_btn)
+        nav.addWidget(skip)
+        nav.addStretch(1)
+        nav.addWidget(self._next_btn)
+        root.addLayout(nav)
+        self._refresh_offline_status()
+        self._goto(0)
+
+    def _wrap(self, text):
+        lb = QLabel(text); lb.setWordWrap(True)
+        lb.setStyleSheet("color:#c3c9db; font-size:13px;")
+        return lb
+
+    def _goto(self, idx):
+        idx = max(0, min(self._stack.count() - 1, idx))
+        self._stack.setCurrentIndex(idx)
+        self._back_btn.setEnabled(idx > 0)
+        last = idx == self._stack.count() - 1
+        self._next_btn.setText("Finish" if last else "Next")
+        if last:
+            self._finish_note.setText(self._summary())
+
+    def _next(self):
+        idx = self._stack.currentIndex()
+        if idx == 0:
+            btn = self._level_group.checkedButton()
+            self._level = btn.property("level") if btn else "beginner"
+        if idx >= self._stack.count() - 1:
+            self._finish()
+            return
+        self._goto(idx + 1)
+
+    def _refresh_offline_status(self):
+        if self._st.ollama_installed():
+            self._offline_status.setText("✓ Installed and ready on this computer.")
+            self._install_btn.setVisible(False)
+        else:
+            plan = self._st.ollama_install_plan()
+            self._offline_status.setText("Not installed yet — one click sets it up.")
+            self._install_btn.setText("⬇  " + plan["label"])
+
+    def _install_offline_ai(self):
+        import webbrowser
+        import subprocess
+        plan = self._st.ollama_install_plan()
+        try:
+            if plan["method"] == "download":
+                webbrowser.open(plan["url"])
+                self._offline_status.setText("Opened the download page — install it, then come back.")
+            elif sys.platform == "darwin" and plan.get("command"):
+                cmd = " ".join(plan["command"])
+                subprocess.Popen(["osascript", "-e",
+                                  f'tell application "Terminal" to do script "{cmd}"'])
+                self._offline_status.setText("Installing in Terminal… follow any prompts there, "
+                                             "then reopen this tour.")
+            elif plan.get("command"):
+                subprocess.Popen(plan["command"])
+                self._offline_status.setText("Installing… this can take a few minutes.")
+        except Exception as e:
+            webbrowser.open("https://ollama.com/download")
+            self._offline_status.setText(f"Couldn't auto-install ({e}) — opened the download page.")
+
+    def _summary(self):
+        if self._rb_offline.isChecked():
+            pull = self._st.recommended_model_pull(self._level)
+            return ("Ember will use the **free offline AI**. If you haven't yet, install it above, "
+                    f"then it'll fetch a model (`ollama pull {pull}`) the first time. "
+                    "Finish to start.")
+        if self._rb_gemini.isChecked():
+            return ("Ember will use **free online AI (Google)**. Make sure your key is pasted above. "
+                    "Finish to start.")
+        return "Finish to start."
+
+    def _finish(self):
+        updates = self._st.recommended_settings(self._level)
+        if self._rb_offline.isChecked():
+            updates["model_id"] = "ollama"
+            updates["gemini_model"] = "ollama"
+            updates["provider"] = "ollama"
+        elif self._rb_gemini.isChecked():
+            key = self._gemini_key.text().strip()
+            if key:
+                updates["gemini_api_key"] = key
+            updates["model_id"] = "auto"
+            updates["gemini_model"] = "auto"
+            updates["provider"] = "gemini"
+        try:
+            self._on_finish(updates)
+        except Exception:
+            pass
+        self.accept()
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -3289,6 +3678,7 @@ class EmberWindow(QWidget):
         self._bridge.wake_detected.connect(self._on_wake_word)
         self._bridge.download_alert.connect(self._on_download_alert)
         self._bridge.live_voice_event.connect(self._on_live_voice_event)
+        self._bridge.timer_fired.connect(self._on_timer_fired_ui)
         self._pending_update: dict | None = None
         # macOS never auto-prompts for Accessibility — explicitly request it shortly after launch.
         if not _SAFE_MODE:
@@ -3306,6 +3696,22 @@ class EmberWindow(QWidget):
         self._restore_position()
         if not _SAFE_MODE:
             self._install_hotkey()
+        # macOS: record workflows via main-thread NSEvent monitors, NOT pynput (whose background
+        # event tap SIGTRAP-crashes the app). Register a capture backend the recorder will use.
+        self._mac_input_recorder = None
+        if sys.platform == "darwin":
+            try:
+                import workflow_recorder as _wfr
+                self._mac_input_recorder = _MacInputRecorder(self)
+                _wfr.set_capture_backend(self._mac_input_recorder)
+            except Exception:
+                self._mac_input_recorder = None
+        # Countdown timers: when one elapses (on a background thread) surface it in chat + speak.
+        try:
+            import timers as _timers
+            _timers.set_fire_callback(self._on_timer_fired)
+        except Exception:
+            pass
         self._overlay_timer = QTimer(self)
         self._overlay_timer.timeout.connect(self._keep_overlay_on_top)
         # Only re-assert top-most when the user actually wants always-on-top; otherwise this
@@ -3339,10 +3745,11 @@ class EmberWindow(QWidget):
             QTimer.singleShot(2400, self._autostart_wake_word)
         QTimer.singleShot(300, self._apply_tts_config)   # push read-aloud engine to voice
         QTimer.singleShot(350, self._apply_mouse_options)  # restore saved pointer speed/humanize
-        if self.settings.get("auto_update", True):
-            # Auto-update on every launch. Frozen .app: check + auto-install a published
-            # release. Git/source checkout: fast-forward to the latest commit. Both are
-            # non-blocking and failure-silent.
+        self._apply_offline_mode()   # set the global offline flag from settings
+        _offline_on = bool(self.settings.get("offline_mode", False))
+        if self.settings.get("auto_update", True) and not _offline_on:
+            # Auto-update on every launch (skipped in Offline Mode — no outbound calls). Frozen
+            # .app: check + auto-install a published release. Git/source checkout: fast-forward.
             QTimer.singleShot(5000, self._check_for_update_async)
             QTimer.singleShot(1500, self._git_self_update)
         # Enough to start: a Gemini key, OR Claude selected with an Anthropic key, OR the
@@ -3356,7 +3763,15 @@ class EmberWindow(QWidget):
             self._set_status("Starting…")
             QTimer.singleShot(0, self._init_agent)
         else:
-            QTimer.singleShot(200, self._first_run_settings)
+            # Brand-new user with nothing set up: show the friendly Setup Tour, not the raw
+            # Settings dialog. Falls back to Settings if the tour can't load.
+            _show_tour = False
+            try:
+                import setup_tour
+                _show_tour = setup_tour.should_show(self.settings)
+            except Exception:
+                _show_tour = False
+            QTimer.singleShot(400, self._open_setup_tour if _show_tour else self._first_run_settings)
 
     def _on_automation_fire(self, rule_name: str, trigger: dict, action: dict):
         # Marshal to UI thread via a queued call.
@@ -4564,42 +4979,17 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         self._load_active_chat_into_view()
 
     def _agent_contextual_text(self, text: str) -> str:
-        # Learn durable facts from what the user just said (preferences/identity/notes), and
-        # surface the ones relevant to THIS message so Ember stays personalised even for facts
-        # learned mid-session (the init-time system prompt can't see those).
-        mem_block = ""
+        # Just learn durable facts from what the user said. We deliberately do NOT prepend a
+        # "[Ember UI conversation context]" / memory block to the message anymore — weaker models
+        # echoed that scaffolding straight back into their replies. The agent keeps its own chat
+        # history (so follow-ups like "that"/"continue" still work), and learned facts live in the
+        # system prompt, so the model keeps context WITHOUT the visible leak.
         try:
             import memory
             memory.learn_from_message(text)
-            mem_block = memory.get_relevant_facts(text, max_facts=12)
         except Exception:
-            mem_block = ""
-        prefix = ""
-        if mem_block:
-            prefix = ("[What Ember has learned about this user — use it to personalise the reply; "
-                      "don't recite it back unless asked]\n" + mem_block + "\n[/user memory]\n\n")
-
-        chat = self._active_chat()
-        messages = [m for m in (chat.get("messages") or []) if m.get("role") in {"user", "assistant"}]
-        if not messages:
-            return (prefix + text) if prefix else text
-        recent = messages[-10:]
-        lines = []
-        for m in recent:
-            role = "User" if m.get("role") == "user" else "Ember"
-            body = re.sub(r"\s+", " ", m.get("text", "")).strip()
-            if body:
-                lines.append(f"{role}: {body[:600]}")
-        if not lines:
-            return (prefix + text) if prefix else text
-        return (
-            prefix
-            + "[Ember UI conversation context. Use this as active chat history whenever relevant; "
-            "follow-ups like 'that', 'it', 'continue', and 'do the same' refer to this context.]\n"
-            + "\n".join(lines)
-            + "\n[/Ember UI conversation context]\n\nCurrent user message:\n"
-            + text
-        )
+            pass
+        return text
 
     def _refresh_welcome_line(self):
         """No-op placeholder kept for the hotkey-change callback - the welcome message
@@ -5125,6 +5515,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             "__snippets__": "_open_snippets_manager",
             "__macros__": "_open_macros_manager",
             "__local_ai__": "_open_local_ai",
+            "__setup_tour__": "_open_setup_tour",
         }
         handler = None
         if cmd in feature_methods:
@@ -5167,6 +5558,37 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         except Exception as e:
             traceback.print_exc()
             QMessageBox.warning(self, "Ad blocker", f"{type(e).__name__}: {e}")
+
+    def _open_setup_tour(self):
+        """Open the friendly first-run Setup Tour (also reachable any time via /setup)."""
+        try:
+            SetupTourDialog(self.settings, self._apply_tour_result, self).exec()
+        except Exception as e:
+            traceback.print_exc()
+            QMessageBox.warning(self, "Setup", f"{type(e).__name__}: {e}")
+        # Mark the tour as seen (finish OR skip) so it doesn't auto-reopen every launch.
+        if not self.settings.get("setup_complete"):
+            self.settings["setup_complete"] = True
+            try:
+                save_settings(self.settings)
+            except Exception:
+                pass
+
+    def _apply_tour_result(self, updates: dict):
+        """Save the tour's choices, apply them live, and (re)build the agent with the chosen brain."""
+        try:
+            self.settings.update(updates or {})
+            save_settings(self.settings)
+        except Exception:
+            pass
+        for fn in (self._apply_offline_mode, self._apply_tts_config):
+            try:
+                fn()
+            except Exception:
+                pass
+        self._init_agent()
+        self._add_bubble("system", "✓ Setup complete — you can change anything in Settings (gear). "
+                                   "Tip: type /setup to run this tour again.")
 
     def _open_features(self):
         """Show the browsable, searchable Features directory."""
@@ -5757,6 +6179,31 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 self._orb = None
         return getattr(self, "_orb", None)
 
+    def _apply_offline_mode(self):
+        """Publish the Offline Mode flag so the agent + voice honour it."""
+        try:
+            import offline
+            offline.set_offline(bool(self.settings.get("offline_mode", False)))
+        except Exception:
+            pass
+
+    def _toggle_offline_mode(self, state):
+        on = bool(state)
+        self.settings["offline_mode"] = on
+        self._apply_offline_mode()
+        if on:
+            note = ("🔌 Offline Mode ON — Ember won't use the internet. Local tools (files, "
+                    "shell, screen, system info) work; web/search/email and cloud AI won't. "
+                    "For a fully-offline brain, switch the model to Ollama (Local AI).")
+            prov = self.settings.get("provider") or model_catalog.provider_for(
+                self.settings.get("model_id") or self.settings.get("gemini_model") or "")
+            if prov != "ollama":
+                note += "\n⚠ Your current model is a cloud model — it can't reach the network in Offline Mode."
+            self._add_bubble("system", note)
+            self._set_status("Offline Mode on")
+        else:
+            self._add_bubble("system", "Offline Mode off — internet tools are available again.")
+
     def _apply_mouse_options(self):
         """Push the saved pointer speed + humanize flag into human_mouse on launch."""
         try:
@@ -5782,6 +6229,19 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             })
         except Exception:
             pass
+        # If they picked the free Edge neural voice but the package isn't installed, it would
+        # silently fall back to the device default — tell them how to enable it (once).
+        if (self.settings.get("tts_engine") == "edge"
+                and not getattr(self, "_edge_warned", False)):
+            try:
+                import edge_tts  # noqa: F401
+            except Exception:
+                self._edge_warned = True
+                self._add_bubble("system",
+                    "🔊 The free Edge neural voice needs a small package that isn't installed, so "
+                    "Ember is using your device's default voice for now. To enable it, run:\n"
+                    "    pip install edge-tts\nthen reopen Ember. (New installs include it "
+                    "automatically.)")
 
     def _orb_speak(self, text: str):
         """Always speak (orb turns are voice interactions), regardless of the TTS setting."""
@@ -6523,8 +6983,10 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 except Exception:
                     continue
         from agent import Agent  # already warm from the background thread -> fast here
-        model_id = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
-        provider = self.settings.get("provider") or model_catalog.provider_for(model_id)
+        raw_model = self.settings.get("model_id") or self.settings.get("gemini_model") or "gemini-3.1-flash-lite"
+        # "Auto" -> resolve to the best free model; the rate-limit fail-over chain handles the rest.
+        model_id = model_catalog.resolve(raw_model)
+        provider = self.settings.get("provider") or model_catalog.provider_for(raw_model)
         try:
             if provider == "ollama":
                 from ollama_agent import OllamaAgent
@@ -6576,6 +7038,27 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 hint = "Try again, or restart Ember. Open Settings (gear) to check your key/model."
             QMessageBox.critical(self, "Agent init failed", f"{type(e).__name__}: {e}\n\n{hint}")
             self._set_status("Agent init failed")
+
+    def _on_timer_fired(self, info: dict):
+        """Called from the timer's background thread when a countdown elapses. Marshal to the UI
+        thread (the timers module already did the desktop notification + alert sound)."""
+        try:
+            msg = (info or {}).get("message") or "Timer — time's up!"
+            self._bridge.timer_fired.emit(msg)
+        except Exception:
+            pass
+
+    def _on_timer_fired_ui(self, message: str):
+        """UI-thread handler: pop a chat bubble for the elapsed timer and speak it if enabled."""
+        try:
+            self._add_bubble("system", f"⏰ {message}")
+        except Exception:
+            pass
+        try:
+            if self._should_speak_reply():
+                self._speak_reply(message)
+        except Exception:
+            pass
 
     def _should_speak_reply(self) -> bool:
         return bool(self.settings.get("voice_output", False)) or (

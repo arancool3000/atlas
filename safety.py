@@ -153,6 +153,7 @@ SAFE_READONLY = {
     "list_plugins",                                           # plugin system
     "list_custom_tools", "get_custom_tool", "export_custom_tool",  # AI-authored custom tools
     "adblock_status",                                         # system-wide ad blocker (read-only)
+    "list_timers",                                            # countdown timers (read-only)
 }
 
 SAFE_INTERACTION = {
@@ -188,6 +189,8 @@ SAFE_INTERACTION = {
     # system-wide ad blocker — the OS admin prompt is the real gate when writing /etc/hosts.
     "adblock_enable", "adblock_disable", "adblock_add_domain", "adblock_allow_domain",
     "adblock_update_from_url",
+    # countdown timers — harmless instant local action (no input injection, no file writes).
+    "set_timer", "cancel_timer",
 }
 
 QUICK_FIX_RISK = {

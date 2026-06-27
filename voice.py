@@ -44,6 +44,15 @@ _TTS_CONFIG: dict = {}      # set by the UI: {tts_engine, gemini_api_key, gemini
                             #                  soundtools_api_key, soundtools_url, soundtools_voice}
 
 
+def _offline() -> bool:
+    """True when Ember is in Offline Mode (best-effort; never raises)."""
+    try:
+        import offline
+        return offline.is_offline()
+    except Exception:
+        return False
+
+
 def set_tts_config(cfg: dict) -> None:
     """The UI passes the relevant settings so speak() can pick the engine (system/gemini/
     soundtools) without every call site threading settings through."""
@@ -134,6 +143,9 @@ def speak(text: str):
     if not text or not text.strip():
         return
     engine = (_TTS_CONFIG.get("tts_engine") or "system").lower()
+    # Offline Mode: the system voice is the only fully-local engine; the others call the network.
+    if _offline() and engine in ("edge", "gemini", "soundtools"):
+        engine = "system"
     try:
         if engine == "edge":
             if _edge_tts(text):
@@ -363,12 +375,30 @@ def listen_once(on_transcript: Callable[[str, str | None], None],
         except Exception as e:
             on_transcript("", f"mic error: {e}")
             return
+        # Offline Mode: transcribe locally with PocketSphinx (no network). Otherwise use the
+        # free Google Web Speech endpoint, falling back to Sphinx if the network call fails.
+        if _offline():
+            try:
+                text = rec.recognize_sphinx(audio)
+                on_transcript(text or "", None if text else "couldn't understand audio")
+            except Exception:
+                on_transcript("", "offline speech recognition needs PocketSphinx "
+                                  "(pip install pocketsphinx).")
+            return
         try:
             text = rec.recognize_google(audio)
             on_transcript(text or "", None)
         except sr.UnknownValueError:
             on_transcript("", "couldn't understand audio")
         except sr.RequestError as e:
+            # Network/endpoint failure — try the offline recogniser before giving up.
+            try:
+                text = rec.recognize_sphinx(audio)
+                if text:
+                    on_transcript(text, None)
+                    return
+            except Exception:
+                pass
             on_transcript("", f"speech API error: {e}")
         except Exception as e:
             msg = str(e)

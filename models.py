@@ -8,7 +8,6 @@ GEMINI_MODELS = [
     # id, display name, rpm, rpd, tpm, tier, notes
     ("gemini-3.1-flash-lite",  "Gemini 3.1 Flash Lite",  15,  500,   7_070, "free", "BEST free for agents - 500 RPD"),
     ("gemini-3.5-flash",       "Gemini 3.5 Flash",        5,   20, 250_000, "free", "newest free flash, high TPM"),
-    ("gemini-3.1-flash",       "Gemini 3.1 Flash",        5,   20, 250_000, "free", "balanced free flash"),
     ("gemini-2.5-flash-lite",  "Gemini 2.5 Flash Lite",  10,   20, 250_000, "free", "high TPM, low RPD"),
     ("gemini-2.5-flash",       "Gemini 2.5 Flash",        5,   20,  10_120, "free", "older but stable"),
     ("gemma-3-27b-it",         "Gemma 3 27B",            15, 1500,       0, "free", "text-only - used for chat titles"),
@@ -26,9 +25,25 @@ CLAUDE_MODELS = [
 ]
 
 
+# "Auto" resolves to the best free model and leans on the rate-limit fail-over chain.
+RECOMMENDED_FREE = "gemini-3.1-flash-lite"
+
+
+# Model ids that have been retired / 404 — remap saved settings to a working equivalent.
+_DEAD_MODELS = {"gemini-3.1-flash": "gemini-3.1-flash-lite"}
+
+
+def resolve(model_id: str | None) -> str:
+    """Map the 'auto' sentinel to a concrete model, retired ids to a live one; else pass through."""
+    if not model_id or model_id == "auto":
+        return RECOMMENDED_FREE
+    return _DEAD_MODELS.get(model_id, model_id)
+
+
 def all_choices() -> list[tuple[str, str, str, str]]:
     """Returns flat list of (provider, model_id, display_label, hint) for UI dropdowns."""
-    out = []
+    out = [("gemini", "auto", "✨ Auto — best available",
+            "picks the best free model and auto-fails-over on rate limits")]
     for mid, name, rpm, rpd, tpm, tier, notes in GEMINI_MODELS:
         if tier == "free":
             hint = f"{rpm} req/min, {rpd} req/day · free tier"
@@ -40,7 +55,8 @@ def all_choices() -> list[tuple[str, str, str, str]]:
     # Local Ollama brain — offline, no key, no rate limits. One generic entry; the actual
     # local model is resolved at runtime (or set via the "Ollama model" field in Settings).
     out.append(("ollama", "ollama", "Local (Ollama)",
-                "offline · no key · no rate limits — needs Ollama running (chat only)"))
+                "offline · no key · no rate limits — runs local tools too; pick a tool-capable "
+                "model like qwen2.5 / llama3.1"))
     return out
 
 
@@ -49,7 +65,7 @@ def provider_for(model_id: str) -> str:
         return "ollama"
     if model_id.startswith("claude"):
         return "claude"
-    return "gemini"
+    return "gemini"   # "auto" + all Gemini ids run on the Gemini provider
 
 
 def supports_tool_use(model_id: str) -> bool:
