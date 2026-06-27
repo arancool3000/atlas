@@ -4,12 +4,14 @@ Exposes the SAME interface as agent.Agent / claude_agent.ClaudeAgent (subscribe 
 send_user_message / stop / reset, emitting agent.AgentEvent) so the app can swap to a
 local model from the model picker.
 
-Scope (deliberate): this is a CHAT brain. It answers, writes, explains, and reasons fully
-offline via your local Ollama models. It does NOT drive the computer — local models are too
-small/varied to use Ember's ~288 tools reliably, and sending them all would blow a local
-model's context. For computer control (screen/apps/browser/files) pick Gemini or Claude.
-The module imports with only stdlib + requests (agent.py, which needs google-genai, is
-imported lazily) so it stays testable without the cloud SDKs installed.
+Scope: a fully-offline brain that can also DRIVE THE COMPUTER with a curated set of core
+LOCAL tools (terminal, files, screen + OCR, mouse/keyboard, system info, memory — see
+ollama_tools.py). It calls those tools via Ollama's function-calling API, with the same
+safety/confirmation + events as the cloud agent, and falls back to plain chat if the chosen
+local model doesn't support tools. Cloud-only abilities (web/browser) still need Gemini/Claude;
+for reliable local tool-use prefer a tool-capable model like qwen2.5 or llama3.1.
+The module imports with only stdlib + requests (agent.py / google-genai are imported lazily)
+so it stays testable without the cloud SDKs installed.
 """
 from __future__ import annotations
 
@@ -31,6 +33,30 @@ except Exception:  # google-genai not installed (dev/test) — keep the module i
     class AgentEvent:  # structurally identical to agent.AgentEvent
         kind: str
         payload: object = None
+
+try:
+    from agent import PendingConfirmation  # so the UI's confirm dialog handles it identically
+except Exception:
+    import queue as _queue
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class PendingConfirmation:   # structurally identical to agent.PendingConfirmation
+        tool_name: str
+        args: dict
+        reason: str
+        response: "_queue.Queue" = field(default_factory=_queue.Queue)
+
+
+OFFLINE_TOOLS_SYSTEM_PROMPT = (
+    "You are Ember, running locally on the user's computer via Ollama — fully offline, no API "
+    "key, no rate limits. You CAN control this computer using the provided tools: run terminal "
+    "commands, read/write files, see the screen (screenshot + OCR), move/click the mouse, type, "
+    "open apps, and read system info. To DO something, call a tool — don't just describe it. "
+    "After the tools have done the work, reply with a short, plain summary of the result. Be "
+    "concise and only take the actions the user asked for. Destructive or risky actions will ask "
+    "the user to confirm."
+)
 
 
 CHAT_SYSTEM_PROMPT = (
@@ -89,7 +115,11 @@ class OllamaAgent:
         self.requested_model = (model_name or "").strip()
         self.active_model = self.requested_model or "ollama"
         self.base_url = (base_url or OLLAMA_BASE).rstrip("/")
-        self.auto_screenshot = auto_screenshot  # accepted for parity; unused (local = no vision)
+        self.auto_screenshot = auto_screenshot  # accepted for parity
+        # Local tool-use: let the local model drive Ember's core LOCAL tools (shell, files,
+        # screen, mouse/keyboard, system info). Falls back to plain chat if the model/endpoint
+        # doesn't support function calling.
+        self.tools_enabled = bool(_kwargs.get("tools_enabled", True))
         self._messages: list[dict] = []
         self._event_subs: list[Callable[[AgentEvent], None]] = []
         self._stop_flag = threading.Event()
@@ -126,42 +156,134 @@ class OllamaAgent:
                 return
             self.active_model = res["model"]
             self._messages.append({"role": "user", "content": user_text})
-            payload = {
-                "model": self.active_model,
-                "messages": [{"role": "system", "content": self._system_prompt()}] + self._messages,
-                "stream": True,
-            }
-            streamed = []
-            try:
-                with requests.post(f"{self.base_url}/api/chat", json=payload,
-                                   stream=True, timeout=300) as r:
-                    if r.status_code != 200:
-                        self._emit(AgentEvent("error",
-                                   f"Ollama returned {r.status_code}: {(r.text or '')[:300]}"))
-                        return
-                    for line in r.iter_lines():
-                        if self._stop_flag.is_set():
-                            break
-                        if not line:
-                            continue
-                        chunk = _parse_stream_line(line)
-                        if not chunk:
-                            continue
-                        delta = (chunk.get("message") or {}).get("content") or ""
-                        if delta:
-                            streamed.append(delta)
-                            self._emit(AgentEvent("stream_chunk", delta))
-                        if chunk.get("done"):
-                            break
-            except requests.exceptions.RequestException as e:
-                self._emit(AgentEvent("error", f"Local AI unavailable: {e} (is Ollama running?)"))
+            # Try the tool-using loop first. If the model/endpoint doesn't support tools, fall
+            # back to a plain streaming chat so it still answers.
+            if self.tools_enabled and self._run_tool_loop():
                 return
-            if streamed:
-                self._emit(AgentEvent("stream_end", None))
-                self._messages.append({"role": "assistant", "content": "".join(streamed).strip()})
-            else:
-                self._emit(AgentEvent("message", "[no response from the local model]"))
+            self._plain_chat()
         except Exception as e:
             self._emit(AgentEvent("error", f"{type(e).__name__}: {e}"))
         finally:
             self._emit(AgentEvent("done"))
+
+    def _plain_chat(self):
+        """Stream a plain text answer (no tools) — the original local-chat behaviour."""
+        payload = {
+            "model": self.active_model,
+            "messages": [{"role": "system", "content": self._system_prompt()}] + self._messages,
+            "stream": True,
+        }
+        streamed = []
+        try:
+            with requests.post(f"{self.base_url}/api/chat", json=payload,
+                               stream=True, timeout=300) as r:
+                if r.status_code != 200:
+                    self._emit(AgentEvent("error",
+                               f"Ollama returned {r.status_code}: {(r.text or '')[:300]}"))
+                    return
+                for line in r.iter_lines():
+                    if self._stop_flag.is_set():
+                        break
+                    if not line:
+                        continue
+                    chunk = _parse_stream_line(line)
+                    if not chunk:
+                        continue
+                    delta = (chunk.get("message") or {}).get("content") or ""
+                    if delta:
+                        streamed.append(delta)
+                        self._emit(AgentEvent("stream_chunk", delta))
+                    if chunk.get("done"):
+                        break
+        except requests.exceptions.RequestException as e:
+            self._emit(AgentEvent("error", f"Local AI unavailable: {e} (is Ollama running?)"))
+            return
+        if streamed:
+            self._emit(AgentEvent("stream_end", None))
+            self._messages.append({"role": "assistant", "content": "".join(streamed).strip()})
+        else:
+            self._emit(AgentEvent("message", "[no response from the local model]"))
+
+    def _run_tool_loop(self) -> bool:
+        """Let the local model call Ember's curated LOCAL tools. Returns True if it produced a
+        final answer (or errored), False if this model can't do tools (caller falls back)."""
+        import ollama_tools
+        sys_prompt = OFFLINE_TOOLS_SYSTEM_PROMPT + _memory_extras()
+        max_steps = 6
+        for step in range(max_steps):
+            if self._stop_flag.is_set():
+                self._emit(AgentEvent("message", "[stopped]"))
+                return True
+            payload = {
+                "model": self.active_model,
+                "messages": [{"role": "system", "content": sys_prompt}] + self._messages,
+                "tools": ollama_tools.TOOLS,
+                "stream": False,
+            }
+            try:
+                r = requests.post(f"{self.base_url}/api/chat", json=payload, timeout=300)
+            except requests.exceptions.RequestException as e:
+                self._emit(AgentEvent("error", f"Local AI unavailable: {e} (is Ollama running?)"))
+                return True
+            if r.status_code != 200:
+                body = (r.text or "")
+                # The model doesn't support tools -> let the caller retry as a plain chat.
+                if step == 0 and ("tool" in body.lower() or "function" in body.lower()
+                                  or r.status_code == 400):
+                    return False
+                self._emit(AgentEvent("error", f"Ollama returned {r.status_code}: {body[:300]}"))
+                return True
+            try:
+                msg = (r.json().get("message")) or {}
+            except Exception:
+                return False
+            self._messages.append(msg)
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                content = (msg.get("content") or "").strip()
+                self._emit(AgentEvent("message", content or "[no response from the local model]"))
+                return True
+            for tc in tool_calls:
+                if self._stop_flag.is_set():
+                    break
+                fnobj = tc.get("function") or {}
+                result = self._exec_tool(fnobj.get("name") or "", fnobj.get("arguments"))
+                self._messages.append({
+                    "role": "tool", "name": fnobj.get("name") or "",
+                    "content": json.dumps(result)[:6000],
+                })
+        self._emit(AgentEvent("message",
+                   "[stopped after several tool steps — ask me to continue if needed]"))
+        return True
+
+    def _exec_tool(self, name: str, raw_args) -> dict:
+        """Run one curated tool with safety + confirmation, emitting the same events the cloud
+        agent does so the UI shows the activity."""
+        import ollama_tools
+        import safety
+        args = ollama_tools.coerce_args(name, raw_args)
+        self._emit(AgentEvent("tool_call", {"name": name, "args": args}))
+        if name not in ollama_tools.TOOL_NAMES:
+            result = {"ok": False, "error": f"unknown tool {name}"}
+            self._emit(AgentEvent("tool_result", {"name": name, "result": result}))
+            return result
+        # Confirmation for risky (non-readonly) actions, mirroring the cloud agent.
+        try:
+            risk, reason = safety.classify(name, args)
+            if name not in ollama_tools.READONLY and safety.needs_confirmation(risk):
+                pending = PendingConfirmation(name, args, reason)
+                self._emit(AgentEvent("confirm", pending))
+                if not pending.response.get():
+                    result = {"ok": False, "error": "user denied this action"}
+                    self._emit(AgentEvent("tool_result", {"name": name, "result": result}))
+                    return result
+        except Exception:
+            pass
+        result = ollama_tools.call(name, args)
+        self._emit(AgentEvent("tool_result", {"name": name, "result": result}))
+        try:
+            import memory
+            memory.log_action(name, args, str(result)[:200])
+        except Exception:
+            pass
+        return result

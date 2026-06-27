@@ -55,7 +55,8 @@ jobs:
             test_memory.py \
             test_voice_tts.py \
             test_styles.py \
-            test_offline.py; do
+            test_offline.py \
+            test_ollama_tools.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"

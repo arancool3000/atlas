@@ -52,7 +52,8 @@ def all_choices() -> list[tuple[str, str, str, str]]:
     # Local Ollama brain — offline, no key, no rate limits. One generic entry; the actual
     # local model is resolved at runtime (or set via the "Ollama model" field in Settings).
     out.append(("ollama", "ollama", "Local (Ollama)",
-                "offline · no key · no rate limits — needs Ollama running (chat only)"))
+                "offline · no key · no rate limits — runs local tools too; pick a tool-capable "
+                "model like qwen2.5 / llama3.1"))
     return out
 
 
