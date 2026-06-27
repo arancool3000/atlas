@@ -55,6 +55,19 @@ _start_time = 0.0
 _listeners: list = []
 _workflow_name = ""
 _last_move_t = 0.0
+_backend_active = False
+
+# Pluggable capture backend. On macOS the UI registers a main-thread NSEvent recorder here
+# (see ui._MacInputRecorder) because pynput's background event tap HARD-CRASHES the process
+# on macOS. A backend is any object with `start(handlers) -> bool` and `stop()`, where
+# `handlers` is {"move","click","scroll","key"} of callables matching the pynput signatures.
+_capture_backend = None
+
+
+def set_capture_backend(backend) -> None:
+    """Register (or clear with None) the platform capture backend used instead of pynput."""
+    global _capture_backend
+    _capture_backend = backend
 
 
 # ---- helpers -----------------------------------------------------------------
@@ -166,36 +179,26 @@ def _load_workflow(name: str) -> dict | None:
 def record_workflow_start(name: str) -> dict:
     """Begin recording real mouse + keyboard input under a name. Non-blocking:
     returns immediately while events are captured in the background until
-    record_workflow_stop() is called. Requires pynput."""
-    global _recording, _events, _start_time, _listeners, _workflow_name, _last_move_t
+    record_workflow_stop() is called.
+
+    macOS uses the registered NSEvent capture backend (set by the UI) on the main run loop —
+    NEVER pynput, whose background event tap hard-crashes the app. Other platforms use pynput."""
+    global _recording, _events, _start_time, _listeners, _workflow_name, _last_move_t, _backend_active
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "a workflow name is required"}
+
+    def _reset_state():
+        global _recording, _events, _listeners, _workflow_name, _backend_active
+        _recording = False
+        _events = []
+        _listeners = []
+        _workflow_name = ""
+        _backend_active = False
+
     with _lock:
         if _recording:
             return {"ok": False, "error": f"already recording '{_workflow_name}' — stop it first"}
-        try:
-            from pynput import keyboard as _kb  # noqa: F401
-            from pynput import mouse as _ms  # noqa: F401
-        except Exception:
-            return {"ok": False, "error": _PYNPUT_HINT}
-
-        # CRITICAL macOS guard: pynput's global event tap HARD-CRASHES the whole process
-        # ("Python quit unexpectedly") if started without Input Monitoring permission. So we
-        # preflight it and refuse to start (with guidance) instead of crashing.
-        import sys as _sys
-        if _sys.platform == "darwin":
-            try:
-                import mac_permissions
-                if not mac_permissions.has_input_monitoring(prompt=True):
-                    mac_permissions.open_input_monitoring_settings()
-                    return {"ok": False, "needs_permission": "input_monitoring",
-                            "error": "Recording needs macOS Input Monitoring permission. I opened "
-                                     "System Settings → Privacy & Security → Input Monitoring — turn "
-                                     "Ember ON there, then start recording again. (Without it, the "
-                                     "recorder would crash the app.)"}
-            except Exception:
-                pass
 
         _recording = True
         _events = []
@@ -203,6 +206,7 @@ def record_workflow_start(name: str) -> dict:
         _start_time = time.time()
         _last_move_t = 0.0
         _listeners = []
+        _backend_active = False
 
         def _now() -> float:
             return time.time() - _start_time
@@ -236,17 +240,61 @@ def record_workflow_start(name: str) -> dict:
                     return
                 _events.append(_record_key(key, _now()))
 
+        handlers = {"move": _on_move, "click": _on_click,
+                    "scroll": _on_scroll, "key": _on_press}
+        backend = _capture_backend
+
+    # Start the actual capture OUTSIDE _lock: backends (and their handlers) may run on another
+    # thread or the GUI run loop and acquire _lock themselves — holding it here could deadlock.
+    # The `_recording` flag set above already guards against a concurrent second start.
+
+    # 1) Prefer a registered main-thread capture backend (macOS NSEvent recorder). Required
+    #    on macOS — pynput would crash. The backend installs monitors on the GUI run loop.
+    if backend is not None:
         try:
-            ml = _ms.Listener(on_move=_on_move, on_click=_on_click, on_scroll=_on_scroll)
-            kl = _kb.Listener(on_press=_on_press)
-            ml.start()
-            kl.start()
-            _listeners = [ml, kl]
+            ok = bool(backend.start(handlers))
         except Exception as e:
-            _recording = False
-            _events = []
-            _listeners = []
-            return {"ok": False, "error": f"could not start input listeners: {e}"}
+            with _lock:
+                _reset_state()
+            return {"ok": False, "error": f"could not start the input recorder: {e}"}
+        if not ok:
+            with _lock:
+                _reset_state()
+            return {"ok": False, "error": "could not start the input recorder — grant Ember "
+                                          "Accessibility & Input Monitoring in System Settings "
+                                          "▸ Privacy & Security, then try recording again."}
+        with _lock:
+            _backend_active = True
+        return {"ok": True, "name": name, "recording": True,
+                "message": "Recording — call record_workflow_stop() when done."}
+
+    # 2) macOS without a backend (e.g. headless/agent with no UI): refuse rather than crash.
+    if sys.platform == "darwin":
+        with _lock:
+            _reset_state()
+        return {"ok": False, "error": "workflow recording needs Ember's window open on macOS "
+                                      "(open Ember, then record). The low-level recorder runs "
+                                      "on the app's main thread to stay crash-safe."}
+
+    # 3) Other platforms: pynput listeners (safe off the main thread on Windows/Linux).
+    try:
+        from pynput import keyboard as _kb
+        from pynput import mouse as _ms
+    except Exception:
+        with _lock:
+            _reset_state()
+        return {"ok": False, "error": _PYNPUT_HINT}
+    try:
+        ml = _ms.Listener(on_move=_on_move, on_click=_on_click, on_scroll=_on_scroll)
+        kl = _kb.Listener(on_press=_on_press)
+        ml.start()
+        kl.start()
+        with _lock:
+            _listeners = [ml, kl]
+    except Exception as e:
+        with _lock:
+            _reset_state()
+        return {"ok": False, "error": f"could not start input listeners: {e}"}
 
     return {"ok": True, "name": name, "recording": True,
             "message": "Recording — call record_workflow_stop() when done."}
@@ -254,7 +302,7 @@ def record_workflow_start(name: str) -> dict:
 
 def record_workflow_stop() -> dict:
     """Stop the active recording, save it to disk, and return a summary."""
-    global _recording, _events, _listeners, _workflow_name, _start_time
+    global _recording, _events, _listeners, _workflow_name, _start_time, _backend_active
     with _lock:
         if not _recording:
             return {"ok": False, "error": "not currently recording"}
@@ -262,11 +310,18 @@ def record_workflow_stop() -> dict:
         duration = time.time() - _start_time
         events = list(_events)
         listeners = list(_listeners)
+        backend_active = _backend_active
         _recording = False
         _events = []
         _listeners = []
         _workflow_name = ""
+        _backend_active = False
 
+    if backend_active and _capture_backend is not None:
+        try:
+            _capture_backend.stop()
+        except Exception:
+            pass
     for ln in listeners:
         try:
             ln.stop()

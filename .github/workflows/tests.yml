@@ -57,7 +57,8 @@ jobs:
             test_styles.py \
             test_offline.py \
             test_ollama_tools.py \
-            test_setup_tour.py; do
+            test_setup_tour.py \
+            test_timers.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"

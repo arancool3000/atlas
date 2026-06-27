@@ -58,13 +58,20 @@ TOOLS = [
     _fn("remember", "Save a durable fact about the user for later.",
         {"key": _STR, "value": _STR}, ["key", "value"]),
     _fn("recall", "Look up saved facts (empty query returns all).", {"query": _STR}, []),
+    _fn("set_timer", "Start a countdown timer that alerts when it elapses. Use for 'set a 10 "
+        "minute timer' / 'remind me in 90 seconds'.",
+        {"duration": {**_STR, "description": "e.g. '5m', '90s', '1h30m'"},
+         "label": {**_STR, "description": "optional name, e.g. 'tea'"}}, ["duration"]),
+    _fn("list_timers", "List active countdown timers and the time left on each.", {}, []),
+    _fn("cancel_timer", "Cancel a running timer by id (from list_timers), or 'all'.",
+        {"timer_id": _STR}, ["timer_id"]),
 ]
 
 TOOL_NAMES = frozenset(t["function"]["name"] for t in TOOLS)
 # Tools that only READ (no confirmation needed even in stricter modes).
 READONLY = frozenset({"read_file", "list_directory", "search_files", "take_screenshot",
                       "read_screen_text", "list_windows", "get_system_info",
-                      "get_running_processes", "recall"})
+                      "get_running_processes", "recall", "list_timers"})
 
 # Args that must be integers (local models often send them as strings).
 _INT_ARGS = {"x", "y", "amount"}
@@ -97,6 +104,13 @@ def _dispatch() -> dict:
     try:
         import screen_vision
         d["read_screen_text"] = screen_vision.read_screen_text
+    except Exception:
+        pass
+    try:
+        import timers
+        d["set_timer"] = timers.set_timer
+        d["list_timers"] = timers.list_timers
+        d["cancel_timer"] = timers.cancel_timer
     except Exception:
         pass
     return d

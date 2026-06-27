@@ -43,6 +43,7 @@ import extra_tools
 import screen_vision
 import remote_server
 import scheduled_tasks
+import timers
 # --- roadmap backlog feature modules ---
 import usage as usage_tracker           # imported aliased: _send_streaming has a local var named `usage`
 import key_vault
@@ -220,6 +221,13 @@ When the user asks for a future task, reminder-like command, or background timed
 schedule_shell_command/list_scheduled_tasks/cancel_scheduled_task instead of saying you cannot schedule. On macOS
 this creates a user LaunchAgent; on Windows it creates a Task Scheduler entry. Keep commands simple, quote paths,
 and tell the user exactly what was scheduled and when. Ask before scheduling destructive commands.
+
+# Timers
+For a simple countdown ("set a 10 minute timer", "remind me in 90 seconds", "timer for the pasta"),
+use set_timer (with a duration like '10m'/'90s'/'1h30m' and an optional label) — NOT schedule_shell_command.
+When it elapses Ember pops a desktop notification, plays a sound, and tells the user in chat. Use list_timers
+to report what's left and cancel_timer (or 'all') to stop one. Prefer set_timer for relative durations and
+schedule_shell_command only for a specific clock time/date or to run an actual command.
 
 # Diagnosing computer issues (macOS)
 Gather evidence before concluding: get_system_info + get_performance (CPU/RAM/disk pressure),
@@ -2100,7 +2108,7 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
 for _feat in (key_vault, usage_tracker, download_guard, fileless_guard, security_center,
               agent_profiles, agent_scheduler, integrations,
               workflow_recorder, productivity_tools, plugin_system, custom_tools,
-              network_adblock):
+              network_adblock, timers):
     for _decl in _feat.TOOL_DECLARATIONS:
         if _decl["name"] not in TOOL_DISPATCH:
             TOOL_DECLARATIONS.append(_decl)
@@ -2146,7 +2154,7 @@ PARALLEL_SAFE_TOOLS = frozenset({
     "env_get", "env_list", "list_monitors", "list_desktop_items", "desktop_overview",
     "browser_get_page", "browser_get_text", "browser_list_tabs", "browser_current",
     "git_status", "git_log", "git_diff", "speed_test", "calculate_text_stats",
-    "list_scheduled_tasks",
+    "list_scheduled_tasks", "list_timers",
     # roadmap backlog read-only tools
     "vault_status", "vault_get_key", "vault_list_keys", "usage_summary",
     "download_guard_status", "download_guard_events", "list_workflows",

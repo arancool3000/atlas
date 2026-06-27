@@ -18,7 +18,7 @@ from pathlib import Path
 _SAFE_MODE = os.environ.get("EMBER_SAFE_MODE", "").strip().lower() not in ("", "0", "false", "no")
 
 from PyQt6.QtCore import (
-    Qt, QPoint, QRect, QSize, pyqtSignal, QObject, QTimer,
+    Qt, QPoint, QRect, QSize, pyqtSignal, QObject, QTimer, QThread,
     QPropertyAnimation, QEasingCurve, QAbstractAnimation,
 )
 from PyQt6.QtGui import QFont, QIcon, QTextCursor, QAction, QPainter, QColor, QPixmap, QKeySequence, QShortcut
@@ -645,6 +645,184 @@ class EventBridge(QObject):
     wake_detected = pyqtSignal()  # the "hey ember" wake word was heard (from the wake thread)
     download_alert = pyqtSignal(object)  # a downloaded file was a threat / cautionary executable
     live_voice_event = pyqtSignal(str, str)  # (kind, text) from the Live API voice thread
+    timer_fired = pyqtSignal(str)  # a countdown timer elapsed (message) — from the timer thread
+
+
+# macOS virtual key codes -> pynput key-name tokens (so replay's _resolve_key matches). Only
+# the special (non-character) keys need mapping; printable keys use their character directly.
+_MAC_KEYCODE_NAMES = {
+    36: "enter", 76: "enter", 48: "tab", 49: "space", 51: "backspace", 53: "esc",
+    117: "delete", 123: "left", 124: "right", 125: "down", 126: "up",
+    115: "home", 119: "end", 116: "page_up", 121: "page_down",
+    122: "f1", 120: "f2", 99: "f3", 118: "f4", 96: "f5", 97: "f6", 98: "f7",
+    100: "f8", 101: "f9", 109: "f10", 103: "f11", 111: "f12",
+}
+
+
+def _mac_key_token(ev) -> str:
+    """Turn an NSEvent keyDown into a token compatible with workflow_recorder/pynput replay."""
+    try:
+        kc = int(ev.keyCode())
+    except Exception:
+        kc = -1
+    if kc in _MAC_KEYCODE_NAMES:
+        return _MAC_KEYCODE_NAMES[kc]
+    try:
+        ch = ev.charactersIgnoringModifiers() or ""
+    except Exception:
+        ch = ""
+    if len(ch) == 1 and ch.isprintable():
+        return ch
+    return ""
+
+
+class _MacInputRecorder(QObject):
+    """Captures global mouse/keyboard input via NSEvent monitors on the MAIN run loop and feeds
+    it to workflow_recorder. This REPLACES pynput on macOS for workflow recording: pynput's
+    background Quartz event tap builds NSEvents off the main thread, and macOS then asserts and
+    hard-crashes the process (SIGTRAP) — the same bug fixed for the global hotkey. NSEvent
+    monitors run on the run loop and are safe. Mouse coordinates are converted from Cocoa
+    (bottom-left origin) to top-left so they line up with the pynput Controller used at replay."""
+
+    _start_req = pyqtSignal(object)   # emitted from a worker thread -> installs on the main thread
+    _stop_req = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._monitors: list = []
+        self._handlers: dict | None = None
+        self._ok = False
+        self._screen_h = 0.0
+        self._dispatch_cb = None
+        # BlockingQueuedConnection: when emitted from a background thread the slot runs on the
+        # GUI thread and emit() blocks until it returns, so monitors are always installed on the
+        # run loop. We never emit these from the GUI thread (we'd call _do_* directly), so no
+        # self-deadlock.
+        self._start_req.connect(self._do_start, Qt.ConnectionType.BlockingQueuedConnection)
+        self._stop_req.connect(self._do_stop, Qt.ConnectionType.BlockingQueuedConnection)
+
+    # ---- public API (callable from any thread) -------------------------------
+    def start(self, handlers: dict) -> bool:
+        app = QApplication.instance()
+        if app is None:
+            return False
+        self._handlers = handlers
+        self._ok = False
+        if QThread.currentThread() == app.thread():
+            self._do_start()
+        else:
+            self._start_req.emit(handlers)
+        return self._ok
+
+    def stop(self):
+        app = QApplication.instance()
+        if app is None:
+            return
+        if QThread.currentThread() == app.thread():
+            self._do_stop()
+        else:
+            self._stop_req.emit()
+
+    # ---- main-thread implementation ------------------------------------------
+    def _do_start(self, handlers=None):
+        if handlers is not None:
+            self._handlers = handlers
+        try:
+            from AppKit import NSEvent, NSScreen
+        except Exception as e:
+            print(f"[workflow] AppKit unavailable: {e}")
+            self._ok = False
+            return
+        # Global key/mouse monitoring needs Accessibility (same as the hotkey). Prompt if missing
+        # — monitors still install either way (they just won't see global events until granted).
+        try:
+            import mac_permissions
+            if not mac_permissions.request_accessibility(prompt=False):
+                mac_permissions.request_accessibility(prompt=True)
+        except Exception:
+            pass
+        try:
+            self._screen_h = float(NSScreen.screens()[0].frame().size.height)
+        except Exception:
+            self._screen_h = 0.0
+
+        h = self._handlers or {}
+        on_move, on_click = h.get("move"), h.get("click")
+        on_scroll, on_key = h.get("scroll"), h.get("key")
+
+        def _pt():
+            try:
+                loc = NSEvent.mouseLocation()
+                x = int(loc.x)
+                y = int(self._screen_h - loc.y) if self._screen_h else int(loc.y)
+                return x, y
+            except Exception:
+                return 0, 0
+
+        def _dispatch(ev):
+            try:
+                et = int(ev.type())
+            except Exception:
+                return
+            if et in (5, 6, 7, 27):              # moved + L/R/other dragged
+                if on_move:
+                    x, y = _pt(); on_move(x, y)
+            elif et == 1:                         # left mouse down
+                if on_click:
+                    x, y = _pt(); on_click(x, y, "left", True)
+            elif et == 3:                         # right mouse down
+                if on_click:
+                    x, y = _pt(); on_click(x, y, "right", True)
+            elif et == 25:                        # other (middle) mouse down
+                if on_click:
+                    x, y = _pt(); on_click(x, y, "middle", True)
+            elif et == 22:                        # scroll wheel
+                if on_scroll:
+                    x, y = _pt()
+                    try:
+                        dx, dy = int(ev.scrollingDeltaX()), int(ev.scrollingDeltaY())
+                    except Exception:
+                        dx, dy = 0, 0
+                    on_scroll(x, y, dx, dy)
+            elif et == 10:                        # key down
+                if on_key:
+                    tok = _mac_key_token(ev)
+                    if tok:
+                        on_key(tok)
+
+        self._dispatch_cb = _dispatch
+        # Combined mask: mouse downs (L/R/other) + moved/drags + scroll + key-down.
+        MASK = ((1 << 1) | (1 << 3) | (1 << 25)
+                | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 27)
+                | (1 << 22) | (1 << 10))
+        try:
+            g = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(MASK, lambda ev: _dispatch(ev))
+
+            def _local(ev):
+                try:
+                    _dispatch(ev)
+                except Exception:
+                    pass
+                return ev   # MUST return the event so Ember's own UI still receives it
+            l = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(MASK, _local)
+            self._monitors = [m for m in (g, l) if m is not None]
+            self._ok = bool(self._monitors)
+        except Exception as e:
+            print(f"[workflow] NSEvent monitor failed: {e}")
+            self._ok = False
+
+    def _do_stop(self):
+        try:
+            from AppKit import NSEvent
+            for m in self._monitors:
+                try:
+                    NSEvent.removeMonitor_(m)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._monitors = []
+        self._dispatch_cb = None
 
 
 class MiniPill(QWidget):
@@ -3500,6 +3678,7 @@ class EmberWindow(QWidget):
         self._bridge.wake_detected.connect(self._on_wake_word)
         self._bridge.download_alert.connect(self._on_download_alert)
         self._bridge.live_voice_event.connect(self._on_live_voice_event)
+        self._bridge.timer_fired.connect(self._on_timer_fired_ui)
         self._pending_update: dict | None = None
         # macOS never auto-prompts for Accessibility — explicitly request it shortly after launch.
         if not _SAFE_MODE:
@@ -3517,6 +3696,22 @@ class EmberWindow(QWidget):
         self._restore_position()
         if not _SAFE_MODE:
             self._install_hotkey()
+        # macOS: record workflows via main-thread NSEvent monitors, NOT pynput (whose background
+        # event tap SIGTRAP-crashes the app). Register a capture backend the recorder will use.
+        self._mac_input_recorder = None
+        if sys.platform == "darwin":
+            try:
+                import workflow_recorder as _wfr
+                self._mac_input_recorder = _MacInputRecorder(self)
+                _wfr.set_capture_backend(self._mac_input_recorder)
+            except Exception:
+                self._mac_input_recorder = None
+        # Countdown timers: when one elapses (on a background thread) surface it in chat + speak.
+        try:
+            import timers as _timers
+            _timers.set_fire_callback(self._on_timer_fired)
+        except Exception:
+            pass
         self._overlay_timer = QTimer(self)
         self._overlay_timer.timeout.connect(self._keep_overlay_on_top)
         # Only re-assert top-most when the user actually wants always-on-top; otherwise this
@@ -6843,6 +7038,27 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
                 hint = "Try again, or restart Ember. Open Settings (gear) to check your key/model."
             QMessageBox.critical(self, "Agent init failed", f"{type(e).__name__}: {e}\n\n{hint}")
             self._set_status("Agent init failed")
+
+    def _on_timer_fired(self, info: dict):
+        """Called from the timer's background thread when a countdown elapses. Marshal to the UI
+        thread (the timers module already did the desktop notification + alert sound)."""
+        try:
+            msg = (info or {}).get("message") or "Timer — time's up!"
+            self._bridge.timer_fired.emit(msg)
+        except Exception:
+            pass
+
+    def _on_timer_fired_ui(self, message: str):
+        """UI-thread handler: pop a chat bubble for the elapsed timer and speak it if enabled."""
+        try:
+            self._add_bubble("system", f"⏰ {message}")
+        except Exception:
+            pass
+        try:
+            if self._should_speak_reply():
+                self._speak_reply(message)
+        except Exception:
+            pass
 
     def _should_speak_reply(self) -> bool:
         return bool(self.settings.get("voice_output", False)) or (
