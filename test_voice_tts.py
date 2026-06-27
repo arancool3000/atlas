@@ -42,6 +42,23 @@ def test_soundtools_requires_url_not_key():
     assert _route({"tts_engine": "soundtools", "soundtools_url": "https://x/tts"}) == ["soundtools"]
 
 
+def test_fix_assistant_name():
+    # The headline bug: "ember" heard as "amber".
+    assert voice.fix_assistant_name("hey amber what's the time") == "hey Ember what's the time"
+    assert voice.fix_assistant_name("Amber, open chrome") == "Ember, open chrome"
+    assert voice.fix_assistant_name("ambre play music") == "Ember play music"
+    # Already correct / unrelated words are left alone.
+    assert voice.fix_assistant_name("Ember is great") == "Ember is great"
+    assert voice.fix_assistant_name("") == ""
+
+
+def test_is_stop_phrase():
+    for p in ("stop", "Stop.", "goodbye", "that's all", "never mind", "bye bye", "thanks ember"):
+        assert voice.is_stop_phrase(p), p
+    for p in ("what's the weather", "stop the music please", "ember tell me a joke", ""):
+        assert not voice.is_stop_phrase(p), p
+
+
 def test_empty_text_speaks_nothing():
     assert _route({"tts_engine": "edge"}) and voice.speak("") is None
     # A whitespace-only string should also do nothing.

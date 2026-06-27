@@ -1,12 +1,38 @@
 """Speech recognition (microphone in) and text-to-speech (assistant out)."""
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Callable
+
+
+# Speech-to-text routinely hears the assistant's name "Ember" as "amber"/"ambre"/etc. In a
+# voice conversation that should always be the name, so normalise it.
+_NAME_MISHEAR_RE = re.compile(r"\b(amber|ambre|ambr|ahmber|umber|embah?|embre?)\b", re.IGNORECASE)
+
+# Phrases that end a hands-free voice conversation.
+_STOP_CONVO = {
+    "stop", "stop listening", "stop voice", "stop voice chat", "stop chat", "goodbye",
+    "good bye", "bye", "bye bye", "thats all", "that's all", "that is all", "nevermind",
+    "never mind", "cancel", "go away", "dismiss", "exit", "quit", "thanks ember", "thank you ember",
+}
+
+
+def fix_assistant_name(text: str) -> str:
+    """Correct mis-transcriptions of 'Ember' (e.g. 'amber') back to the name."""
+    if not text:
+        return text
+    return _NAME_MISHEAR_RE.sub("Ember", text)
+
+
+def is_stop_phrase(text: str) -> bool:
+    """True if `text` is a phrase that should end a hands-free voice conversation."""
+    t = re.sub(r"[^a-z ]", "", (text or "").lower()).strip()
+    return t in _STOP_CONVO
 
 
 _tts_engine = None
@@ -270,6 +296,19 @@ def _mac_say(text: str):
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
+
+
+def is_speaking() -> bool:
+    """True while a TTS playback subprocess (say/afplay/etc.) is still running. Used by the
+    conversational orb loop to wait for Ember to finish talking before it listens again, so
+    the mic doesn't capture Ember's own voice."""
+    proc = _say_proc
+    if proc is None:
+        return False
+    try:
+        return proc.poll() is None
+    except Exception:
+        return False
 
 
 def stop_speaking():
