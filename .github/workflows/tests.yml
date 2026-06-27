@@ -54,7 +54,8 @@ jobs:
             test_icons.py \
             test_memory.py \
             test_voice_tts.py \
-            test_styles.py; do
+            test_styles.py \
+            test_offline.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"

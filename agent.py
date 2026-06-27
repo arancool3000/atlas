@@ -16,6 +16,7 @@ from google.genai import types
 
 import tools
 import memory
+import offline
 import safety
 import antivirus
 import web_policy
@@ -2822,6 +2823,14 @@ class Agent:
         except Exception:
             pass
         self._emit(AgentEvent("tool_call", {"name": name, "args": args}))
+
+        # Offline Mode: a tool that needs the internet can't work — fail FAST with a clear
+        # notice instead of hanging on a network timeout.
+        if offline.is_offline() and offline.requires_network(name):
+            result = offline.offline_error(name)
+            self._emit(AgentEvent("tool_result", {"name": name, "result": result}))
+            memory.log_action(name, args, "offline mode")
+            return (name, result)
 
         # Sub-agent tool scoping: a spawned agent may be restricted to a whitelist.
         scope = getattr(self, "_active_tool_scope", None)

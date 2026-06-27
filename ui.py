@@ -415,6 +415,7 @@ def load_settings() -> dict:
         "remote_autostart": True,
         "auto_update": True,
         "lean_tools": True,
+        "offline_mode": False,        # no internet: local brain + local tools, network tools fail fast
         "hotkey": "ctrl+shift+space",
         "hotkey_daemon": False,       # always-on login helper so the hotkey works even when quit
         "mouse_humanize": True,       # curved/eased human-like pointer movement
@@ -1420,6 +1421,16 @@ class SettingsDialog(QDialog):
                                           "(loads only core tools, hides niche utilities)")
         self.lean_tools_check.setChecked(bool(self.settings.get("lean_tools", True)))
         layout.addRow(self.lean_tools_check)
+
+        self.offline_mode_check = QCheckBox("Offline Mode — no internet (local AI + local tools only)")
+        self.offline_mode_check.setChecked(bool(self.settings.get("offline_mode", False)))
+        self.offline_mode_check.setToolTip(
+            "Run with no internet: local brain (Ollama), offline voice, and all local tools "
+            "(files, shell, screen, system info). Web/search/email and cloud AI fail fast with a "
+            "clear notice instead of hanging, and Ember makes no outbound calls (no update check, "
+            "cloud sync, or VirusTotal). Switch the model to Ollama for a fully-offline brain.")
+        self.offline_mode_check.stateChanged.connect(self._toggle_offline_mode)
+        layout.addRow(self.offline_mode_check)
         # (Real-time download protection lives on the Security tab — it's on by default there.)
 
         usage_btn = QPushButton("📊 Show usage dashboard (calls / tokens vs free-tier limits)")
@@ -2377,6 +2388,9 @@ class SettingsDialog(QDialog):
             self.settings["launch_at_login"] = self.launch_login_check.isChecked()
         self.settings["auto_update"] = self.auto_update_check.isChecked()
         self.settings["lean_tools"] = self.lean_tools_check.isChecked()
+        if hasattr(self, "offline_mode_check"):
+            self.settings["offline_mode"] = self.offline_mode_check.isChecked()
+            self._apply_offline_mode()
         # download_protection is owned by the Security tab toggle (persisted live there).
         if hasattr(self, "vault_check"):
             self.settings["use_key_vault"] = self.vault_check.isChecked()
@@ -3339,10 +3353,11 @@ class EmberWindow(QWidget):
             QTimer.singleShot(2400, self._autostart_wake_word)
         QTimer.singleShot(300, self._apply_tts_config)   # push read-aloud engine to voice
         QTimer.singleShot(350, self._apply_mouse_options)  # restore saved pointer speed/humanize
-        if self.settings.get("auto_update", True):
-            # Auto-update on every launch. Frozen .app: check + auto-install a published
-            # release. Git/source checkout: fast-forward to the latest commit. Both are
-            # non-blocking and failure-silent.
+        self._apply_offline_mode()   # set the global offline flag from settings
+        _offline_on = bool(self.settings.get("offline_mode", False))
+        if self.settings.get("auto_update", True) and not _offline_on:
+            # Auto-update on every launch (skipped in Offline Mode — no outbound calls). Frozen
+            # .app: check + auto-install a published release. Git/source checkout: fast-forward.
             QTimer.singleShot(5000, self._check_for_update_async)
             QTimer.singleShot(1500, self._git_self_update)
         # Enough to start: a Gemini key, OR Claude selected with an Anthropic key, OR the
@@ -5756,6 +5771,31 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             except Exception:
                 self._orb = None
         return getattr(self, "_orb", None)
+
+    def _apply_offline_mode(self):
+        """Publish the Offline Mode flag so the agent + voice honour it."""
+        try:
+            import offline
+            offline.set_offline(bool(self.settings.get("offline_mode", False)))
+        except Exception:
+            pass
+
+    def _toggle_offline_mode(self, state):
+        on = bool(state)
+        self.settings["offline_mode"] = on
+        self._apply_offline_mode()
+        if on:
+            note = ("🔌 Offline Mode ON — Ember won't use the internet. Local tools (files, "
+                    "shell, screen, system info) work; web/search/email and cloud AI won't. "
+                    "For a fully-offline brain, switch the model to Ollama (Local AI).")
+            prov = self.settings.get("provider") or model_catalog.provider_for(
+                self.settings.get("model_id") or self.settings.get("gemini_model") or "")
+            if prov != "ollama":
+                note += "\n⚠ Your current model is a cloud model — it can't reach the network in Offline Mode."
+            self._add_bubble("system", note)
+            self._set_status("Offline Mode on")
+        else:
+            self._add_bubble("system", "Offline Mode off — internet tools are available again.")
 
     def _apply_mouse_options(self):
         """Push the saved pointer speed + humanize flag into human_mouse on launch."""
