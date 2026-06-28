@@ -1123,14 +1123,35 @@ class SettingsDialog(QDialog):
         tab_bar.setExpanding(False)
         outer.addWidget(self.tabs)
 
-        self._build_models_tab()
-        self._build_appearance_tab()
-        self._build_voice_tab()
-        self._build_performance_tab()
-        self._build_automations_tab()
-        self._build_memory_tab()
-        self._build_security_tab()
-        self._build_about_tab()
+        # Build each tab defensively: if one builder raises, the dialog still opens with the rest
+        # (and we record which failed) instead of an exception bubbling up to the slot — which on
+        # PyQt6 would ABORT the whole app ("Ember quit unexpectedly").
+        self._tab_errors = []
+        for _label, _builder in (
+            ("Models", self._build_models_tab),
+            ("Appearance", self._build_appearance_tab),
+            ("Voice", self._build_voice_tab),
+            ("Performance", self._build_performance_tab),
+            ("Automations", self._build_automations_tab),
+            ("Memory", self._build_memory_tab),
+            ("Security", self._build_security_tab),
+            ("About", self._build_about_tab),
+        ):
+            try:
+                _builder()
+            except Exception as _e:
+                import traceback
+                traceback.print_exc()
+                self._tab_errors.append(f"{_label}: {type(_e).__name__}: {_e}")
+        if self._tab_errors:
+            err_page = QWidget()
+            ev = QVBoxLayout(err_page)
+            lbl = QLabel("Some settings sections couldn't load:\n\n• " + "\n• ".join(self._tab_errors)
+                         + "\n\nThe rest of Settings still works. This was logged to ember-crash.log.")
+            lbl.setWordWrap(True)
+            ev.addWidget(lbl)
+            ev.addStretch()
+            self.tabs.addTab(err_page, "⚠ Issues")
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -2381,6 +2402,22 @@ class SettingsDialog(QDialog):
             self._refresh_security_center_lbl()
         except Exception as e:
             QMessageBox.warning(self, "Security Center", str(e))
+
+    def _apply_offline_mode(self):
+        """Publish the Offline Mode flag (from this dialog's settings) so the agent + voice
+        honour it. The EmberWindow has its own copy of this; SettingsDialog needs one too because
+        the Performance tab + get_settings() call it on `self` (the dialog)."""
+        try:
+            import offline
+            offline.set_offline(bool(self.settings.get("offline_mode", False)))
+        except Exception:
+            pass
+
+    def _toggle_offline_mode(self, state):
+        """Live-track the Offline Mode checkbox into this dialog's settings + the global flag.
+        (The user-facing chat note is posted by EmberWindow when the changed setting is saved.)"""
+        self.settings["offline_mode"] = bool(state)
+        self._apply_offline_mode()
 
     def _full_scan_ui(self):
         """On-demand full malware sweep of the watched roots (runs off the UI thread)."""
@@ -6880,7 +6917,20 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         glass_keys = ("liquid_glass", "glass_opacity", "accent_color")
         old_agent = {k: self.settings.get(k) for k in agent_keys}
         old_glass = {k: self.settings.get(k) for k in glass_keys}
-        dlg = SettingsDialog(self.settings, self, automation_engine=self._automation)
+        try:
+            dlg = SettingsDialog(self.settings, self, automation_engine=self._automation)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            try:
+                with open(_data_dir() / "ember-crash.log", "a", encoding="utf-8") as f:
+                    f.write("\n--- Settings open failed ---\n" + traceback.format_exc())
+            except Exception:
+                pass
+            QMessageBox.critical(self, "Settings",
+                f"Couldn't open Settings: {type(e).__name__}: {e}\n\n"
+                f"A crash log was saved to:\n{_data_dir() / 'ember-crash.log'}")
+            return
         if dlg.exec():
             self.settings = dlg.get_settings()
             save_settings(self.settings)
@@ -7353,7 +7403,58 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         QTimer.singleShot(50, self._chat_follow_bottom)
 
 
+_CRASH_LOG_FILE = None
+
+
+def _install_crash_guards():
+    """Stop Ember from silently dying with macOS's 'Ember quit unexpectedly'. Two layers:
+
+      1. faulthandler dumps the Python stack to ember-crash.log on a FATAL native signal
+         (SIGSEGV/SIGABRT) — so a hard native crash still tells us the exact line.
+      2. A custom sys.excepthook: on PyQt6, an unhandled Python exception inside a slot or
+         virtual method calls qFatal() and ABORTS the whole process. Installing our own hook
+         turns that into a logged, shown, NON-fatal error — one bad signal handler or settings
+         widget can no longer take the app down."""
+    global _CRASH_LOG_FILE
+    log_path = _data_dir() / "ember-crash.log"
+    try:
+        import faulthandler
+        _CRASH_LOG_FILE = open(log_path, "a", buffering=1, encoding="utf-8")
+        faulthandler.enable(file=_CRASH_LOG_FILE, all_threads=True)
+    except Exception:
+        pass
+
+    def _hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        import traceback
+        text = "".join(traceback.format_exception(exc_type, exc, tb))
+        try:
+            sys.__stderr__.write(text)
+        except Exception:
+            pass
+        try:
+            from datetime import datetime
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n--- {datetime.now().isoformat(timespec='seconds')} unhandled exception ---\n")
+                f.write(text)
+        except Exception:
+            pass
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+            if QApplication.instance() is not None:
+                QMessageBox.critical(None, "Ember hit an error",
+                    f"Ember caught an error and kept running:\n\n{exc_type.__name__}: {exc}\n\n"
+                    f"Details were saved to:\n{log_path}")
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+
+
 def main(instance_listener=None):
+    _install_crash_guards()
     if _SAFE_MODE:
         print("[Ember] EMBER_SAFE_MODE on — native blur, global hotkey, accessibility "
               "prompt, and phone-remote autostart are disabled.")
