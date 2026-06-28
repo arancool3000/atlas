@@ -47,3 +47,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Runtime crash log (written by _install_crash_guards)
+ember-crash.log

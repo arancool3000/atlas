@@ -1,5 +1,5 @@
 {
-  "version": "1.2.0",
+  "version": "1.2.1",
   "pub_date": "2026-06-28",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.2.0\n\n• Works 100% offline — every core tool runs with no internet\n• Free offline brain (Ollama) can now drive your computer: terminal, files, screen + OCR, mouse/keyboard, plus image analysis with a local vision model\n• Countdown timers: \"set a 10 minute timer\" — notifies, plays a sound, and tells you in chat\n• Newbie Setup Tour: pick your experience level and Ember sets everything up in plain language\n• Smarter model handling: Auto model option and retry on every backup key before switching models\n• Fixes: workflow recorder no longer crashes on macOS, no more stray context prefix on messages, working key-less Edge neural read-aloud"
+  "notes": "Ember 1.2.1\n\n• Fix: opening Settings could crash the app (\"Ember quit unexpectedly\") — the Offline Mode toggle was wired to a missing handler. Settings now opens reliably.\n• Hardening: Ember now catches unexpected errors and logs them (ember-crash.log) instead of quitting, and any settings section that fails to load no longer takes the whole window down.\n\nIncludes everything from 1.2.0: works 100% offline, the free offline brain (Ollama) can drive your computer + analyse images, countdown timers, the newbie Setup Tour, and the workflow-recorder macOS crash fix."
 }
