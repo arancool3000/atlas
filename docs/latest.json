@@ -1,5 +1,5 @@
 {
-  "version": "1.2.5",
+  "version": "1.2.6",
   "pub_date": "2026-06-29",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.2.5\n\n• The first-run setup tour now covers everything: a new optional \"Connect Gmail\" step (so newcomers can hook up inbox organising + email right away with a Google App Password), and a closing \"what you can ask Ember to do\" summary — control your computer, organise Gmail, set timers, AI antivirus, work offline, and talk to it.\n\nIncludes 1.2.4's Gmail organising, 1.2.3's self-update fix + AI safe-open guard, and the 1.2.1/1.2.2 fixes."
+  "notes": "Ember 1.2.6\n\n• Fix: a couple of Settings toggles on the Performance tab (the quit-proof hotkey helper, and running a file in the sandbox) showed \"'SettingsDialog' object has no attribute '_set_status'\" instead of working. They now work. Added an automatic check so this class of Settings bug can't slip through again.\n\nIncludes the setup-tour Gmail step (1.2.5), Gmail organising (1.2.4), the self-update fix + AI safe-open guard (1.2.3), and earlier fixes."
 }
