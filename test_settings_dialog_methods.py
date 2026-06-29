@@ -1,0 +1,59 @@
+"""Static guard against a recurring bug: a SettingsDialog handler calling a method that only
+exists on EmberWindow (e.g. self._set_status / self._toggle_offline_mode), which blows up at
+runtime with "'SettingsDialog' object has no attribute ...". Parses ui.py with ast (no PyQt6
+needed) and asserts every self._private(...) call in SettingsDialog is defined on the class.
+Run: python test_settings_dialog_methods.py"""
+import ast
+import os
+
+_UI = os.path.join(os.path.dirname(__file__), "ui.py")
+
+
+def _class_node(tree, name):
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return node
+    raise AssertionError(f"class {name} not found in ui.py")
+
+
+def _defined_names(cls):
+    """Method names + self._attr = ... assignment targets defined on the class."""
+    names = set()
+    for node in ast.walk(cls):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if (isinstance(tgt, ast.Attribute) and isinstance(tgt.value, ast.Name)
+                        and tgt.value.id == "self"):
+                    names.add(tgt.attr)
+    return names
+
+
+def _self_private_calls(cls):
+    """Attr names X for every `self._X(...)` call inside the class."""
+    calls = set()
+    for node in ast.walk(cls):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"
+                and node.func.attr.startswith("_")):
+            calls.add(node.func.attr)
+    return calls
+
+
+def test_settings_dialog_calls_are_defined():
+    tree = ast.parse(open(_UI, encoding="utf-8").read())
+    cls = _class_node(tree, "SettingsDialog")
+    defined = _defined_names(cls)
+    called = _self_private_calls(cls)
+    missing = sorted(c for c in called if c not in defined)
+    assert not missing, (
+        "SettingsDialog calls self._<name>() that it doesn't define (these only live on "
+        f"EmberWindow and crash at runtime): {missing}. Define them on SettingsDialog or forward "
+        "to the parent window.")
+
+
+if __name__ == "__main__":
+    test_settings_dialog_calls_are_defined()
+    print("  ok  test_settings_dialog_calls_are_defined")
+    print("\n1/1 settings-dialog method tests passed")

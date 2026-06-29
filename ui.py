@@ -1194,6 +1194,17 @@ class SettingsDialog(QDialog):
         lbl.setWordWrap(True)
         return lbl
 
+    def _set_status(self, text: str) -> None:
+        """Forward a status message to the main window (best-effort). The settings dialog has no
+        status bar of its own, but several handlers (sandbox run, hotkey helper, etc.) report
+        progress via _set_status — without this, those calls raised AttributeError mid-toggle."""
+        try:
+            win = self.parent()
+            if win is not None and hasattr(win, "_set_status"):
+                win._set_status(text)
+        except Exception:
+            pass
+
     def _add_tab(self, page, title: str, scroll: bool = True):
         """Add a tab, optionally wrapped in a scroll area so tall content never clips
         off the bottom of the dialog."""
