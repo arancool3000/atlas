@@ -109,6 +109,13 @@ def _record(source: str, severity: str, detail: str, extra: dict | None = None) 
         if severity in ("suspicious", "malicious"):
             _threats += 1
     _maybe_notify(entry)
+    # Hard boundary: if the user armed auto-lockdown, a CRITICAL (malicious) finding triggers
+    # the panic response (stop AI + cut network + lock). No-op unless armed; never raises.
+    try:
+        import panic
+        panic.maybe_auto_panic(severity, str(entry.get("detail", "")), category=source)
+    except Exception:
+        pass
 
 
 def _maybe_notify(entry: dict) -> None:
