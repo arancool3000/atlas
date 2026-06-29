@@ -406,6 +406,10 @@ def load_settings() -> dict:
         "soundtools_api_key": "",
         "live_voice_enabled": False,  # use the Gemini Live API for real-time natural voice chat
         "live_voice_voice": "Zephyr", # Live API prebuilt voice name
+        "push_to_talk": False,        # hold a key to talk (zero-latency, no wake word)
+        "push_to_talk_key": "f9",     # the key you hold to talk
+        "stt_engine": "auto",         # speech-to-text: auto | whisper (local) | gemini | google
+        "whisper_model": "base",      # local Whisper model size when stt_engine uses Whisper
         "wake_word": True,            # always-on "hey ember" wake listening
         "wake_visual": "glow",        # "Hey Ember" shows: glow around Ember (default) | floating orb
         "glow_animation": True,       # Siri-style flowing glow while listening/thinking/speaking
@@ -648,6 +652,11 @@ class EventBridge(QObject):
     download_alert = pyqtSignal(object)  # a downloaded file was a threat / cautionary executable
     live_voice_event = pyqtSignal(str, str)  # (kind, text) from the Live API voice thread
     timer_fired = pyqtSignal(str)  # a countdown timer elapsed (message) — from the timer thread
+    ptt_press = pyqtSignal()       # push-to-talk key down (from the key-listener thread)
+    ptt_release = pyqtSignal()     # push-to-talk key up
+    ptt_text = pyqtSignal(str)     # final push-to-talk transcript (from the transcribe thread)
+    ptt_state = pyqtSignal(str)    # push-to-talk state change: recording/transcribing/idle
+    ptt_error = pyqtSignal(str)    # push-to-talk failure message
 
 
 # macOS virtual key codes -> pynput key-name tokens (so replay's _resolve_key matches). Only
@@ -1647,6 +1656,55 @@ class SettingsDialog(QDialog):
         note.setStyleSheet("color: #565f89; font-size: 11px;")
         note.setWordWrap(True)
         layout.addRow(note)
+
+        # --- Push-to-talk: hold a key to talk (zero-latency, no wake word) ---
+        ptt_head = QLabel("Push-to-talk")
+        ptt_head.setStyleSheet("font-weight: 700; margin-top: 8px;")
+        layout.addRow(ptt_head)
+
+        self.ptt_check = QCheckBox("Hold a key to talk (instant — no “Hey Ember” needed)")
+        self.ptt_check.setChecked(bool(self.settings.get("push_to_talk", False)))
+        layout.addRow(self.ptt_check)
+
+        self.ptt_key_input = QLineEdit(self.settings.get("push_to_talk_key", "f9"))
+        self.ptt_key_input.setPlaceholderText("e.g. f9, space, ` (a single key you hold)")
+        layout.addRow("Push-to-talk key:", self.ptt_key_input)
+
+        self.stt_engine_combo = QComboBox()
+        for val, label in (("auto", "Auto — local Whisper if installed, else cloud"),
+                           ("whisper", "Local Whisper only (offline, private)"),
+                           ("gemini", "Gemini (cloud — needs a key)"),
+                           ("google", "Google Web Speech (free, cloud)")):
+            self.stt_engine_combo.addItem(label, userData=val)
+        _cur_stt = str(self.settings.get("stt_engine", "auto")).strip().lower()
+        for i in range(self.stt_engine_combo.count()):
+            if self.stt_engine_combo.itemData(i) == _cur_stt:
+                self.stt_engine_combo.setCurrentIndex(i)
+                break
+        layout.addRow("Transcription engine:", self.stt_engine_combo)
+
+        self.whisper_model_combo = QComboBox()
+        for val, label in (("tiny", "tiny — fastest, lowest accuracy"),
+                           ("base", "base — fast (recommended)"),
+                           ("small", "small — slower, more accurate"),
+                           ("medium", "medium — slow, high accuracy")):
+            self.whisper_model_combo.addItem(label, userData=val)
+        _cur_wm = str(self.settings.get("whisper_model", "base")).strip().lower()
+        for i in range(self.whisper_model_combo.count()):
+            if self.whisper_model_combo.itemData(i) == _cur_wm:
+                self.whisper_model_combo.setCurrentIndex(i)
+                break
+        layout.addRow("Local Whisper model:", self.whisper_model_combo)
+
+        ptt_note = QLabel(
+            "Hold the key, speak, release — Ember transcribes and sends it instantly, with no "
+            "wake-word wait or false triggers. For private offline transcription install "
+            "faster-whisper (pip install faster-whisper); otherwise it uses your Gemini key or "
+            "free Google speech. macOS needs Accessibility + Microphone permission."
+        )
+        ptt_note.setStyleSheet("color: #565f89; font-size: 11px;")
+        ptt_note.setWordWrap(True)
+        layout.addRow(ptt_note)
 
         self._add_tab(page, "Voice")
 
@@ -2885,6 +2943,11 @@ class SettingsDialog(QDialog):
         self.settings["voice_chat_continue_after_silence"] = self.voice_continue_check.isChecked()
         if hasattr(self, "voice_phrase_combo"):
             self.settings["voice_chat_phrase_timeout"] = self.voice_phrase_combo.currentData() or "auto"
+        if hasattr(self, "ptt_check"):
+            self.settings["push_to_talk"] = self.ptt_check.isChecked()
+            self.settings["push_to_talk_key"] = (self.ptt_key_input.text().strip().lower() or "f9")
+            self.settings["stt_engine"] = self.stt_engine_combo.currentData() or "auto"
+            self.settings["whisper_model"] = self.whisper_model_combo.currentData() or "base"
         self.settings["hotkey"] = self.hotkey_input.text().strip() or "ctrl+shift+space"
         # If the quit-proof hotkey helper is installed, refresh it with the (possibly new) combo.
         try:
@@ -3986,6 +4049,20 @@ class EmberWindow(QWidget):
         self._bridge.download_alert.connect(self._on_download_alert)
         self._bridge.live_voice_event.connect(self._on_live_voice_event)
         self._bridge.timer_fired.connect(self._on_timer_fired_ui)
+        # Push-to-talk: key events + transcript marshalled from background threads to the UI.
+        self._bridge.ptt_press.connect(self._on_ptt_press)
+        self._bridge.ptt_release.connect(self._on_ptt_release)
+        self._bridge.ptt_text.connect(self._on_ptt_text)
+        self._bridge.ptt_state.connect(self._on_ptt_state)
+        self._bridge.ptt_error.connect(self._on_ptt_error)
+        self._ptt = None                 # PushToTalk coordinator (built on first install)
+        self._ptt_recorder = None        # active voice.HoldRecorder during a press
+        self._ptt_listener = None        # pynput key listener (non-macOS)
+        self._ns_ptt_global = None       # macOS NSEvent monitors (key down/up)
+        self._ns_ptt_local = None
+        self._ns_ptt_up_global = None
+        self._ns_ptt_up_local = None
+        self._ptt_status = "off"
         self._pending_update: dict | None = None
         # macOS never auto-prompts for Accessibility — explicitly request it shortly after launch.
         if not _SAFE_MODE:
@@ -4003,6 +4080,7 @@ class EmberWindow(QWidget):
         self._restore_position()
         if not _SAFE_MODE:
             self._install_hotkey()
+            self._install_ptt()
         # macOS: record workflows via main-thread NSEvent monitors, NOT pynput (whose background
         # event tap SIGTRAP-crashes the app). Register a capture backend the recorder will use.
         self._mac_input_recorder = None
@@ -4267,6 +4345,216 @@ class EmberWindow(QWidget):
         self.raise_()
         self.activateWindow()
         self.input_box.setFocus()
+
+    # --- Push-to-talk (hold a key to talk; zero-latency, no wake word) -------------------
+    def _ensure_ptt(self):
+        """Build the PushToTalk coordinator once, wiring its side effects to a HoldRecorder,
+        the STT engine, and the chat-submit path (delivered to the UI thread via signals)."""
+        if self._ptt is not None:
+            return self._ptt
+        import push_to_talk
+        self._ptt = push_to_talk.PushToTalk(
+            start_record=self._ptt_start_record,
+            stop_record=self._ptt_stop_record,
+            transcribe=self._ptt_transcribe,
+            on_text=lambda t: self._bridge.ptt_text.emit(t),
+            on_state=lambda s: self._bridge.ptt_state.emit(s),
+            on_error=lambda e: self._bridge.ptt_error.emit(e),
+        )
+        return self._ptt
+
+    def _ptt_start_record(self):
+        import voice
+        # Take the mic from the wake-word loop for the duration of the hold.
+        try:
+            import wake_word
+            wake_word.pause()
+        except Exception:
+            pass
+        rec = voice.HoldRecorder(sample_rate=16000)
+        if not rec.start():
+            raise RuntimeError(rec.error or "microphone unavailable")
+        self._ptt_recorder = rec
+
+    def _ptt_stop_record(self):
+        rec = self._ptt_recorder
+        self._ptt_recorder = None
+        return rec.stop() if rec is not None else None
+
+    def _ptt_transcribe(self, wav_path):
+        import stt
+        key = (self.settings.get("gemini_api_key") or self.settings.get("gemini_api_key_secondary")
+               or self.settings.get("gemini_api_key_3") or self.settings.get("gemini_api_key_4") or "")
+        offline = False
+        try:
+            import offline as _off
+            offline = _off.is_offline()
+        except Exception:
+            pass
+        res = stt.transcribe_audio(
+            wav_path, prefer=self.settings.get("stt_engine", "auto"),
+            gemini_key=key, offline=offline,
+            whisper_model=self.settings.get("whisper_model", "base"))
+        if not res.get("ok") and res.get("error"):
+            self._bridge.ptt_error.emit(res["error"])
+        return res.get("text", "")
+
+    def _on_ptt_press(self):
+        try:
+            self._ensure_ptt().press()
+        except Exception as e:
+            self._set_status(f"Push-to-talk: {e}")
+
+    def _on_ptt_release(self):
+        if self._ptt is not None:
+            self._ptt.release()
+
+    def _on_ptt_text(self, text: str):
+        text = (text or "").strip()
+        if text:
+            self._submit_user_text(text, meta="🎙️ push-to-talk")
+
+    def _on_ptt_state(self, state: str):
+        import push_to_talk as pt
+        if state == pt.RECORDING:
+            self._set_siri("listening")
+            self._set_status("Push-to-talk: listening…")
+        elif state == pt.TRANSCRIBING:
+            self._set_siri("thinking")
+            self._set_status("Push-to-talk: transcribing…")
+        else:  # idle
+            # Only dim the glow / hand the mic back if no other voice mode owns it.
+            if not self._voice_chat_enabled and not self._listening:
+                self._set_siri(None)
+                try:
+                    import wake_word
+                    wake_word.resume()
+                except Exception:
+                    pass
+
+    def _on_ptt_error(self, msg: str):
+        self._set_status(f"Push-to-talk: {msg}")
+
+    def _install_ptt(self):
+        """Register the push-to-talk key listener (key down → record, key up → transcribe).
+        No-op (and uninstalls) when push-to-talk is disabled. macOS uses NSEvent monitors;
+        elsewhere pynput. Stores a status string for the UI."""
+        self._uninstall_ptt()
+        if not bool(self.settings.get("push_to_talk", False)):
+            self._ptt_status = "off"
+            return
+        key = (self.settings.get("push_to_talk_key") or "f9").lower().strip()
+        if sys.platform == "darwin":
+            if not self._install_ptt_mac(key):
+                self._ptt_status = "off (grant Accessibility to enable push-to-talk)"
+            return
+        try:
+            from pynput import keyboard as pk
+            import push_to_talk
+            target = push_to_talk.pynput_key(key)
+            if target is None:
+                self._ptt_status = f"off (unknown key '{key}')"
+                return
+
+            def _matches(k):
+                try:
+                    if isinstance(target, pk.Key):
+                        return k == target
+                    kc = getattr(k, "char", None)
+                    return kc is not None and kc == getattr(target, "char", None)
+                except Exception:
+                    return False
+
+            def _on_press(k):
+                if _matches(k):
+                    self._bridge.ptt_press.emit()
+
+            def _on_release(k):
+                if _matches(k):
+                    self._bridge.ptt_release.emit()
+
+            self._ptt_listener = pk.Listener(on_press=_on_press, on_release=_on_release)
+            self._ptt_listener.start()
+            self._ptt_status = f"on ({key})"
+        except Exception as e:
+            self._ptt_status = f"off ({e})"
+
+    def _install_ptt_mac(self, key: str) -> bool:
+        """macOS push-to-talk via NSEvent key-down + key-up monitors (pynput's background tap
+        crashes on macOS). Matches a single key by virtual key code."""
+        try:
+            from AppKit import NSEvent
+            import mac_permissions
+            if not mac_permissions.request_accessibility(prompt=False):
+                return False
+        except Exception:
+            pass
+        try:
+            from AppKit import NSEvent
+            import push_to_talk
+        except Exception as e:
+            print(f"[ptt] AppKit/push_to_talk unavailable: {e}")
+            return False
+        keycode = push_to_talk.mac_keycode(key)
+        if keycode is None:
+            self._ptt_status = f"off (unsupported macOS key '{key}')"
+            return False
+        self._ptt_held = False  # NSEvent KeyDown auto-repeats while held; emit press only once
+
+        def _on_down(ev):
+            try:
+                if ev.keyCode() == keycode and not self._ptt_held:
+                    self._ptt_held = True
+                    self._bridge.ptt_press.emit()
+            except Exception:
+                pass
+
+        def _on_up(ev):
+            try:
+                if ev.keyCode() == keycode and self._ptt_held:
+                    self._ptt_held = False
+                    self._bridge.ptt_release.emit()
+            except Exception:
+                pass
+
+        def _on_down_local(ev):
+            _on_down(ev)
+            return ev
+
+        def _on_up_local(ev):
+            _on_up(ev)
+            return ev
+
+        KEYDOWN, KEYUP = 1 << 10, 1 << 11
+        try:
+            self._ns_ptt_global = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(KEYDOWN, _on_down)
+            self._ns_ptt_local = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(KEYDOWN, _on_down_local)
+            self._ns_ptt_up_global = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(KEYUP, _on_up)
+            self._ns_ptt_up_local = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(KEYUP, _on_up_local)
+        except Exception as e:
+            print(f"[ptt] NSEvent monitor failed: {e}")
+            return False
+        self._ptt_status = f"on ({key})"
+        return True
+
+    def _uninstall_ptt(self):
+        listener = getattr(self, "_ptt_listener", None)
+        if listener is not None:
+            try:
+                listener.stop()
+            except Exception:
+                pass
+            self._ptt_listener = None
+        for attr in ("_ns_ptt_global", "_ns_ptt_local", "_ns_ptt_up_global", "_ns_ptt_up_local"):
+            m = getattr(self, attr, None)
+            if m is not None:
+                try:
+                    from AppKit import NSEvent
+                    NSEvent.removeMonitor_(m)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self._ptt_status = "off"
 
     def _keep_overlay_on_top(self):
         # The main window is a stay-on-top overlay we periodically re-raise so it stays above
@@ -7254,6 +7542,7 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
         glass_keys = ("liquid_glass", "glass_opacity", "accent_color")
         old_agent = {k: self.settings.get(k) for k in agent_keys}
         old_glass = {k: self.settings.get(k) for k in glass_keys}
+        old_ptt = {k: self.settings.get(k) for k in ("push_to_talk", "push_to_talk_key")}
         try:
             dlg = SettingsDialog(self.settings, self, automation_engine=self._automation)
         except Exception as e:
@@ -7285,6 +7574,14 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             if new_hotkey != old_hotkey:
                 self._install_hotkey()
                 self._add_bubble("system", f"Hotkey changed to **{new_hotkey}**. Status: {self._hotkey_status}")
+            # Re-arm push-to-talk if its enable/key changed.
+            if (self.settings.get("push_to_talk") != old_ptt.get("push_to_talk")
+                    or self.settings.get("push_to_talk_key") != old_ptt.get("push_to_talk_key")):
+                self._install_ptt()
+                if self.settings.get("push_to_talk"):
+                    self._add_bubble("system",
+                        f"Push-to-talk: hold **{self.settings.get('push_to_talk_key', 'f9')}** to "
+                        f"talk. Status: {self._ptt_status}")
             # Refresh the welcome line so the message matches the active combo
             QTimer.singleShot(50, self._refresh_welcome_line)
 

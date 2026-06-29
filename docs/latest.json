@@ -1,5 +1,5 @@
 {
-  "version": "1.6.0",
+  "version": "1.7.0",
   "pub_date": "2026-06-29",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.6.0 — smarter local AI, chat-title picker & phone quick-actions\n\n• Local Ollama fixes: no more 'multimodal not supported' crash on text-only models (Ember now detects vision support, and feeds on-screen OCR text instead of an image), and tool calls a local model writes as plain text — even under invented names like 'screenshot' — now actually run instead of leaking raw JSON into the chat.\n• Chat-title model picker (Settings → Models): name your chats with a tiny local Ollama model (fully offline, free) or a small free Gemma (1B/4B/12B/27B) — your call, via a dropdown.\n• More models in the selector: Gemma 3 1B/4B/12B added alongside the latest Gemini & Claude.\n• Phone remote quick-actions: one-tap Lock PC, Mute, Mic Off, Sleep Screen, plus a custom command box — right in Ember Link.\n\nAlso includes the Norton-style Security Dashboard + Software Updater (one 0-100 score across every protection, with prioritised fixes)."
+  "notes": "Ember 1.7.0 — Push-to-talk voice (zero-latency, offline Whisper)\n\n• Push-to-talk: hold a key, talk, release — Ember transcribes and sends it instantly. No 'Hey Ember' wake-word wait and no false triggers. Set it up in Settings → Voice (default key F9, off until you enable it).\n• Local, private transcription with Whisper when installed (pip install faster-whisper) — fully offline; otherwise it uses your Gemini key or free Google speech. Pick the engine + Whisper model size in Settings.\n\nBuilds on 1.6.0 (smarter local Ollama, chat-title model picker, phone quick-actions) and the Norton-style Security Dashboard."
 }
