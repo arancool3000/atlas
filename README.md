@@ -1,32 +1,66 @@
 # Ember — autonomous AI agent for your computer
 
 Ember sees your screen, drives the mouse/keyboard, controls a real browser, runs shell
-commands, manages files, and can be controlled from your phone. macOS + Windows.
+commands, manages files, organises your Gmail, talks with you hands-free, and can be controlled
+from your phone — online or **fully offline**. macOS + Windows.
 Free, MIT-licensed, and private — your API key stays on your machine; there are no Ember servers.
 
 ## ✨ What's inside
 
-- **Autonomous agent** — 170+ tools: move the mouse/keyboard, read the screen with Vision OCR,
+### 🤖 The agent
+- **Autonomous agent** — 290+ tools: move the mouse/keyboard, read the screen with Vision OCR,
   drive a real browser via the DOM, run shell, manage files, and chain multi-step tasks.
-  **Human-like mouse movement** (curved, eased paths — not robotic teleports).
+  **Human-like mouse movement** with an **adjustable pointer speed** (curved, eased paths).
 - **Run modes & agents** — pick how Ember works: **auto** (autonomous), **plan** (proposes a
   plan and waits), **chat** (talk only), or **read-only**. Define **named agents** (a goal +
-  run mode + tool scope + optional schedule, à la Base44 Superagents), run them on demand or
-  **on a schedule** (a background scheduler fires due agents); Ember can also **spawn scoped
-  sub-agents** for sub-tasks (like Claude's Task tool).
-- **Notifications** — connect **Slack, Telegram, Discord, or a webhook** (just a URL/token)
-  so agents (and security alerts) can push you updates; `notify` sends to every channel.
-- **Ember Browser** — a secure, AI-first browser: tracker/ad blocking, an AI-answer search page,
-  summarize/ask about any page, AI-content check, reader mode, per-site dark mode, bookmarks,
-  history, downloads. Works with Gemini or Claude.
-- **Security suite** — always-on antivirus (file scanning **+ real-time fileless /
-  behavioral process protection**) + a real run-in-sandbox, malicious-site blocking,
-  secret redaction, a tamper-evident audit log, read-only / capability modes, and bring-your-own VPN.
-- **AI everywhere** — Gemini *or* Claude; an optional **local model via Ollama** (offline, no API
-  key, no rate limit); image generation, vision Q&A, audio transcription, and AI text/image detection.
+  run mode + tool scope + optional schedule), run them on demand or **on a schedule**; Ember can
+  also **spawn scoped sub-agents** for sub-tasks.
+- **Any model** — **Gemini** *or* **Claude**, an **Auto** option that picks the best available,
+  and automatic **key failover** (rotates through backup keys, then falls back across models).
+- **Setup tour** — a friendly first-run wizard: pick your experience level, install the free
+  offline AI in one click or paste a free key, optionally connect Gmail, and see what Ember can do.
+- **Learns about you** — long-term memory of facts/preferences so it gets more useful over time.
+
+### 🆕 Productivity
+- **Organise your Gmail** — search (Gmail's own query syntax), label/file, archive, star, mark
+  read/unread, create labels, and trash (recoverable) — *"clean up my inbox."* Also sends email.
+  One Google **App Password** powers both.
+- **Timers & reminders** — *"set a 10-minute timer"* → desktop notification + sound + a chat note.
+- **Voice** — hands-free **"Hey Ember"** wake word, voice chat (listen → act → speak) with an
+  **automatic turn length** (stops when you pause), **natural voice** via the Gemini **Live API**
+  (real-time, the AI handles turn-taking), and free **Edge neural** read-aloud (no key).
+- **Macros, scheduling & workflows** — save/replay task macros, schedule actions for later, and
+  **record & replay** real mouse/keyboard workflows.
 - **Phone Link** — control your computer from your phone's browser on the same Wi-Fi.
-- **Voice, macros & scheduling** — hands-free voice chat, saved task macros, scheduled automations.
+- **Quit-proof global hotkey** — summon Ember from anywhere, even when it's fully closed.
+
+### 🌐 Browser & web
+- **Ember Browser** — a secure, AI-first browser: tracker/ad blocking, an AI-answer search page,
+  summarize/ask about any page, **AI extension maker**, AI-content check, reader mode, per-site
+  dark mode, saved passwords, bookmarks, history, downloads.
+- **System-wide ad blocker** — its own menu; blocks ads/trackers across the whole machine (hosts).
 - **Chrome extension** — summarize / ask / AI-check any page from your browser.
+
+### 🔌 Offline & local
+- **Offline Mode** — run with **no internet**: a local brain (Ollama) plus every local tool
+  (files, shell, screen, system info). Cloud-only tools fail fast with a clear notice.
+- **Local AI that drives the computer** — the free offline model (Ollama) can now run terminal
+  commands, read/write files, see the screen (screenshot + OCR), move the mouse/type, and
+  **analyse images** with a local vision model — not just chat. No API key, no rate limits.
+
+### 🛡️ Security
+- **Always-on antivirus** — file scanning **+ real-time fileless/behavioral process protection**,
+  a unified Security Center that continuously scans processes/files/network/persistence, a real
+  run-in-sandbox, **AI safe-open** (holds unconfirmed risky files and AI-scans them until you
+  confirm), quarantine, malicious-site blocking, secret redaction, tamper-evident audit log,
+  read-only/capability modes, and bring-your-own VPN. (Full detail below.)
+
+### 🔔 Other
+- **Notifications** — connect **Slack, Telegram, Discord, or a webhook** so agents and security
+  alerts can push you updates; `notify` sends to every channel.
+- **Image gen, vision Q&A, audio transcription, and AI text/image detection.**
+- **Self-update** — built-in updater pulls new releases (verified download) and relaunches.
+- **Encrypted key vault, custom AI-authored tools, and a plugin system.**
 
 ---
 
@@ -131,24 +165,26 @@ versions before Sequoia, right-click → **Open** also works). On **Windows** ch
 
 ---
 
-## ✨ New in this build
+## ✨ Recent additions
 
-- **Faster startup:** the desktop UI opens first while the AI engine warms in the background, and the
-  macOS app bundle avoids slow one-file extraction on launch.
-- **Codex-style workspace:** sidebar chat history, New Chat, longer message rendering, and recent
-  conversation context sent automatically so follow-ups make sense.
-- **Hands-free voice chat:** a continuous listen → act → speak loop, with a Voice settings tab for
-  spoken replies, auto-send, silence retry, and voice turn length.
-- **Command Center UI:** a wider desktop layout with one-click actions for Autopilot, app control,
-  research, creation, screen reading, browser work, files, diagnostics, automations, phone link, and manual mode.
-- **Cleaner chat input:** optional local autocorrect for ordinary prompts, without touching URLs,
-  commands, paths, or code blocks.
-- **Smarter web use:** Ember prefers DOM browser controls, re-checks pages after navigation, handles
-  cookie banners, and pauses for the user on CAPTCHA/2FA instead of pretending to bypass them.
-- **Better file finding:** `search_files` checks overlooked places such as Desktop, Downloads,
-  iCloud Drive, shared folders, and Trash when a file looks missing.
-- **Messier demo:** the Demo chip can create a deliberately cluttered folder for testing organize,
-  dedupe, and cleanup workflows.
+- **Organise your Gmail** — search, label, archive, star, mark read/unread, create labels, and
+  trash email on request. Set it up in Settings → Models → Gmail (address + a Google App Password).
+- **Timers** — *"set a 10-minute timer"*; fires a notification + sound + a chat message.
+- **Offline Mode + a local brain that controls the computer** — Ollama can now run shell, manage
+  files, see the screen (OCR), drive mouse/keyboard, and analyse images — fully offline.
+- **First-run setup tour** — experience level → install the free offline AI or paste a key →
+  optionally connect Gmail → a quick "what you can do" summary.
+- **Automatic voice turn length** — Voice Chat ends a turn when you naturally pause (no fixed cap),
+  plus **natural voice** (Gemini Live API) where the AI handles turn-taking.
+- **AI safe-open antivirus** — unconfirmed executables/scripts (or anything flagged) are AI-scanned
+  and **held until you confirm** they're safe; confirmed files are remembered.
+- **Smarter network scan** — finds connections on macOS via `lsof` (no root needed) and reports a
+  useful breakdown (active vs listening, top remote hosts) instead of an empty result.
+- **Self-update that works** — the updater bundles CA roots so it reliably finds new releases, and
+  reports a real error instead of silently saying "up to date."
+- **Conversational "Hey Ember"** — say it once, then keep talking; just a glow, no window pop-up.
+- **Auto model selection + key failover, free Edge neural TTS, adjustable mouse speed, custom icon
+  set, audio-reactive glow/orb, and a quit-proof global hotkey.**
 
 ---
 
@@ -213,6 +249,11 @@ by default.
   (**Windows Defender** / **ClamAV** if installed), and **VirusTotal** (hash
   lookup, plus uploading unknown files when a key is set). Suspicious or malicious
   files are **not opened until the scan finishes**.
+- **AI safe-open** — anything **unconfirmed and risky** (an executable/script, anything the
+  scanner flags, or a file it couldn't scan) gets an **AI second-opinion** and is **held until
+  you confirm** it's safe to open. Confirmed files are remembered by content hash and open
+  normally afterward; definitive malware is still hard-blocked + quarantined. Toggle in
+  **Settings → Security**.
 - **Quarantine + auto-delete** — confirmed-malicious files are moved to a locked,
   non-executable vault and automatically deleted after 7 days. Nothing is deleted
   on a mere hunch — only a definitive detection quarantines a file, so a false
@@ -341,5 +382,32 @@ tunnel up — and it never claims to be connected when it isn't.
 | `creative.py` | image generation, vision Q&A, audio transcription (Gemini) |
 | `security_extras.py` | aggregate security checkup + score |
 | `extension/` | Ember Chrome extension (summarize / ask / AI-check, uses your Gemini key) |
-| `voice.py` | speech input + text-to-speech for Voice Chat |
+| `voice.py` | speech input + text-to-speech for Voice Chat (Edge neural / system / Gemini) |
+| `audio_level.py` | live mic level + silence-detected (auto) voice turns for the glow/orb |
+| `live_voice.py` | natural real-time voice via the Gemini Live API (AI turn-taking) |
+| `wake_word.py` | always-on "Hey Ember" wake-word listener |
+| `gmail_tools.py` | organise Gmail over IMAP — search/label/archive/star/trash + read |
+| `timers.py` | countdown timers (notification + sound + chat alert) |
+| `offline.py` | Offline Mode — gate network tools, run fully local |
+| `ollama_agent.py` | local Ollama brain that drives the computer (tools + vision), offline |
+| `ollama_tools.py` | curated offline toolset the local model can call |
+| `setup_tour.py` | first-run newcomer tour (level, brain install, Gmail, capabilities) |
+| `network_adblock.py` | system-wide ad/tracker blocker (hosts file) with its own menu |
+| `browser_extensions.py` | AI-built Ember Browser extensions |
+| `browser_passwords.py` | saved logins for Ember Browser |
+| `workflow_recorder.py` | record & replay real mouse/keyboard workflows |
+| `hotkey_daemon.py` / `ember_hotkey_listener.py` | quit-proof global summon hotkey helper |
+| `icons.py` | original built-in icon set (replaces emoji) |
+| `siri_glow.py` | audio-reactive Siri-style glow + floating orb |
+| `productivity_tools.py` | screen recorder, text snippets/expander |
+| `key_vault.py` | encrypted local vault for API keys |
+| `usage.py` | per-model call/token usage vs free-tier limits |
+| `custom_tools.py` | AI-authored custom tools (recipes) |
+| `plugin_system.py` | drop-in user plugins (`plugins/*.py`) |
+| `models.py` | model catalog, Auto selection, rate-limit info |
+| `memory.py` | long-term facts/preferences ("learns about you") |
+| `safety.py` | risk classification + confirmation for every tool |
+| `claude_agent.py` / `claude_bridge.py` | Claude backend + Gemini↔Claude handoff |
+| `scheduled_tasks.py` | schedule shell commands for later (launchd / Task Scheduler) |
+| `updater.py` / `version.py` | in-app self-update + version/release config |
 | `make_logo.py` | regenerate the app icon |
