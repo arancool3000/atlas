@@ -3622,13 +3622,41 @@ class SetupTourDialog(QDialog):
         l1.addStretch(1)
         self._stack.addWidget(p1)
 
-        # ---- Page 2: finish ----
+        # ---- Page 2: connect Gmail (optional) ----
+        pg = QWidget(); lg = QVBoxLayout(pg)
+        tg = QLabel("📧  Organise your email"); tg.setObjectName("title")
+        lg.addWidget(tg)
+        lg.addWidget(self._wrap(setup_tour.gmail_setup_hint()))
+        self._gmail_addr = QLineEdit(self._settings.get("gmail_address")
+                                     or self._settings.get("email_smtp_user", ""))
+        self._gmail_addr.setPlaceholderText("you@gmail.com")
+        lg.addWidget(self._gmail_addr)
+        self._gmail_pw = QLineEdit(self._settings.get("gmail_app_password")
+                                   or self._settings.get("email_smtp_password", ""))
+        self._gmail_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self._gmail_pw.setPlaceholderText("16-character Google App Password")
+        lg.addWidget(self._gmail_pw)
+        gkey = QLabel(f'<a href="{setup_tour.APP_PASSWORD_URL}" style="color:#7aa2f7;">'
+                      'Create an App Password →</a>  (needs 2-Step Verification)')
+        gkey.setOpenExternalLinks(True)
+        gkey.setStyleSheet("font-size:11px; margin-left:2px;")
+        lg.addWidget(gkey)
+        lg.addStretch(1)
+        self._stack.addWidget(pg)
+
+        # ---- Page 3: finish + what Ember can do ----
         p2 = QWidget(); l2 = QVBoxLayout(p2)
         t2 = QLabel("You're all set"); t2.setObjectName("title")
         l2.addWidget(t2)
         self._finish_note = QLabel("")
         self._finish_note.setWordWrap(True)
         l2.addWidget(self._finish_note)
+        cando = QLabel("<b>Here's what you can ask Ember to do:</b><br>"
+                       + "<br>".join(setup_tour.feature_highlights()))
+        cando.setWordWrap(True)
+        cando.setTextFormat(Qt.TextFormat.RichText)
+        cando.setStyleSheet("color:#c3c9db; font-size:12px; margin-top:6px;")
+        l2.addWidget(cando)
         l2.addStretch(1)
         self._stack.addWidget(p2)
 
@@ -3727,6 +3755,9 @@ class SetupTourDialog(QDialog):
             updates["model_id"] = "auto"
             updates["gemini_model"] = "auto"
             updates["provider"] = "gemini"
+        # Optional Gmail connect — one App Password powers organising + sending.
+        updates.update(self._st.gmail_settings_from(self._gmail_addr.text(),
+                                                    self._gmail_pw.text()))
         try:
             self._on_finish(updates)
         except Exception:

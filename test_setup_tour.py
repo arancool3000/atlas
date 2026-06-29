@@ -34,6 +34,34 @@ def test_recommended_model_and_settings():
     assert e["setup_complete"] is True and "lean_tools" not in e   # experts keep their own defaults
 
 
+def test_feature_highlights_cover_new_capabilities():
+    hl = st.feature_highlights()
+    assert isinstance(hl, list) and len(hl) >= 5
+    blob = " ".join(hl).lower()
+    for keyword in ("gmail", "timer", "antivirus", "offline", "computer"):
+        assert keyword in blob, keyword
+
+
+def test_gmail_settings_from():
+    cfg = st.gmail_settings_from("me@gmail.com", "app pass word")
+    assert cfg["gmail_address"] == "me@gmail.com"
+    assert cfg["email_smtp_user"] == "me@gmail.com"          # mirrored for send_email
+    assert cfg["email_smtp_password"] == "app pass word"
+    assert cfg["email_smtp_host"] == "smtp.gmail.com"
+    assert cfg["gmail_imap_host"] == "imap.gmail.com"
+    # blank inputs -> no settings (skipped in the tour)
+    assert st.gmail_settings_from("", "") == {}
+    assert st.gmail_settings_from("me@gmail.com", "") == {}
+    # non-gmail address: still stores creds but doesn't force gmail hosts
+    other = st.gmail_settings_from("me@work.com", "pw")
+    assert other["gmail_address"] == "me@work.com" and "email_smtp_host" not in other
+
+
+def test_gmail_hint_and_url():
+    assert st.APP_PASSWORD_URL.startswith("https://")
+    assert "App Password" in st.gmail_setup_hint()
+
+
 def test_should_show_logic():
     assert st.should_show({}) is True                                  # fresh, nothing set
     assert st.should_show({"setup_complete": True}) is False           # already toured
