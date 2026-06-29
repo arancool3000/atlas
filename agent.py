@@ -46,6 +46,7 @@ import scheduled_tasks
 import timers
 import gmail_tools
 import bulk_tools
+import security_suite
 # --- roadmap backlog feature modules ---
 import usage as usage_tracker           # imported aliased: _send_streaming has a local var named `usage`
 import key_vault
@@ -2146,7 +2147,7 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
 for _feat in (key_vault, usage_tracker, download_guard, fileless_guard, security_center,
               agent_profiles, agent_scheduler, integrations,
               workflow_recorder, productivity_tools, plugin_system, custom_tools,
-              network_adblock, timers, gmail_tools, bulk_tools):
+              network_adblock, timers, gmail_tools, bulk_tools, security_suite):
     for _decl in _feat.TOOL_DECLARATIONS:
         if _decl["name"] not in TOOL_DISPATCH:
             TOOL_DECLARATIONS.append(_decl)
@@ -2195,6 +2196,7 @@ PARALLEL_SAFE_TOOLS = frozenset({
     "list_scheduled_tasks", "list_timers",
     "gmail_status", "gmail_list_labels", "gmail_search", "gmail_read",
     "folder_report", "bulk_read_documents",
+    "security_dashboard", "software_update_check",
     # roadmap backlog read-only tools
     "vault_status", "vault_get_key", "vault_list_keys", "usage_summary",
     "download_guard_status", "download_guard_events", "list_workflows",

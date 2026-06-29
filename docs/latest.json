@@ -1,5 +1,5 @@
 {
-  "version": "1.4.0",
+  "version": "1.5.0",
   "pub_date": "2026-06-29",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.4.0\n\n• Emergency lockdown (\"panic button\") — a hard local safety boundary cloud agents can't match. One click in Settings → Security instantly stops Ember's AI, cuts the network (Wi-Fi), and locks the screen; 'Restore network' brings you back. Optionally ARM auto-lockdown so a confirmed-malicious threat triggers it automatically (off by default). 'Restore network' re-enables Wi-Fi.\n\nIncludes bulk productivity (1.3.0) and the cohesive UI accent (1.2.9)."
+  "notes": "Ember 1.5.0 — Norton-style security suite\n\n• Security Dashboard (Settings → Security): one 0-100 score across every protection — real-time antivirus, fileless/behavioral, smart-firewall network monitoring, Safe Web, software updates, password vault, VPN, AI safe-open and auto-lockdown — with a letter grade and prioritised fixes.\n• Software Updater: lists outdated apps + pending OS updates (read-only; never installs).\n• Dark-web monitoring surfaced in the dashboard (breach check for your email).\n\nWith Ember's existing antivirus, smart-firewall scan, VPN, password vault, breach checks, cleanup and the emergency lockdown (1.4.0), this covers the bulk of Norton 360's consumer features — locally and privately."
 }

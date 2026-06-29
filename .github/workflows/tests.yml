@@ -64,7 +64,8 @@ jobs:
             test_gmail_tools.py \
             test_settings_dialog_methods.py \
             test_bulk_tools.py \
-            test_panic.py; do
+            test_panic.py \
+            test_security_dashboard.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"
