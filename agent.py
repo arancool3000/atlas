@@ -45,6 +45,7 @@ import remote_server
 import scheduled_tasks
 import timers
 import gmail_tools
+import bulk_tools
 # --- roadmap backlog feature modules ---
 import usage as usage_tracker           # imported aliased: _send_streaming has a local var named `usage`
 import key_vault
@@ -240,6 +241,13 @@ gmail_archive (clear from inbox, reversible), gmail_mark_read, gmail_star, or gm
 you did. ALWAYS confirm before trashing/deleting or before any bulk action affecting many
 messages. If gmail_status says it's not configured, tell the user to add their Gmail address +
 a Google App Password in Settings.
+
+# Bulk productivity (folders of files / many documents)
+For "clean up / organise / sort this folder" or "read/summarise these documents", use the bulk
+tools: folder_report first (triage), bulk_read_documents to read across many PDFs/Word/Excel/
+text at once, then organize_folder (by type or date) or bulk_rename. organize_folder and
+bulk_rename DEFAULT to a dry run (apply=false) — ALWAYS preview the plan, show the user what
+will move/rename, and only call again with apply=true after they approve.
 
 # Diagnosing computer issues (macOS)
 Gather evidence before concluding: get_system_info + get_performance (CPU/RAM/disk pressure),
@@ -2138,7 +2146,7 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
 for _feat in (key_vault, usage_tracker, download_guard, fileless_guard, security_center,
               agent_profiles, agent_scheduler, integrations,
               workflow_recorder, productivity_tools, plugin_system, custom_tools,
-              network_adblock, timers, gmail_tools):
+              network_adblock, timers, gmail_tools, bulk_tools):
     for _decl in _feat.TOOL_DECLARATIONS:
         if _decl["name"] not in TOOL_DISPATCH:
             TOOL_DECLARATIONS.append(_decl)
@@ -2186,6 +2194,7 @@ PARALLEL_SAFE_TOOLS = frozenset({
     "git_status", "git_log", "git_diff", "speed_test", "calculate_text_stats",
     "list_scheduled_tasks", "list_timers",
     "gmail_status", "gmail_list_labels", "gmail_search", "gmail_read",
+    "folder_report", "bulk_read_documents",
     # roadmap backlog read-only tools
     "vault_status", "vault_get_key", "vault_list_keys", "usage_summary",
     "download_guard_status", "download_guard_events", "list_workflows",
