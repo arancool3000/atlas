@@ -420,6 +420,7 @@ def load_settings() -> dict:
         "auto_update": True,
         "lean_tools": True,
         "offline_mode": False,        # no internet: local brain + local tools, network tools fail fast
+        "auto_lockdown_on_critical": False,  # panic: auto stop-AI + cut-network + lock on a critical threat
         "hotkey": "ctrl+shift+space",
         "hotkey_daemon": False,       # always-on login helper so the hotkey works even when quit
         "mouse_humanize": True,       # curved/eased human-like pointer movement
@@ -2026,6 +2027,27 @@ class SettingsDialog(QDialog):
         rt_row.addStretch()
         v.addLayout(rt_row)
 
+        # --- Emergency lockdown ("panic button") ---
+        _section("Emergency lockdown — a hard local safety boundary")
+        self._sec_auto_lockdown = QCheckBox(
+            "Auto-lockdown on a CRITICAL threat (instantly stop AI, cut network, lock screen)")
+        self._sec_auto_lockdown.setChecked(bool(self.settings.get("auto_lockdown_on_critical", False)))
+        self._sec_auto_lockdown.setToolTip(
+            "If Ember detects a confirmed-malicious event, it immediately stops its own AI, turns "
+            "off Wi-Fi, and locks the screen — containing a compromise in seconds. Off by default.")
+        self._sec_auto_lockdown.stateChanged.connect(self._toggle_auto_lockdown)
+        v.addWidget(self._sec_auto_lockdown)
+        panic_row = QHBoxLayout()
+        panic_btn = QPushButton("🚨  Lock down now")
+        panic_btn.setObjectName("deny")
+        panic_btn.clicked.connect(self._panic_now)
+        panic_row.addWidget(panic_btn)
+        restore_btn = QPushButton("Restore network")
+        restore_btn.clicked.connect(self._panic_restore)
+        panic_row.addWidget(restore_btn)
+        panic_row.addStretch()
+        v.addLayout(panic_row)
+
         # --- Security Center (unified active scanning) ---
         _section("Security Center (active scanning: processes · files · network · persistence)")
         self._sec_center = QCheckBox(
@@ -2483,6 +2505,46 @@ class SettingsDialog(QDialog):
             self._refresh_security_center_lbl()
         except Exception as e:
             QMessageBox.warning(self, "Security Center", str(e))
+
+    def _toggle_auto_lockdown(self, state):
+        on = bool(state)
+        self.settings["auto_lockdown_on_critical"] = on
+        try:
+            import panic
+            panic.arm_auto(on)
+        except Exception:
+            pass
+
+    def _panic_now(self):
+        if QMessageBox.question(
+                self, "Lock down now",
+                "Engage emergency lockdown?\n\nThis will immediately:\n"
+                "  • stop Ember's AI\n  • turn off Wi-Fi / networking\n  • lock the screen\n\n"
+                "Use 'Restore network' afterward to get back online.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            import panic
+            r = panic.panic_lockdown(reason="user pressed the panic button", source="manual")
+            done = ", ".join(r.get("succeeded", [])) or "nothing"
+            failed = r.get("failed", [])
+            msg = f"Lockdown engaged: {done}."
+            if failed:
+                msg += f"\nCouldn't: {', '.join(failed)} (may need admin permission)."
+            self._set_status("🚨 Lockdown engaged")
+            QMessageBox.information(self, "Lockdown", msg)
+        except Exception as e:
+            QMessageBox.warning(self, "Lockdown", f"Lockdown failed: {e}")
+
+    def _panic_restore(self):
+        try:
+            import panic
+            panic.restore_network()
+            self._set_status("Network restored")
+            QMessageBox.information(self, "Network", "Asked the OS to turn networking back on.")
+        except Exception as e:
+            QMessageBox.warning(self, "Network", str(e))
 
     def _apply_offline_mode(self):
         """Publish the Offline Mode flag (from this dialog's settings) so the agent + voice
@@ -3878,6 +3940,21 @@ class EmberWindow(QWidget):
         try:
             import timers as _timers
             _timers.set_fire_callback(self._on_timer_fired)
+        except Exception:
+            pass
+        # Emergency lockdown: teach the panic module how to stop OUR agent (not just Ollama), and
+        # arm auto-lockdown if the user enabled it.
+        try:
+            import panic as _panic
+            def _stop_ai_for_panic():
+                try:
+                    if getattr(self, "agent", None) is not None:
+                        self.agent.stop()
+                except Exception:
+                    pass
+                return _panic._default_kill_ai()   # also stop the local LLM
+            _panic.set_hooks(kill_ai=_stop_ai_for_panic)
+            _panic.arm_auto(bool(self.settings.get("auto_lockdown_on_critical", False)))
         except Exception:
             pass
         self._overlay_timer = QTimer(self)
