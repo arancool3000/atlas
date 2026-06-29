@@ -155,6 +155,7 @@ SAFE_READONLY = {
     "adblock_status",                                         # system-wide ad blocker (read-only)
     "list_timers",                                            # countdown timers (read-only)
     "gmail_status", "gmail_list_labels", "gmail_search", "gmail_read",  # Gmail (read-only)
+    "folder_report", "bulk_read_documents",                            # bulk productivity (read-only)
 }
 
 SAFE_INTERACTION = {
@@ -198,6 +199,9 @@ SAFE_INTERACTION = {
     # Gmail organising: reversible label/archive/star/read; trash is recoverable for 30 days.
     "gmail_apply_label", "gmail_remove_label", "gmail_archive", "gmail_mark_read",
     "gmail_star", "gmail_trash", "gmail_create_label",
+    # Bulk file organising: defaults to a dry run; moves/renames are reversible, and Ember
+    # previews + confirms with the user before apply=true.
+    "organize_folder", "bulk_rename",
 }
 
 QUICK_FIX_RISK = {
