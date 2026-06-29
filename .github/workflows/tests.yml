@@ -59,7 +59,8 @@ jobs:
             test_ollama_tools.py \
             test_ollama_textcalls.py \
             test_setup_tour.py \
-            test_timers.py; do
+            test_timers.py \
+            test_updater.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"

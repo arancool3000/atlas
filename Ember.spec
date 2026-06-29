@@ -15,7 +15,8 @@ common_pkgs = ["google.genai", "google.ai", "google.api_core", "google.auth",
                "google.protobuf", "google.rpc", "mss", "pyautogui",
                "rapidfuzz", "psutil", "websocket", "send2trash", "anthropic",
                "speech_recognition", "pyttsx3", "pyaudio", "pynput",
-               "PyPDF2", "openpyxl", "qrcode"]
+               "PyPDF2", "openpyxl", "qrcode",
+               "certifi"]   # bundles cacert.pem so HTTPS (auto-updater) verifies in the frozen app
 win_pkgs = ["uiautomation", "comtypes", "keyboard", "pycaw"]
 mac_pkgs = ["Vision", "Quartz", "Foundation", "objc", "ApplicationServices"]
 

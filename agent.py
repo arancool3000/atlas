@@ -1513,6 +1513,21 @@ TOOL_DECLARATIONS = [
      "description": "Report Ember's malware-protection status: engines available, settings, "
                     "sandbox type, and quarantine count.",
      "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "confirm_file_safe",
+     "description": "Mark a file the antivirus HELD for review as user-confirmed-safe, so Ember "
+                    "will open it (remembered by content hash). Only call this AFTER the user has "
+                    "explicitly said they trust the specific file — opening a held file requires "
+                    "their confirmation.",
+     "parameters": {"type": "OBJECT", "properties": {"path": {"type": "STRING"}},
+                    "required": ["path"]}},
+    {"name": "list_cleared_files",
+     "description": "List files the user has confirmed safe (the antivirus open-gate allowlist).",
+     "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
+    {"name": "unconfirm_file",
+     "description": "Revoke a file's confirmed-safe status, so the antivirus scans + holds it "
+                    "again before opening.",
+     "parameters": {"type": "OBJECT", "properties": {"path": {"type": "STRING"}},
+                    "required": ["path"]}},
     # ---- Web protection ----
     {"name": "check_url",
      "description": "Check a URL/website against block & allow lists, malware/phishing "
@@ -1894,6 +1909,9 @@ TOOL_DISPATCH: dict[str, Callable[..., dict]] = {
     "restore_quarantined": antivirus.restore_quarantined,
     "delete_quarantined": antivirus.delete_quarantined,
     "security_status": antivirus.security_status,
+    "confirm_file_safe": antivirus.confirm_file_safe,
+    "list_cleared_files": antivirus.list_cleared_files,
+    "unconfirm_file": antivirus.unconfirm_file,
     # web protection
     "check_url": web_policy.check_url,
     "add_web_block": web_policy.add_block,

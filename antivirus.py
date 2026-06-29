@@ -85,6 +85,8 @@ DEFAULT_CONFIG: dict = {
     "scan_before_open": True,      # scan files before opening them
     "block_suspicious_open": True, # also block "suspicious" (not just "malicious") on open
     "block_on_scan_error": True,   # if a file can't be scanned, refuse to open it (fail CLOSED)
+    "ai_scan_on_open": True,       # AI second-opinion on UNCONFIRMED risky files before opening
+    "require_confirm_unconfirmed": True,  # hold unconfirmed risky files until the user confirms
     "vt_api_key": "",              # falls back to env VIRUSTOTAL_API_KEY / VT_API_KEY
     "vt_hash_lookup": True,        # query VirusTotal by SHA-256 (only the hash leaves)
     "vt_upload_unknown": True,     # upload unknown files to VirusTotal for full scanning
@@ -272,6 +274,121 @@ def ai_review_flagged(flagged: list[dict]) -> tuple[list[dict], list[dict]]:
     # Anything unjudged (short list) stays flagged, to be safe.
     kept += review[len(verdicts):]
     return definite + kept, cleared
+
+
+# ---------------------------------------------------------------------------
+# Confirmed-safe allowlist + AI second opinion at OPEN time
+# ---------------------------------------------------------------------------
+# Files the user has explicitly confirmed are remembered by content hash, so Ember opens them
+# without re-blocking. Anything NOT confirmed that looks risky is AI-scanned and held until the
+# user confirms it (see gate_open).
+_CLEARED_LOCK = threading.RLock()
+
+# Risky file types we hold for confirmation even if the static scan says "clean" — these are the
+# things that can actually run code on your machine.
+_EXECUTABLE_EXTS = {
+    ".exe", ".msi", ".bat", ".cmd", ".com", ".scr", ".ps1", ".vbs", ".vbe", ".js", ".jse",
+    ".wsf", ".hta", ".jar", ".app", ".dmg", ".pkg", ".command", ".sh", ".bash", ".zsh",
+    ".py", ".pyw", ".rb", ".pl", ".php", ".apk", ".deb", ".rpm", ".bin", ".run", ".AppImage",
+}
+
+
+def _cleared_path() -> Path:
+    return _support_dir() / "cleared_files.json"
+
+
+def _load_cleared() -> dict:
+    try:
+        return json.loads(_cleared_path().read_text("utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def is_cleared(sha: str) -> bool:
+    if not sha:
+        return False
+    with _CLEARED_LOCK:
+        return sha in _load_cleared()
+
+
+def confirm_file_safe(path: str) -> dict:
+    """Mark a file as user-confirmed-safe (by content hash) so Ember opens it without blocking.
+    Use this AFTER the user has confirmed they trust a file Ember held for review."""
+    p = Path(path).expanduser()
+    if not p.exists() or not p.is_file():
+        return {"ok": False, "error": f"not a file: {path}"}
+    try:
+        sha = sha256_file(p)
+    except Exception as e:
+        return {"ok": False, "error": f"could not hash file: {e}"}
+    with _CLEARED_LOCK:
+        data = _load_cleared()
+        data[sha] = {"name": p.name, "path": str(p), "ts": int(time.time())}
+        try:
+            _cleared_path().write_text(json.dumps(data, indent=2), "utf-8")
+        except Exception as e:
+            return {"ok": False, "error": f"could not save confirmation: {e}"}
+    return {"ok": True, "sha256": sha, "name": p.name,
+            "message": f"'{p.name}' confirmed safe — Ember will open it from now on."}
+
+
+def unconfirm_file(path: str) -> dict:
+    """Revoke a file's confirmed-safe status (re-arms scan + block-on-open for it)."""
+    p = Path(path).expanduser()
+    try:
+        sha = sha256_file(p) if p.exists() and p.is_file() else ""
+    except Exception:
+        sha = ""
+    with _CLEARED_LOCK:
+        data = _load_cleared()
+        removed = bool(sha and sha in data)
+        if removed:
+            del data[sha]
+            try:
+                _cleared_path().write_text(json.dumps(data, indent=2), "utf-8")
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+    return {"ok": True, "removed": removed, "sha256": sha}
+
+
+def list_cleared_files() -> dict:
+    """List the files the user has confirmed safe."""
+    with _CLEARED_LOCK:
+        data = _load_cleared()
+    files = [{"sha256": k, "name": v.get("name", ""), "path": v.get("path", ""),
+              "confirmed_at": v.get("ts")} for k, v in data.items()]
+    return {"ok": True, "count": len(files), "files": files}
+
+
+def _is_executableish(p: Path) -> bool:
+    if p.suffix.lower() in _EXECUTABLE_EXTS:
+        return True
+    try:                                   # Unix executable bit (e.g. a no-extension binary)
+        return bool(p.stat().st_mode & 0o111) and p.is_file()
+    except Exception:
+        return False
+
+
+def ai_assess_file(path: str, reasons: list | None = None) -> dict:
+    """AI second opinion on ONE file. Returns {available, verdict} where verdict is
+    'malicious' | 'clean' | 'unknown'. Uses the registered AI judge (set_ai_judge); if no AI is
+    available it reports available=False so the caller falls back to heuristics."""
+    judge = _AI_JUDGE
+    if not judge:
+        return {"available": False, "verdict": "unknown"}
+    p = Path(path).expanduser()
+    excerpt = ""
+    try:
+        excerpt = p.read_bytes()[:4000].decode("utf-8", "replace")
+    except Exception:
+        pass
+    try:
+        verdicts = judge([{"name": p.name, "reasons": list(reasons or []), "excerpt": excerpt}])
+        if isinstance(verdicts, list) and verdicts:
+            return {"available": True, "verdict": "malicious" if verdicts[0] else "clean"}
+    except Exception:
+        pass
+    return {"available": False, "verdict": "unknown"}
 
 
 def _ember_own_dirs() -> list:
@@ -1213,8 +1330,11 @@ def gate_download(path: str) -> dict:
 
 def gate_open(path: str) -> dict:
     """Scan a file BEFORE it is opened and decide whether opening is allowed.
-    Blocks (allowed=False) until the scan completes; malicious files are
-    quarantined; suspicious files are blocked pending review (configurable)."""
+
+    Malicious files are quarantined and hard-blocked. Anything UNCONFIRMED that looks risky
+    (heuristically suspicious, an executable/script, or unscannable) gets an AI second opinion
+    and is held — allowed=False, needs_confirmation=True — until the user confirms it safe
+    (confirm_file_safe), which remembers it by hash so it opens freely thereafter."""
     cfg = get_config()
     if not cfg.get("enabled") or not cfg.get("scan_before_open"):
         return {"ok": True, "allowed": True, "scanned": False}
@@ -1222,27 +1342,73 @@ def gate_open(path: str) -> dict:
     if not p.exists() or not p.is_file():
         # Not a scannable file (e.g. a directory or app to launch by name) — let it through.
         return {"ok": True, "allowed": True, "scanned": False, "verdict": "n/a"}
+
+    require_confirm = cfg.get("require_confirm_unconfirmed", True)
+    use_ai = cfg.get("ai_scan_on_open", True)
+
     scan = scan_file(str(p), deep=True)
     if not scan.get("ok"):
         # A file we COULDN'T scan must not be silently allowed through (fail-open bypass).
-        blocked = cfg.get("block_on_scan_error", True)
-        return {"ok": True, "scanned": False, "verdict": "unknown",
-                "allowed": not blocked, "blocked": blocked, "error": scan.get("error"),
-                "message": ("Blocked: this file could not be scanned, so it isn't trusted."
-                            if blocked else None)}
+        if cfg.get("block_on_scan_error", True):
+            ai = ai_assess_file(str(p)) if use_ai else {"available": False, "verdict": "unknown"}
+            return {"ok": True, "scanned": False, "verdict": "unknown", "ai_verdict": ai["verdict"],
+                    "allowed": False, "blocked": True, "needs_confirmation": True,
+                    "error": scan.get("error"),
+                    "message": "Held for review: this file couldn't be scanned. Confirm it's safe "
+                               "to open it."}
+        return {"ok": True, "scanned": False, "verdict": "unknown", "allowed": True}
+
+    sha = scan.get("sha256") or ""
     verdict = scan["verdict"]
     result = {"ok": True, "scanned": True, "verdict": verdict,
-              "reasons": scan["reasons"], "engines": scan["engines"]}
+              "reasons": scan["reasons"], "engines": scan["engines"], "sha256": sha}
+
+    # Already confirmed by the user (or AI-cleared earlier) -> open freely.
+    if sha and is_cleared(sha):
+        result["allowed"] = True
+        result["cleared"] = True
+        return result
+
+    # Definitive malware: quarantine + hard block (a plain confirm can't override this).
     if verdict == "malicious":
         result["allowed"] = False
         result["handled"] = _handle_malicious(str(p), scan)
         result["message"] = "Blocked: this file is malicious and has been quarantined."
-    elif verdict == "suspicious" and cfg.get("block_suspicious_open", True):
+        return result
+
+    # Decide whether this UNCONFIRMED file needs holding: heuristically suspicious, or an
+    # executable/script (which can run code), or we're told to confirm everything unconfirmed.
+    risky = (verdict == "suspicious") or _is_executableish(p)
+    if not risky:
+        result["allowed"] = True       # ordinary docs/images/text: open without nagging
+        return result
+
+    # AI second opinion on the unconfirmed risky file.
+    ai = ai_assess_file(str(p), scan.get("reasons")) if use_ai else {"available": False,
+                                                                     "verdict": "unknown"}
+    result["ai_verdict"] = ai["verdict"]
+    result["ai_available"] = ai["available"]
+
+    if ai["verdict"] == "malicious":
         result["allowed"] = False
-        result["message"] = ("Blocked: this file looks suspicious. Inspect it with "
-                             "run_in_sandbox, or restore/allow it explicitly if you trust it.")
-    else:
-        result["allowed"] = True
+        result["blocked"] = True
+        result["needs_confirmation"] = True
+        result["message"] = ("Held: AI flagged this file as likely malicious. Only open it if "
+                             "you're certain you trust it — then confirm to proceed.")
+        return result
+
+    # Not judged malicious. Hold for the user's confirmation unless that's turned off.
+    if require_confirm or (verdict == "suspicious" and cfg.get("block_suspicious_open", True)):
+        result["allowed"] = False
+        result["blocked"] = True
+        result["needs_confirmation"] = True
+        result["message"] = ("Held for review: Ember hasn't confirmed this file is safe"
+                             + (" (AI didn't find anything malicious). " if ai["available"]
+                                else ". ")
+                             + "Confirm it's safe to open it.")
+        return result
+
+    result["allowed"] = True
     return result
 
 
