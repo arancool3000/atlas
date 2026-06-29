@@ -1,5 +1,5 @@
 {
-  "version": "1.2.2",
+  "version": "1.2.3",
   "pub_date": "2026-06-28",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.2.2\n\n• Fix: the free offline brain (Ollama) now actually runs its tools. Smaller local models that write a tool call as plain text (e.g. for \"can you see my screen?\") used to dump raw JSON into the chat instead of doing it — Ember now understands those and runs the tool (screenshot, click, type, etc.).\n\nIncludes 1.2.1's Settings-crash fix and crash logging, plus everything from 1.2.0: works 100% offline, the offline brain can drive your computer + analyse images, countdown timers, the newbie Setup Tour, and the workflow-recorder macOS crash fix."
+  "notes": "Ember 1.2.3\n\n• Fix: \"Check for updates\" now actually finds new versions. The installed app couldn't verify HTTPS (no CA roots bundled), so every check silently failed and falsely said \"you're up to date.\" Ember now ships the CA roots, and a failed check tells you it couldn't reach the server instead of pretending you're current.\n• New: AI safe-open guard. Before opening an unconfirmed executable/script (or anything the scanner flags), Ember runs an AI second-opinion scan and HOLDS the file until you confirm it's safe — confirmed files are remembered and open normally after. Toggle in Settings → Security.\n\nIncludes 1.2.2's offline-Ollama tool fix, 1.2.1's Settings-crash fix, and everything from 1.2.0."
 }

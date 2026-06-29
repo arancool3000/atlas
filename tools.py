@@ -832,9 +832,15 @@ def open_path(path):
     try:
         import antivirus
         gate = antivirus.gate_open(target)
-        if gate.get("scanned") and not gate.get("allowed", True):
+        if not gate.get("allowed", True):
             return {"ok": False, "blocked": True, "verdict": gate.get("verdict"),
-                    "reasons": gate.get("reasons"), "error": gate.get("message")}
+                    "ai_verdict": gate.get("ai_verdict"),
+                    "needs_confirmation": gate.get("needs_confirmation", False),
+                    "reasons": gate.get("reasons"), "sha256": gate.get("sha256"),
+                    "error": gate.get("message"),
+                    "hint": ("If the user confirms they trust this file, call "
+                             "confirm_file_safe(path) then open it again."
+                             if gate.get("needs_confirmation") else None)}
     except Exception:
         pass
     try:

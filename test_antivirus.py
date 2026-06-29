@@ -291,6 +291,72 @@ def test_native_sandbox_runs_a_copy_not_the_original():
     assert not os.path.exists(os.path.dirname(copy_parts[-1]))
 
 
+def _reset_gate_state():
+    antivirus.set_ai_judge(None)
+    antivirus.set_config(ai_scan_on_open=True, require_confirm_unconfirmed=True,
+                         scan_before_open=True, enabled=True)
+    try:
+        antivirus._cleared_path().unlink()
+    except Exception:
+        pass
+
+
+def test_gate_open_allows_clean_document():
+    _reset_gate_state()
+    p = _write("readme.txt", "plain text, nothing risky\n")
+    g = antivirus.gate_open(str(p))
+    assert g["allowed"] is True and g["verdict"] == "clean", g
+
+
+def test_gate_open_holds_unconfirmed_script():
+    _reset_gate_state()
+    p = _write("setup_helper.py", "print('hello world')\n")   # clean content, but executable type
+    g = antivirus.gate_open(str(p))
+    assert g["allowed"] is False and g.get("needs_confirmation") is True, g
+
+
+def test_confirm_makes_it_open():
+    _reset_gate_state()
+    p = _write("tool.py", "print('ok')\n")
+    assert antivirus.gate_open(str(p))["allowed"] is False
+    c = antivirus.confirm_file_safe(str(p))
+    assert c["ok"] and c["sha256"], c
+    g = antivirus.gate_open(str(p))
+    assert g["allowed"] is True and g.get("cleared") is True, g
+    # listing + revoke round-trip
+    assert any(f["sha256"] == c["sha256"] for f in antivirus.list_cleared_files()["files"])
+    antivirus.unconfirm_file(str(p))
+    assert antivirus.gate_open(str(p))["allowed"] is False
+    _reset_gate_state()
+
+
+def test_gate_open_blocks_malicious():
+    _reset_gate_state()
+    p = _write("nasty.com", antivirus.EICAR_SIG)
+    g = antivirus.gate_open(str(p))
+    assert g["allowed"] is False and g["verdict"] == "malicious", g
+
+
+def test_ai_judge_flags_unconfirmed_file():
+    _reset_gate_state()
+    antivirus.set_ai_judge(lambda items: [True for _ in items])   # AI says "harmful"
+    p = _write("dropper.py", "import os\n")
+    g = antivirus.gate_open(str(p))
+    assert g["allowed"] is False and g.get("ai_verdict") == "malicious", g
+    _reset_gate_state()
+
+
+def test_ai_clean_still_held_until_user_confirms():
+    _reset_gate_state()
+    antivirus.set_ai_judge(lambda items: [False for _ in items])  # AI finds nothing harmful
+    p = _write("script.sh", "echo hi\n")
+    g = antivirus.gate_open(str(p))
+    # AI didn't flag it, but it's unconfirmed -> still held for the user's confirmation.
+    assert g["allowed"] is False and g.get("needs_confirmation") is True
+    assert g.get("ai_verdict") == "clean", g
+    _reset_gate_state()
+
+
 def _run_all() -> bool:
     import types
     funcs = [v for k, v in sorted(globals().items())

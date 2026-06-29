@@ -120,7 +120,7 @@ SAFE_READONLY = {
     "get_battery", "get_volume", "env_get", "env_list",
     "color_at", "clipboard_get", "clipboard_history_get", "clipboard_history_snapshot",
     "git_status", "git_log", "git_diff",
-    "scan_file", "list_quarantine", "security_status",
+    "scan_file", "list_quarantine", "security_status", "list_cleared_files",
     "check_url", "list_web_policy", "web_status",
     "get_audit_log", "verify_audit_log", "get_security_mode",
     "get_plan", "list_pro_features", "vpn_status", "list_vpn_locations",
@@ -191,6 +191,9 @@ SAFE_INTERACTION = {
     "adblock_update_from_url",
     # countdown timers — harmless instant local action (no input injection, no file writes).
     "set_timer", "cancel_timer",
+    # antivirus open-gate: the agent only calls these AFTER the user confirms they trust a
+    # held file, so they don't need a second confirmation prompt.
+    "confirm_file_safe", "unconfirm_file",
 }
 
 QUICK_FIX_RISK = {

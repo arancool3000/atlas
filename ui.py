@@ -1881,6 +1881,18 @@ class SettingsDialog(QDialog):
             lambda s: antivirus.set_config(scan_before_open=bool(s)))
         v.addWidget(self._sec_scan_open)
 
+        self._sec_ai_hold = QCheckBox("AI-scan unconfirmed files and hold them until I confirm")
+        self._sec_ai_hold.setChecked(bool(cfg.get("ai_scan_on_open", True))
+                                     and bool(cfg.get("require_confirm_unconfirmed", True)))
+        self._sec_ai_hold.setToolTip(
+            "Before opening an unconfirmed executable/script (or anything the scanner flags), "
+            "Ember runs an AI second-opinion scan and BLOCKS opening until you confirm the file "
+            "is safe. Confirmed files are remembered by content hash and open normally after.")
+        self._sec_ai_hold.stateChanged.connect(
+            lambda s: antivirus.set_config(ai_scan_on_open=bool(s),
+                                           require_confirm_unconfirmed=bool(s)))
+        v.addWidget(self._sec_ai_hold)
+
         st = antivirus.security_status()
         eng = QLabel("Engines: " + ", ".join(st.get("engines_available", []))
                      + f"   ·   Sandbox: {st.get('sandbox_available')}")
@@ -6713,16 +6725,23 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             self._set_status("Checking for updates…")
 
             def _work():
+                import version
                 try:
                     import updater
-                    manifest = updater.check_for_update()
+                    # raise_on_error so a blocked/failed fetch isn't misreported as "up to date".
+                    manifest = updater.check_for_update(raise_on_error=True)
                 except Exception as e:
-                    self._bridge.notice.emit(f"Update check failed: {type(e).__name__}: {e}")
+                    try:
+                        site = version.site_url()
+                    except Exception:
+                        site = "the Ember website"
+                    self._bridge.notice.emit(
+                        f"Couldn't reach the update server ({type(e).__name__}: {e}). "
+                        f"You can download the latest build directly from {site}.")
                     return
                 if manifest:
                     QTimer.singleShot(0, lambda: self._on_update_available(manifest))
                 else:
-                    import version
                     self._bridge.notice.emit(f"✓ Ember is up to date (v{version.__version__}).")
             threading.Thread(target=_work, daemon=True).start()
             return

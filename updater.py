@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import shlex
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,21 @@ import version
 
 def current_version() -> str:
     return version.__version__
+
+
+def _ssl_context():
+    """An SSL context that can actually verify GitHub's cert. A PyInstaller-frozen macOS app
+    often has no usable system CA bundle, so urllib HTTPS fails with CERTIFICATE_VERIFY_FAILED
+    and every update check silently returns "no update" — making Ember look stuck on an old
+    version. Prefer certifi's bundled roots (we ship it), then the system default."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        try:
+            return ssl.create_default_context()
+        except Exception:
+            return None
 
 
 def is_frozen_app() -> bool:
@@ -74,17 +90,23 @@ def _manifest_download(manifest: dict) -> tuple[str, str]:
     return url, sha
 
 
-def check_for_update(timeout: float = 8.0) -> dict | None:
+def check_for_update(timeout: float = 8.0, raise_on_error: bool = False) -> dict | None:
     """Return the manifest dict if a newer version is published for this OS, else None.
-    Network/parse failures return None (a failed check must never disrupt the app)."""
+
+    By default a network/parse failure returns None so a background check never disrupts the
+    app. Pass raise_on_error=True for a USER-initiated check so the caller can tell "you're up
+    to date" apart from "couldn't reach the update server" (otherwise a failed fetch looks like
+    'up to date' and Ember appears stuck on an old version)."""
     if not version.is_configured():
         return None
     try:
         req = urllib.request.Request(version.manifest_url(),
                                      headers={"User-Agent": "Ember-Updater"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
             manifest = json.loads(r.read().decode("utf-8"))
     except Exception:
+        if raise_on_error:
+            raise
         return None
     latest = str(manifest.get("version", ""))
     if latest and version.is_newer(latest, current_version()):
@@ -94,7 +116,7 @@ def check_for_update(timeout: float = 8.0) -> dict | None:
 
 def _download(url: str, dest: Path, progress=None, timeout: float = 60.0) -> None:
     req = urllib.request.Request(url, headers={"User-Agent": "Ember-Updater"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as r:
         total = int(r.headers.get("Content-Length") or 0)
         done = 0
         with open(dest, "wb") as f:

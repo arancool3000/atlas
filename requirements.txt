@@ -7,6 +7,7 @@ Pillow>=10.0.0
 matplotlib>=3.7.0
 pyperclip>=1.8.2
 requests>=2.31.0
+certifi>=2024.2.2        # CA roots for HTTPS in the frozen app (so the auto-updater can verify GitHub)
 rapidfuzz>=3.6.0
 psutil>=5.9.0
 websocket-client>=1.7.0
