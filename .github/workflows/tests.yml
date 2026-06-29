@@ -67,7 +67,8 @@ jobs:
             test_bulk_tools.py \
             test_panic.py \
             test_security_dashboard.py \
-            test_remote_macros.py; do
+            test_remote_macros.py \
+            test_push_to_talk.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"

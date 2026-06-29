@@ -26,9 +26,11 @@ Free, MIT-licensed, and private — your API key stays on your machine; there ar
   read/unread, create labels, and trash (recoverable) — *"clean up my inbox."* Also sends email.
   One Google **App Password** powers both.
 - **Timers & reminders** — *"set a 10-minute timer"* → desktop notification + sound + a chat note.
-- **Voice** — hands-free **"Hey Ember"** wake word, voice chat (listen → act → speak) with an
-  **automatic turn length** (stops when you pause), **natural voice** via the Gemini **Live API**
-  (real-time, the AI handles turn-taking), and free **Edge neural** read-aloud (no key).
+- **Voice** — hands-free **"Hey Ember"** wake word, **push-to-talk** (hold a key, talk, release —
+  zero-latency, no wake word, transcribed locally with **Whisper** when installed), voice chat
+  (listen → act → speak) with an **automatic turn length** (stops when you pause), **natural voice**
+  via the Gemini **Live API** (real-time, the AI handles turn-taking), and free **Edge neural**
+  read-aloud (no key).
 - **Macros, scheduling & workflows** — save/replay task macros, schedule actions for later, and
   **record & replay** real mouse/keyboard workflows.
 - **Phone Link** — control your computer from your phone's browser on the same Wi-Fi.
@@ -393,6 +395,8 @@ tunnel up — and it never claims to be connected when it isn't.
 | `audio_level.py` | live mic level + silence-detected (auto) voice turns for the glow/orb |
 | `live_voice.py` | natural real-time voice via the Gemini Live API (AI turn-taking) |
 | `wake_word.py` | always-on "Hey Ember" wake-word listener |
+| `push_to_talk.py` | hold-a-key-to-talk coordinator (zero-latency, no wake word) |
+| `stt.py` | speech-to-text: local Whisper → Gemini → Google, auto-selected |
 | `gmail_tools.py` | organise Gmail over IMAP — search/label/archive/star/trash + read |
 | `timers.py` | countdown timers (notification + sound + chat alert) |
 | `offline.py` | Offline Mode — gate network tools, run fully local |

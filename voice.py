@@ -338,6 +338,102 @@ def stop_speaking():
             pass
 
 
+class HoldRecorder:
+    """Capture microphone audio until stop() is called, then return a 16 kHz mono WAV path.
+    This backs push-to-talk: unlike listen_once (which auto-ends on a silence pause), the caller
+    controls exactly when recording starts and stops (key down → start, key up → stop). Holds the
+    shared MIC_LOCK for the whole capture so the wake-word loop can't grab the device underneath."""
+
+    def __init__(self, sample_rate: int = 16000):
+        self._rate = sample_rate
+        self._frames: list[bytes] = []
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._mic = None
+        self._source = None
+        self._held_lock = False
+        self.error: str | None = None
+
+    def start(self) -> bool:
+        """Open the mic and begin capturing on a background thread. Returns False (with .error
+        set) if the mic/deps are unavailable."""
+        try:
+            import speech_recognition as sr
+        except Exception as e:
+            self.error = f"speech_recognition not installed: {e}"
+            return False
+        if not MIC_LOCK.acquire(timeout=2.0):
+            self.error = "microphone is busy"
+            return False
+        self._held_lock = True
+        try:
+            self._mic = sr.Microphone(sample_rate=self._rate)
+            self._source = self._mic.__enter__()
+        except Exception as e:
+            self._release_lock()
+            hint = ("voice input needs pyaudio: pip install pyaudio"
+                    if "pyaudio" in str(e).lower() else str(e))
+            self.error = f"could not open microphone: {hint}"
+            return False
+        self._stop.clear()
+        self._frames = []
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return True
+
+    def _loop(self):
+        chunk = getattr(self._source, "CHUNK", 1024) or 1024
+        stream = getattr(self._source, "stream", None)
+        if stream is None:
+            return
+        while not self._stop.is_set():
+            try:
+                self._frames.append(stream.read(chunk))
+            except Exception:
+                break
+
+    def stop(self) -> str | None:
+        """Stop capturing and write the clip to a temp WAV. Returns the path (or None if empty)."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        sample_width = 2
+        try:
+            sample_width = getattr(self._mic, "SAMPLE_WIDTH", 2) or 2
+        except Exception:
+            pass
+        try:
+            if self._mic is not None:
+                self._mic.__exit__(None, None, None)
+        except Exception:
+            pass
+        self._release_lock()
+        pcm = b"".join(self._frames)
+        self._frames = []
+        if not pcm:
+            return None
+        import tempfile
+        import wave
+        out = str(Path(tempfile.gettempdir()) / f"ember_ptt_{int(time.time() * 1000)}.wav")
+        try:
+            with wave.open(out, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(sample_width)
+                w.setframerate(self._rate)
+                w.writeframes(pcm)
+        except Exception:
+            return None
+        return out
+
+    def _release_lock(self):
+        if self._held_lock:
+            try:
+                MIC_LOCK.release()
+            except Exception:
+                pass
+            self._held_lock = False
+
+
 def listen_once(on_transcript: Callable[[str, str | None], None],
                 phrase_timeout: "float | None" = 6.0, listen_timeout: float = 8.0):
     """Record one utterance from the default mic, transcribe via Google Web Speech (free),
