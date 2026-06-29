@@ -1,5 +1,5 @@
 {
-  "version": "1.2.8",
+  "version": "1.2.9",
   "pub_date": "2026-06-29",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.2.8\n\n• Smarter network scan: it now actually finds your connections on macOS (it used to report “0 connections” because the OS hides them from the old method without root). It uses lsof, and even when nothing's suspicious it shows useful context — how many connections, active vs listening, and your top remote hosts — instead of an empty result.\n• Voice turn length is now automatic: Voice Chat listens until you naturally pause instead of cutting you off at a fixed time. Pick a fixed cap in Settings → Voice only if you want one. (Natural voice / Live API already lets the AI handle turn-taking.)\n\nIncludes the voice dropdowns (1.2.7) and the Settings-toggle fix (1.2.6)."
+  "notes": "Ember 1.2.9\n\n• UI polish pass: your accent colour now flows through the whole interface — settings tabs, checkboxes, dropdowns, menus, list selection, hovers and focus rings all match, so it feels designed rather than default. Change it (or pick a theme preset) in Settings → Appearance.\n\nIncludes the smarter network scan + automatic voice turn length (1.2.8) and earlier fixes."
 }

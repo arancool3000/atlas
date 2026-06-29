@@ -4557,13 +4557,38 @@ class EmberWindow(QWidget):
             fs = max(10, min(22, int(self.settings.get("font_size", 12))))
         except Exception:
             fs = 12
+        a = accent
+        a_soft = self._accent_rgba(accent, 0.18)   # translucent accent for hovers/fills
+        a_mid = self._accent_rgba(accent, 0.30)
         return f"""
-QPushButton#send {{ background-color: {accent}; border-color: {accent}; color: #ffffff; }}
-QLineEdit:focus, QTextEdit:focus {{ border-color: {accent}; }}
-QPushButton#chip:hover {{ border-color: {accent}; }}
-QListWidget::item:selected {{ background-color: {accent}; }}
+/* One accent, applied consistently across the whole UI so it reads as designed, not default-Qt. */
+QPushButton#send {{ background-color: {a}; border-color: {a}; color: #ffffff; }}
+QPushButton#send:hover {{ background-color: {a}; border-color: {a}; }}
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus {{ border: 1px solid {a}; }}
+QComboBox:focus, QComboBox:hover {{ border-color: {a}; }}
+QComboBox QAbstractItemView {{ selection-background-color: {a}; }}
+QPushButton#chip:hover {{ border-color: {a}; background-color: {a_soft}; color: #ffffff; }}
+QListWidget::item:selected, QListWidget#historyList::item:selected {{ background-color: {a}; color: #ffffff; }}
+QListWidget#historyList::item:hover {{ background-color: {a_soft}; }}
+/* selected settings tab + hover get the accent underline/tint */
+QTabBar::tab:selected {{ color: #ffffff; border-bottom: 2px solid {a}; }}
+QTabBar::tab:hover {{ color: {a}; }}
+/* checked checkbox uses the accent so on/off is unmistakable */
+QCheckBox::indicator:checked {{ background: {a}; border-color: {a}; }}
+QMenu::item:selected {{ background-color: {a_mid}; }}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{ background: {a_mid}; }}
 QLabel#bubbleBody {{ font-size: {fs}px; }}
 """
+
+    @staticmethod
+    def _accent_rgba(hex_color: str, alpha: float) -> str:
+        """Turn an #rrggbb accent into an rgba(...) string at the given alpha (for soft fills)."""
+        try:
+            h = (hex_color or "#7aa2f7").lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            return f"rgba({r}, {g}, {b}, {alpha:.2f})"
+        except Exception:
+            return f"rgba(122, 162, 247, {alpha:.2f})"
 
     def _apply_window_theme(self):
         """Set the main window stylesheet = base theme (glass or flat) + accent/font overrides.
