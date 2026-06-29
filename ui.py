@@ -1932,6 +1932,17 @@ class SettingsDialog(QDialog):
         plan_lbl.setTextFormat(Qt.TextFormat.RichText)
         v.addWidget(plan_lbl)
 
+        dash_row = QHBoxLayout()
+        dash_btn = QPushButton("🛡️  Security dashboard")
+        dash_btn.setObjectName("send")
+        dash_btn.clicked.connect(self._show_security_dashboard)
+        dash_row.addWidget(dash_btn)
+        upd_btn = QPushButton("Check for software updates")
+        upd_btn.clicked.connect(self._check_software_updates)
+        dash_row.addWidget(upd_btn)
+        dash_row.addStretch()
+        v.addLayout(dash_row)
+
         def _section(text):
             lbl = QLabel(text)
             lbl.setStyleSheet("color:#565f89; font-size:11px; margin-top:8px;")
@@ -2545,6 +2556,54 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "Network", "Asked the OS to turn networking back on.")
         except Exception as e:
             QMessageBox.warning(self, "Network", str(e))
+
+    def _show_security_dashboard(self):
+        from PyQt6.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            import security_suite
+            d = security_suite.security_dashboard(check_updates=True)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Security dashboard", str(e))
+            return
+        QApplication.restoreOverrideCursor()
+        comps = d.get("components", [])
+        lines = [f"<b>Security score: {d.get('score')}/100 — grade {d.get('grade')} "
+                 f"({d.get('rating')})</b>", ""]
+        for c in comps:
+            lines.append(f"{'✅' if c['ok'] else '⚠️'} {c['label']}")
+        upd = d.get("updates") or {}
+        if upd.get("total"):
+            lines += ["", f"<b>Software Updater:</b> {upd.get('summary')}"]
+        recs = d.get("recommendations") or []
+        if recs:
+            lines += ["", "<b>Recommended:</b>"] + [f"• {r}" for r in recs[:6]]
+        box = QMessageBox(self)
+        box.setWindowTitle("Security dashboard")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText("<br>".join(lines))
+        box.exec()
+
+    def _check_software_updates(self):
+        from PyQt6.QtWidgets import QApplication
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            import security_suite
+            r = security_suite.software_update_check()
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, "Software updates", str(e))
+            return
+        QApplication.restoreOverrideCursor()
+        os_u = r.get("os_updates", [])
+        app_u = r.get("app_updates", [])
+        body = [r.get("summary", "")]
+        if os_u:
+            body += ["", "System:"] + [f"  • {u}" for u in os_u[:15]]
+        if app_u:
+            body += ["", "Apps:"] + [f"  • {u}" for u in app_u[:25]]
+        QMessageBox.information(self, "Software updates", "\n".join(body) or "Up to date.")
 
     def _apply_offline_mode(self):
         """Publish the Offline Mode flag (from this dialog's settings) so the agent + voice

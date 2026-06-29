@@ -156,6 +156,7 @@ SAFE_READONLY = {
     "list_timers",                                            # countdown timers (read-only)
     "gmail_status", "gmail_list_labels", "gmail_search", "gmail_read",  # Gmail (read-only)
     "folder_report", "bulk_read_documents",                            # bulk productivity (read-only)
+    "security_dashboard", "software_update_check",                     # Norton-style suite (read-only)
 }
 
 SAFE_INTERACTION = {
