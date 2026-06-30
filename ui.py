@@ -68,6 +68,11 @@ SLASH_COMMANDS = {
     "/biggest": "Find the biggest files on this PC. Ask me which folder to scan (default %USERPROFILE%), then use find_large_files with min_mb=500.",
     "/downloads": "Organize my Downloads folder. Run organize_folder on %USERPROFILE%/Downloads with mode='type' dry_run=true first, then show the plan and ask before committing.",
     "/voice": "__voice_chat__",
+    "/terminal": "__terminal__",
+    "/term": "__terminal__",
+    "/repl": "__terminal__",
+    "/agents": "__agents__",
+    "/tasks": "__agents__",
     "/remote": "__remote__",
     "/link": "__remote__",
     "/browser": "__browser_app__",
@@ -190,6 +195,8 @@ COMMAND_CENTER_GROUPS = [
         ("✂️ Snippets",       "__snippets__",    "Save & expand reusable text snippets"),
         ("📋 Macros",         "__macros__",      "Save & run named task macros"),
         ("🖥 Local AI",       "__local_ai__",    "Use a local Ollama model — offline, no key, no limits"),
+        ("⌨️ Terminal",       "__terminal__",    "Built-in terminal + Python runner (run shell & code in-app)"),
+        ("🧠 Agent tasks",    "__agents__",      "Run several Ember tasks at once and track them in a dashboard"),
         ("📊 Usage",          "__usage__",       "API calls & tokens vs the free-tier limits"),
         ("🧩 Plugins",        "__plugins__",     "Manage drop-in plugin tools (the plugins/ folder)"),
         ("⬇️ Update",         "__update__",      "Check for and install the latest version of Ember"),
@@ -4024,6 +4031,260 @@ class SetupTourDialog(QDialog):
         self.accept()
 
 
+class TerminalDialog(QDialog):
+    """Built-in terminal + Python runner — run shell commands and Python without leaving Ember
+    (beats Open Interpreter: it's in-app and the Python session persists between runs). Shell runs
+    on a worker thread so the UI never freezes; Python runs in an in-process REPL (terminal.py)."""
+
+    _out_sig = pyqtSignal(str)
+    _busy_sig = pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ember Terminal")
+        self.setMinimumSize(720, 520)
+        import terminal
+        self._terminal = terminal
+        self._repl = terminal.PyRepl()
+        self._busy = False
+
+        v = QVBoxLayout(self)
+        head = QLabel("⌨️  Terminal & Python")
+        head.setObjectName("title")
+        v.addWidget(head)
+        hint = QLabel("Run shell commands or Python in-app. Prefix a line with ! for shell or >>> "
+                      "for Python, or use the selector. The Python session persists between runs.")
+        hint.setStyleSheet("color:#565f89;font-size:11px;")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setStyleSheet("font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;")
+        v.addWidget(self.output, 1)
+
+        row = QHBoxLayout()
+        self.mode = QComboBox()
+        self.mode.addItems(["Shell", "Python"])
+        row.addWidget(self.mode)
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Type a command and press Enter…")
+        self.input.returnPressed.connect(self._run)
+        row.addWidget(self.input, 1)
+        self.run_btn = QPushButton("Run")
+        self.run_btn.setObjectName("send")
+        self.run_btn.clicked.connect(self._run)
+        row.addWidget(self.run_btn)
+        v.addLayout(row)
+
+        btns = QHBoxLayout()
+        clr = QPushButton("Clear")
+        clr.clicked.connect(self.output.clear)
+        rst = QPushButton("Reset Python")
+        rst.clicked.connect(self._reset)
+        btns.addWidget(clr)
+        btns.addWidget(rst)
+        btns.addStretch()
+        close = QPushButton("Close")
+        close.clicked.connect(self.reject)
+        btns.addWidget(close)
+        v.addLayout(btns)
+
+        self._out_sig.connect(self._append)
+        self._busy_sig.connect(self._set_busy)
+        self.input.setFocus()
+
+    def _append(self, text: str):
+        self.output.moveCursor(QTextCursor.MoveOperation.End)
+        self.output.insertPlainText(text)
+        self.output.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _set_busy(self, busy: bool):
+        self._busy = busy
+        self.run_btn.setEnabled(not busy)
+        self.input.setEnabled(not busy)
+        if not busy:
+            self.input.setFocus()
+
+    def _reset(self):
+        self._repl.reset()
+        self._append("\n[python session reset]\n")
+
+    def _run(self):
+        if self._busy:
+            return
+        line = self.input.text().strip()
+        if not line:
+            return
+        self.input.clear()
+        mode = self.mode.currentText().lower()
+        s = line.lstrip()
+        if s[:1] in ("!", "$") or s.startswith(">>>") or s[:3].lower() == "py ":
+            mode = self._terminal.classify(line)
+            line = self._terminal.strip_marker(line)
+        if mode == "python":
+            self._append(f"\n>>> {line}\n")
+            res = self._repl.run(line)
+            if res.get("stdout"):
+                self._append(res["stdout"])
+            if res.get("stderr"):
+                self._append(res["stderr"])
+            return
+        # shell — run off the UI thread
+        self._append(f"\n$ {line}\n")
+        self._set_busy(True)
+        import threading
+
+        def work():
+            try:
+                res = self._terminal.run_shell(line)
+                if isinstance(res, dict):
+                    out = res.get("output") or res.get("stdout") or res.get("result") or ""
+                    if not res.get("ok", True) and res.get("error"):
+                        out = (out + "\n" + str(res["error"])).strip()
+                    if res.get("stderr"):
+                        out = (out + "\n" + str(res["stderr"])).strip()
+                else:
+                    out = str(res)
+                self._out_sig.emit((out or "(no output)") + "\n")
+            except Exception as e:
+                self._out_sig.emit(f"[error] {type(e).__name__}: {e}\n")
+            finally:
+                self._busy_sig.emit(False)
+
+        threading.Thread(target=work, daemon=True).start()
+
+
+class AgentsDialog(QDialog):
+    """Parallel agent-tasks dashboard — start several Ember jobs and watch them run side by side
+    (beats Nimbalyst's single-track flow). Backed by an agent_tasks.TaskManager passed in."""
+
+    def __init__(self, manager, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ember Agent Tasks")
+        self.setMinimumSize(780, 560)
+        self._m = manager
+        self._ids: list = []
+
+        v = QVBoxLayout(self)
+        head = QLabel("🧠  Parallel agent tasks")
+        head.setObjectName("title")
+        v.addWidget(head)
+        hint = QLabel("Kick off multiple tasks at once and let them run in the background. Select a "
+                      "task to watch its live output. Actions needing confirmation are skipped in "
+                      "background tasks — run those in the main chat.")
+        hint.setStyleSheet("color:#565f89;font-size:11px;")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        row = QHBoxLayout()
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("Describe a task, e.g. ‘research the best budget laptops and summarize’")
+        self.input.returnPressed.connect(self._start)
+        row.addWidget(self.input, 1)
+        self.start_btn = QPushButton("Start")
+        self.start_btn.setObjectName("send")
+        self.start_btn.clicked.connect(self._start)
+        row.addWidget(self.start_btn)
+        v.addLayout(row)
+
+        split = QHBoxLayout()
+        self.list = QListWidget()
+        self.list.setMaximumWidth(300)
+        self.list.currentRowChanged.connect(lambda _i: self._refresh_output())
+        split.addWidget(self.list)
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setStyleSheet("font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;")
+        split.addWidget(self.output, 1)
+        v.addLayout(split, 1)
+
+        btns = QHBoxLayout()
+        self.stop_btn = QPushButton("Stop selected")
+        self.stop_btn.clicked.connect(self._stop)
+        clr = QPushButton("Clear finished")
+        clr.clicked.connect(self._clear)
+        btns.addWidget(self.stop_btn)
+        btns.addWidget(clr)
+        btns.addStretch()
+        close = QPushButton("Close")
+        close.clicked.connect(self.reject)
+        btns.addWidget(close)
+        v.addLayout(btns)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._refresh)
+        self._timer.start(700)
+        self._refresh()
+        self.input.setFocus()
+
+    def _start(self):
+        text = self.input.text().strip()
+        if not text:
+            return
+        self.input.clear()
+        try:
+            self._m.start(text)
+        except Exception as e:
+            QMessageBox.warning(self, "Couldn't start task", str(e))
+        self._refresh()
+
+    def _selected_id(self):
+        i = self.list.currentRow()
+        return self._ids[i] if 0 <= i < len(self._ids) else None
+
+    def _stop(self):
+        tid = self._selected_id()
+        if tid:
+            self._m.stop(tid)
+            self._refresh()
+
+    def _clear(self):
+        self._m.clear_finished()
+        self._refresh()
+
+    def _refresh(self):
+        tasks = self._m.list()
+        sel = self._selected_id()
+        self._ids = [t["id"] for t in tasks]
+        icon = {"running": "⏳", "done": "✅", "error": "⚠️", "stopped": "⏹"}
+        self.list.blockSignals(True)
+        self.list.clear()
+        for t in tasks:
+            self.list.addItem(f"{icon.get(t['status'], '•')}  {t['label']}")
+        if sel in self._ids:
+            self.list.setCurrentRow(self._ids.index(sel))
+        elif self._ids:
+            self.list.setCurrentRow(len(self._ids) - 1)
+        self.list.blockSignals(False)
+        self._refresh_output()
+
+    def _refresh_output(self):
+        tid = self._selected_id()
+        if not tid:
+            self.output.setPlainText("")
+            return
+        t = self._m.get(tid)
+        if not t:
+            return
+        body = f"[{t['status']}] {t['prompt']}\n\n{t['output']}"
+        if t.get("error"):
+            body += f"\n\n[error] {t['error']}"
+        if self.output.toPlainText() != body:
+            sb = self.output.verticalScrollBar()
+            at_bottom = sb.value() >= sb.maximum() - 4
+            self.output.setPlainText(body)
+            if at_bottom:
+                self.output.moveCursor(QTextCursor.MoveOperation.End)
+
+    def closeEvent(self, e):
+        try:
+            self._timer.stop()
+        except Exception:
+            pass
+        super().closeEvent(e)
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -6171,6 +6432,8 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             "__macros__": "_open_macros_manager",
             "__local_ai__": "_open_local_ai",
             "__setup_tour__": "_open_setup_tour",
+            "__terminal__": "_open_terminal",
+            "__agents__": "_open_agents",
         }
         handler = None
         if cmd in feature_methods:
@@ -6192,6 +6455,96 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             return
         self.input_box.setPlainText(cmd)
         self._on_send()
+
+    def _open_terminal(self):
+        """Open the built-in terminal + Python runner."""
+        TerminalDialog(self).exec()
+
+    def _ensure_task_manager(self):
+        if getattr(self, "_task_manager", None) is None:
+            import agent_tasks
+            self._task_manager = agent_tasks.TaskManager(self._agent_task_runner)
+        return self._task_manager
+
+    def _open_agents(self):
+        """Open the parallel agent-tasks dashboard."""
+        AgentsDialog(self._ensure_task_manager(), self).exec()
+
+    def _spawn_agent(self):
+        """Build a FRESH agent instance for a background parallel task (separate from self.agent).
+        Mirrors _build_agent's provider selection; raises RuntimeError with a clear message if a
+        required key is missing."""
+        s = self.settings
+        raw_model = s.get("model_id") or s.get("gemini_model") or "gemini-3.1-flash-lite"
+        model_id = model_catalog.resolve(raw_model)
+        provider = s.get("provider") or model_catalog.provider_for(raw_model)
+        if provider == "ollama":
+            from ollama_agent import OllamaAgent
+            return OllamaAgent(model_name=s.get("ollama_model") or "",
+                               auto_screenshot=bool(s.get("auto_screenshot", True)))
+        if provider == "claude":
+            key = s.get("anthropic_api_key") or ""
+            if not key:
+                raise RuntimeError("Add an Anthropic API key in Settings to run Claude tasks.")
+            from claude_agent import ClaudeAgent
+            return ClaudeAgent(api_key=key, model_name=model_id,
+                               auto_screenshot=bool(s.get("auto_screenshot", True)))
+        if not s.get("gemini_api_key"):
+            raise RuntimeError("Add a Gemini API key in Settings to run tasks.")
+        from agent import Agent
+        return Agent(
+            api_key=s["gemini_api_key"], secondary_api_key=s.get("gemini_api_key_secondary") or None,
+            backup_api_keys=[s.get("gemini_api_key_3") or "", s.get("gemini_api_key_4") or ""],
+            dual_api_failover=bool(s.get("dual_api_failover", True)), model_name=model_id,
+            anthropic_key=s.get("anthropic_api_key") or None,
+            anthropic_model=s.get("anthropic_model", "claude-opus-4-8"),
+            auto_screenshot=bool(s.get("auto_screenshot", True)),
+            request_timeout_seconds=int(s.get("request_timeout_seconds", 30)),
+            lean_tools=bool(s.get("lean_tools", True)))
+
+    def _agent_task_runner(self, prompt, emit, stop_event):
+        """Drive a fresh agent to completion for one parallel task (called on a worker thread by
+        the TaskManager). Streams output via emit(); denies confirmation-required actions since
+        the task is unattended; honours stop_event."""
+        import threading
+        agent = self._spawn_agent()
+        done = threading.Event()
+
+        def on_ev(ev):
+            k = getattr(ev, "kind", None)
+            p = getattr(ev, "payload", None)
+            if k == "stream_chunk" and p:
+                emit(str(p))
+            elif k == "message" and p:
+                emit(str(p) + "\n")
+            elif k == "tool_call":
+                try:
+                    emit(f"\n· {p.get('name')}\n")
+                except Exception:
+                    emit("\n· (tool)\n")
+            elif k == "error":
+                emit(f"\n[error] {p}\n")
+                done.set()
+            elif k == "done":
+                done.set()
+            elif k == "confirm":
+                try:
+                    p.response.put(False)   # unattended background task: deny risky actions
+                except Exception:
+                    pass
+                emit("\n[skipped an action that needs confirmation — run it in the main chat to approve]\n")
+
+        agent.subscribe(on_ev)
+        agent.send_user_message(prompt)
+        while not done.is_set():
+            if stop_event.is_set():
+                try:
+                    agent.stop()
+                except Exception:
+                    pass
+                break
+            done.wait(0.25)
+        return ""
 
     def _open_antivirus_app(self):
         """Open the standalone graphical Antivirus app."""
