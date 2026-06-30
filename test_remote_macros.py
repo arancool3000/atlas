@@ -108,6 +108,17 @@ def test_phone_page_exposes_macro_buttons():
     assert 'post({t:"macro"' in page and 'post({t:"macro_cmd"' in page
 
 
+def test_phone_page_button_and_fullscreen_fixes():
+    page = rs.PAGE
+    # toolbar buttons (Balanced/Fast) must size to content so the label can't overflow
+    assert "button.small{flex:0 0 auto" in page and "white-space:nowrap" in page
+    # double-buffered frame swap (kills the Kindle black-flash between frames)
+    assert "new Image()" in page
+    # landscape fake-fullscreen for devices without the Fullscreen API + tap remap
+    assert "body.fakefs" in page and "function fsSupported(" in page
+    assert "x=ry;y=1-rx" in page and "id=fsexit" in page
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

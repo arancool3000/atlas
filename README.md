@@ -33,6 +33,10 @@ Free, MIT-licensed, and private — your API key stays on your machine; there ar
   read-aloud (no key).
 - **Macros, scheduling & workflows** — save/replay task macros, schedule actions for later, and
   **record & replay** real mouse/keyboard workflows.
+- **Built-in terminal + Python runner** — run shell commands and Python in-app (`/terminal`), with
+  a Python session that persists between runs — no need to leave Ember.
+- **Parallel agent tasks** — kick off several Ember jobs at once and track each one's live status
+  and output in a dashboard (`/agents`); stop any of them.
 - **Phone Link** — control your computer from your phone's browser on the same Wi-Fi.
 - **Quit-proof global hotkey** — summon Ember from anywhere, even when it's fully closed.
 
@@ -397,6 +401,9 @@ tunnel up — and it never claims to be connected when it isn't.
 | `wake_word.py` | always-on "Hey Ember" wake-word listener |
 | `push_to_talk.py` | hold-a-key-to-talk coordinator (zero-latency, no wake word) |
 | `stt.py` | speech-to-text: local Whisper → Gemini → Google, auto-selected |
+| `terminal.py` | in-app terminal + persistent Python REPL (shell & code runner) |
+| `agent_tasks.py` | parallel agent-task manager (run/track multiple jobs at once) |
+| `mac_keys.py` | atomic macOS key-combo sender (fixes cmd+w split-press) |
 | `gmail_tools.py` | organise Gmail over IMAP — search/label/archive/star/trash + read |
 | `timers.py` | countdown timers (notification + sound + chat alert) |
 | `offline.py` | Offline Mode — gate network tools, run fully local |

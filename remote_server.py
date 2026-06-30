@@ -180,7 +180,7 @@ body:before{content:"";position:fixed;inset:0;pointer-events:none;background:lin
 .glass{background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,.07));border:1px solid var(--line);box-shadow:inset 0 1px 0 rgba(255,255,255,.26),0 18px 45px rgba(0,0,0,.28);backdrop-filter:blur(26px) saturate(170%);-webkit-backdrop-filter:blur(26px) saturate(170%)}
 button{color:var(--fg);border:1px solid var(--line);border-radius:18px;background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.07));box-shadow:inset 0 1px 0 rgba(255,255,255,.2),0 8px 22px rgba(0,0,0,.18);padding:13px 10px;font-size:14px;font-weight:720;flex:1;min-width:0}
 button:active,button.on{background:rgba(255,255,255,.9);color:#08080a;border-color:rgba(255,255,255,.92)}
-button.small{flex:0;padding:8px 11px;font-size:12px;border-radius:14px}
+button.small{flex:0 0 auto;width:auto;padding:8px 12px;font-size:12px;border-radius:14px;white-space:nowrap}
 .top{position:sticky;top:0;z-index:30;padding:8px 8px calc(8px + env(safe-area-inset-top));display:grid;grid-template-columns:repeat(4,1fr) auto;gap:7px;background:rgba(7,7,8,.58);backdrop-filter:blur(28px);-webkit-backdrop-filter:blur(28px);border-bottom:1px solid rgba(255,255,255,.12)}
 #fsbtn{width:48px;font-size:18px}
 #gate{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:22px;background:radial-gradient(circle at 50% 0,#444 0,#141416 46%,#070708 100%)}
@@ -206,6 +206,14 @@ button.small{flex:0;padding:8px 11px;font-size:12px;border-radius:14px}
 .msg.user{align-self:flex-end;background:rgba(255,255,255,.88);color:#08080a}.msg.system,.msg.tool{align-self:center;color:var(--mut);font-size:12px}.msg.assistant{align-self:flex-start}
 .chatBox{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}.chatBox button{width:86px}.quick{display:flex;gap:7px;overflow:auto;padding-bottom:3px}.quick button{white-space:nowrap;flex:0 0 auto}
 .dragOn{background:rgba(255,255,255,.9)!important;color:#09090a!important}
+/* Landscape "fake fullscreen" for devices without the Fullscreen API (e.g. Kindle): rotate the
+   mirror 90° and fill the screen so a portrait e-reader is used as a landscape monitor. */
+#fsexit{display:none}
+body.fakefs{overflow:hidden}
+body.fakefs #screenwrap{position:fixed;top:50%;left:50%;width:100vh;height:100vw;max-height:none;min-height:0;transform:translate(-50%,-50%) rotate(90deg);transform-origin:center center;background:#000;z-index:60;border:0}
+body.fakefs #screen{max-width:100%;max-height:100%;width:auto;height:auto}
+body.fakefs .toolbar,body.fakefs .tag,body.fakefs .top{display:none}
+body.fakefs #fsexit{display:block;position:fixed;z-index:70;left:8px;top:50%;transform:translateY(-50%) rotate(90deg);transform-origin:center center;background:rgba(0,0,0,.55);font-size:13px;padding:8px 13px;border-radius:14px;flex:0 0 auto;width:auto}
 @media(max-width:410px){button{font-size:13px;padding:12px 8px}.top{gap:5px}.toolbar{left:10px;right:auto;top:auto;bottom:10px}.tag{top:10px}}
 </style></head><body>
 <div id=gate>
@@ -223,6 +231,7 @@ button.small{flex:0;padding:8px 11px;font-size:12px;border-radius:14px}
   <button id=m_chat onclick="setMode('chat')">Chat</button>
   <button id=fsbtn onclick="toggleFS()" title=Fullscreen>⛶</button>
 </nav>
+<button id=fsexit onclick="toggleFS()">✕ Exit fullscreen</button>
 
 <div id=screenwrap class=modepane data-mode=full>
   <img id=screen decoding=async>
@@ -340,15 +349,21 @@ button.small{flex:0;padding:8px 11px;font-size:12px;border-radius:14px}
 </section>
 
 <script>
-let PIN="",SW=0,SH=0,MODE="full",img=document.getElementById("screen"),lastUrl="",fetching=false,dragLock=false,chatLoop=false;
+let PIN="",SW=0,SH=0,MODE="full",img=document.getElementById("screen"),lastUrl="",fetching=false,dragLock=false,chatLoop=false,FAKEFS=false;
 let QUAL=[{label:"Speed",maxw:1100,q:62,hd:0},{label:"Balanced",maxw:1500,q:78,hd:1},{label:"Sharp",maxw:1920,q:86,hd:1}],QI=1;
 let SPEEDS=[90,160,300,650],SLABEL=["Ultra","Fast","Smooth","Lite"],SPI=1,SPEED=SPEEDS[SPI];
 async function post(o){o.pin=PIN;try{return (await fetch("/api/event",{method:"POST",body:JSON.stringify(o)})).ok}catch(e){return false}}
 function screenUrl(){let q=QUAL[QI];return `/api/screen?pin=${encodeURIComponent(PIN)}&hd=${q.hd}&maxw=${q.maxw}&q=${q.q}&t=${Date.now()}`}
 async function connect(){PIN=document.getElementById("pin").value.trim();let r=await fetch(screenUrl(),{cache:"no-store"});if(!r.ok){document.getElementById("err").textContent="Wrong PIN";return}SW=+r.headers.get("X-Screen-W");SH=+r.headers.get("X-Screen-H");document.getElementById("gate").style.display="none";loop();pollChat()}
 async function loop(){if(MODE!=="full"||document.hidden){setTimeout(loop,450);return}if(fetching){setTimeout(loop,70);return}fetching=true;let start=performance.now();
- try{let r=await fetch(screenUrl(),{cache:"no-store"});if(r.ok){let b=await r.blob();let url=URL.createObjectURL(b);let old=lastUrl;lastUrl=url;img.src=url;if(old)URL.revokeObjectURL(old);SW=+r.headers.get("X-Screen-W")||SW;SH=+r.headers.get("X-Screen-H")||SH;document.getElementById("tag").textContent=`live · ${Math.round(b.size/1024)} KB`}}catch(e){document.getElementById("tag").textContent="reconnecting"}finally{fetching=false;setTimeout(loop,Math.max(35,SPEED-(performance.now()-start)))}}
-function pxy(e){let b=img.getBoundingClientRect(),x=(e.clientX-b.left)/b.width,y=(e.clientY-b.top)/b.height;if(x<0||x>1||y<0||y>1)return null;return{x:Math.round(x*SW),y:Math.round(y*SH),cx:e.clientX,cy:e.clientY}}
+ try{let r=await fetch(screenUrl(),{cache:"no-store"});if(r.ok){let b=await r.blob();let url=URL.createObjectURL(b);
+  // Double-buffer: decode the new frame OFF-screen first, then swap. Without this the <img>
+  // briefly clears to black between frames on slow e-ink WebKit (the Kindle "flashing" bug).
+  await new Promise(res=>{let im=new Image();im.onload=res;im.onerror=res;im.src=url});
+  let old=lastUrl;lastUrl=url;img.src=url;if(old)URL.revokeObjectURL(old);SW=+r.headers.get("X-Screen-W")||SW;SH=+r.headers.get("X-Screen-H")||SH;document.getElementById("tag").textContent=`live · ${Math.round(b.size/1024)} KB`}}catch(e){document.getElementById("tag").textContent="reconnecting"}finally{fetching=false;setTimeout(loop,Math.max(35,SPEED-(performance.now()-start)))}}
+function pxy(e){let b=img.getBoundingClientRect();let rx=(e.clientX-b.left)/b.width,ry=(e.clientY-b.top)/b.height;let x,y;
+ if(FAKEFS){x=ry;y=1-rx;}else{x=rx;y=ry;}   // landscape fake-fullscreen rotates the mirror 90° CW
+ if(x<0||x>1||y<0||y>1)return null;return{x:Math.round(x*SW),y:Math.round(y*SH),cx:e.clientX,cy:e.clientY}}
 let sd=null,screenDrag=false,lastDrag=0;
 img.addEventListener("pointerdown",e=>{let p=pxy(e);if(!p)return;e.preventDefault();img.setPointerCapture&&img.setPointerCapture(e.pointerId);sd=p;screenDrag=dragLock;if(dragLock)post({t:"dragstart",x:p.x,y:p.y});});
 img.addEventListener("pointermove",e=>{if(!sd)return;let p=pxy(e);if(!p)return;e.preventDefault();let moved=Math.abs(p.cx-sd.cx)+Math.abs(p.cy-sd.cy);if(!screenDrag&&moved>9){screenDrag=true;post({t:"dragstart",x:sd.x,y:sd.y});document.getElementById("tag").textContent="dragging"}if(screenDrag&&performance.now()-lastDrag>16){post({t:"dragto",x:p.x,y:p.y});lastDrag=performance.now()}});
@@ -366,7 +381,11 @@ function macro(n){post({t:"macro",name:n});flash(n.replace(/_/g," ")+" ✓")}
 function runcmd(){let i=document.getElementById("cmdx");if(i&&i.value){post({t:"macro_cmd",cmd:i.value});flash("ran ✓");i.value=""}}
 function sendtext(){let i=document.getElementById("tx");if(i.value){post({t:"type",text:i.value});i.value=""}}
 function setMode(m){MODE=m;document.querySelectorAll(".modepane").forEach(el=>{el.style.display=el.dataset.mode===m?(m==="chat"?"grid":""):"none"});["full","mouse","kb","chat"].forEach(x=>document.getElementById("m_"+x).classList.toggle("on",x===m));if(m==="kb")setTimeout(()=>document.getElementById("livekb").focus(),60);if(m==="chat")pollChat()}
-function toggleFS(){let d=document.getElementById("screenwrap");if(!document.fullscreenElement&&!document.webkitFullscreenElement)(d.requestFullscreen||d.webkitRequestFullscreen||function(){}).call(d);else(document.exitFullscreen||document.webkitExitFullscreen||function(){}).call(document)}
+function fsSupported(){let d=document.getElementById("screenwrap");return !!((d.requestFullscreen||d.webkitRequestFullscreen)&&(document.fullscreenEnabled||document.webkitFullscreenEnabled))}
+function toggleFS(){let d=document.getElementById("screenwrap");
+ if(fsSupported()){if(!document.fullscreenElement&&!document.webkitFullscreenElement)(d.requestFullscreen||d.webkitRequestFullscreen).call(d);else(document.exitFullscreen||document.webkitExitFullscreen).call(document);return}
+ // No Fullscreen API (e.g. Kindle): rotate the mirror to landscape and fill the screen instead.
+ FAKEFS=!FAKEFS;document.body.classList.toggle("fakefs",FAKEFS);flash(FAKEFS?"landscape":"live")}
 function cycleQuality(){QI=(QI+1)%QUAL.length;document.getElementById("qbtn").textContent=QUAL[QI].label}
 function cycleSpeed(){SPI=(SPI+1)%SPEEDS.length;SPEED=SPEEDS[SPI];document.getElementById("spdbtn").textContent=SLABEL[SPI]}
 function toggleDragLock(){dragLock=!dragLock;["dragBtn","dragBtn2"].forEach(id=>{let b=document.getElementById(id);if(b){b.classList.toggle("dragOn",dragLock);b.textContent=dragLock?"Dragging On":"Drag Lock"}});if(!dragLock)post({t:"up"})}

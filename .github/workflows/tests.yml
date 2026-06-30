@@ -69,7 +69,9 @@ jobs:
             test_security_dashboard.py \
             test_remote_macros.py \
             test_push_to_talk.py \
-            test_mac_keys.py; do
+            test_mac_keys.py \
+            test_terminal.py \
+            test_agent_tasks.py; do
               echo "::group::$t"
               python "$t"
               echo "::endgroup::"
