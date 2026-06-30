@@ -35,6 +35,19 @@ def test_app_shell_is_installable_and_calls_gemini():
     assert "ember_ai_key" in h and "localStorage" in h   # key stored on-device
 
 
+def test_app_has_voice_web_and_scanner_features():
+    h = _read("index.html")
+    # voice in + out
+    assert "SpeechRecognition" in h and "speechSynthesis" in h
+    # live web-search grounding + source rendering
+    assert "google_search" in h and "groundingChunks" in h
+    # local file-safety scanner (private, on-device): heuristics + hashing
+    assert "scanBytes" in h and "crypto.subtle.digest" in h
+    assert "EICAR" in h and "Windows executable" in h
+    # share / copy utilities
+    assert "navigator.share" in h and "clipboard" in h
+
+
 def test_service_worker_caches_shell():
     s = _read("sw.js")
     assert "caches.open" in s and "index.html" in s
