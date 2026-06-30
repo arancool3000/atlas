@@ -1,6 +1,6 @@
 /* Ember AI — service worker. Caches the app shell so it installs to the Home Screen and launches
    offline like a native app. API calls (cross-origin, to Google) always go to the network. */
-const CACHE = "ember-ai-v1";
+const CACHE = "ember-ai-v2";
 const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon.png"];
 
 self.addEventListener("install", (e) => {
