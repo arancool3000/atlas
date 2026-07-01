@@ -41,19 +41,39 @@ def _self_private_calls(cls):
     return calls
 
 
-def test_settings_dialog_calls_are_defined():
+def _assert_self_calls_defined(cls_name: str):
     tree = ast.parse(open(_UI, encoding="utf-8").read())
-    cls = _class_node(tree, "SettingsDialog")
+    cls = _class_node(tree, cls_name)
     defined = _defined_names(cls)
     called = _self_private_calls(cls)
     missing = sorted(c for c in called if c not in defined)
     assert not missing, (
-        "SettingsDialog calls self._<name>() that it doesn't define (these only live on "
-        f"EmberWindow and crash at runtime): {missing}. Define them on SettingsDialog or forward "
-        "to the parent window.")
+        f"{cls_name} calls self._<name>() that it doesn't define (crashes at runtime with "
+        f"AttributeError): {missing}. Define them on {cls_name} or forward to the parent window.")
+
+
+def test_settings_dialog_calls_are_defined():
+    _assert_self_calls_defined("SettingsDialog")
+
+
+def test_terminal_dialog_calls_are_defined():
+    _assert_self_calls_defined("TerminalDialog")
+
+
+def test_agents_dialog_calls_are_defined():
+    _assert_self_calls_defined("AgentsDialog")
+
+
+def test_remote_link_dialog_calls_are_defined():
+    _assert_self_calls_defined("RemoteLinkDialog")
 
 
 if __name__ == "__main__":
-    test_settings_dialog_calls_are_defined()
-    print("  ok  test_settings_dialog_calls_are_defined")
-    print("\n1/1 settings-dialog method tests passed")
+    tests = [v for k, v in sorted(globals().items())
+             if k.startswith("test_") and callable(v)]
+    passed = 0
+    for t in tests:
+        t()
+        print(f"  ok  {t.__name__}")
+        passed += 1
+    print(f"\n{passed}/{len(tests)} settings-dialog method tests passed")

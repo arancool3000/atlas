@@ -1,4 +1,5 @@
-"""Ember Link - control this PC from a phone browser on the same Wi-Fi.
+"""Ember Link - control this PC from a phone browser on the same Wi-Fi, or (opt-in) from
+ANYWHERE via a tunnel (see tunnel.py + enable_remote()).
 
 Self-contained: pure Python stdlib HTTP server (no Flask, no websockets, no cloud
 backend). Ember starts it; you open the printed URL on your phone, enter the PIN, and
@@ -6,11 +7,21 @@ you get a live view of the PC screen plus a trackpad/keyboard. Tap the screen im
 click exactly there - so even with no working mouse/keyboard drivers on the PC, the phone
 drives it.
 
-Security: binds to the LAN, gated by a random per-session PIN. It's a manual remote, so
-keep the PIN private and stop the server when done. Not meant to face the public internet.
+Security model: two credentials, deliberately scoped differently.
+  - The short PIN only ever authenticates requests that arrive from a private/LAN source
+    address (see _is_lan_ip). This matters because a Cloudflare/ngrok tunnel forwards public
+    traffic to `localhost`, so a tunnel-relayed request looks IDENTICAL to a local one at the
+    socket level (source IP 127.0.0.1) - if the PIN worked there too, anyone who found the
+    public tunnel URL could just brute-force the 6-digit PIN over the internet. Restricting PIN
+    auth to real LAN-looking addresses closes that.
+  - The long pairing token (issue_pair_token) is what a device gets AFTER proving it knows the
+    PIN from the LAN, and it works from anywhere (LAN or the public tunnel). That's the "pair on
+    Wi-Fi, then roam" flow: pairing itself can only happen on the LAN; once paired, the token -
+    never the PIN - is what the internet-facing tunnel accepts.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import secrets
 import socket
@@ -45,6 +56,100 @@ _AUTH_LOCK = threading.Lock()
 _AUTH_MAX_FAILS = 5         # failures within the window before lockout
 _AUTH_WINDOW_S = 60.0       # rolling window for counting failures
 _AUTH_LOCKOUT_S = 120.0     # cooldown once locked out
+
+
+# Pairing tokens: a phone pairs once on the LAN (proves it knows the PIN) and gets a LONG random
+# secret. Remote (off-network) connections authenticate with that token instead of the short PIN,
+# so the PIN is never the thing standing between the internet and your computer. Tokens persist so
+# pairing survives restarts; revoke_pairings() unpairs every device.
+# Stored as an ORDER-PRESERVING list (oldest first) so trimming to _MAX_TOKENS keeps the newest
+# ones — a plain set() has no defined order, so slicing it wouldn't reliably keep new tokens.
+_PAIR_TOKENS: list[str] = []
+_TOKEN_LOCK = threading.Lock()
+_TOKENS_LOADED = False
+_MAX_TOKENS = 24
+
+
+def _tokens_file():
+    return _data_dir() / "remote_tokens.txt"
+
+
+def _load_tokens() -> None:
+    global _TOKENS_LOADED
+    if _TOKENS_LOADED:
+        return
+    try:
+        f = _tokens_file()
+        if f.exists():
+            with _TOKEN_LOCK:
+                for ln in f.read_text().splitlines():
+                    t = ln.strip()
+                    if len(t) >= 20 and t not in _PAIR_TOKENS:
+                        _PAIR_TOKENS.append(t)
+    except OSError:
+        pass
+    _TOKENS_LOADED = True
+
+
+def _save_tokens() -> None:
+    try:
+        with _TOKEN_LOCK:
+            data = "\n".join(_PAIR_TOKENS[-_MAX_TOKENS:])
+        _tokens_file().write_text(data)
+    except OSError:
+        pass
+
+
+def issue_pair_token() -> str:
+    """Mint, persist and return a new long pairing token (called after a PIN-verified pairing)."""
+    _load_tokens()
+    tok = secrets.token_urlsafe(32)
+    with _TOKEN_LOCK:
+        _PAIR_TOKENS.append(tok)
+        # keep the list bounded (oldest dropped first) to avoid unbounded growth
+        del _PAIR_TOKENS[:-_MAX_TOKENS]
+    _save_tokens()
+    return tok
+
+
+def _token_valid(tok) -> bool:
+    tok = str(tok or "")
+    if len(tok) < 20:
+        return False
+    _load_tokens()
+    with _TOKEN_LOCK:
+        toks = list(_PAIR_TOKENS)
+    for t in toks:
+        if secrets.compare_digest(tok, t):
+            return True
+    return False
+
+
+def revoke_pairings() -> dict:
+    """Forget every paired device (they'll need to re-pair on the LAN)."""
+    _load_tokens()
+    with _TOKEN_LOCK:
+        n = len(_PAIR_TOKENS)
+        _PAIR_TOKENS.clear()
+    _save_tokens()
+    return {"ok": True, "revoked": n}
+
+
+def paired_count() -> int:
+    _load_tokens()
+    with _TOKEN_LOCK:
+        return len(_PAIR_TOKENS)
+
+
+def _is_lan_ip(ip: str) -> bool:
+    """True for a genuine private/LAN address (192.168.x.x, 10.x.x.x, etc.) - deliberately FALSE
+    for loopback (127.0.0.1 / ::1), because that's what a tunnel-relayed public request looks
+    like once cloudflared/ngrok forwards it to localhost. Used to keep the short PIN LAN-only."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    return addr.is_private and not addr.is_loopback
 
 
 def _auth_locked(ip: str) -> bool:
@@ -374,12 +479,15 @@ body.fakefs #fsexit{display:block;position:fixed;z-index:70;left:8px;top:50%;tra
 </section>
 
 <script>
-let PIN="",SW=0,SH=0,MODE="full",img=document.getElementById("screen"),lastUrl="",fetching=false,dragLock=false,chatLoop=false,FAKEFS=false;
+let PIN=localStorage.getItem("ember_pin")||"",TOK=localStorage.getItem("ember_tok")||"",SW=0,SH=0,MODE="full",img=document.getElementById("screen"),lastUrl="",fetching=false,dragLock=false,chatLoop=false,FAKEFS=false;
 let QUAL=[{label:"Speed",maxw:1100,q:62,hd:0},{label:"Balanced",maxw:1500,q:78,hd:1},{label:"Sharp",maxw:1920,q:86,hd:1}],QI=1;
 let SPEEDS=[90,160,300,650],SLABEL=["Ultra","Fast","Smooth","Lite"],SPI=1,SPEED=SPEEDS[SPI];
-async function post(o){o.pin=PIN;try{return (await fetch("/api/event",{method:"POST",body:JSON.stringify(o)})).ok}catch(e){return false}}
-function screenUrl(){let q=QUAL[QI];return `/api/screen?pin=${encodeURIComponent(PIN)}&hd=${q.hd}&maxw=${q.maxw}&q=${q.q}&t=${Date.now()}`}
-async function connect(){PIN=document.getElementById("pin").value.trim();let r=await fetch(screenUrl(),{cache:"no-store"});if(!r.ok){document.getElementById("err").textContent="Wrong PIN";return}SW=+r.headers.get("X-Screen-W");SH=+r.headers.get("X-Screen-H");document.getElementById("gate").style.display="none";loop();pollChat()}
+async function post(o){o.pin=PIN;o.tok=TOK;try{return (await fetch("/api/event",{method:"POST",body:JSON.stringify(o)})).ok}catch(e){return false}}
+function screenUrl(){let q=QUAL[QI];return `/api/screen?pin=${encodeURIComponent(PIN)}&tok=${encodeURIComponent(TOK)}&hd=${q.hd}&maxw=${q.maxw}&q=${q.q}&t=${Date.now()}`}
+async function pair(){try{let r=await fetch("/api/pair",{method:"POST",body:JSON.stringify({pin:PIN,tok:TOK})});if(r.ok){let j=await r.json();if(j&&j.token){TOK=j.token;localStorage.setItem("ember_tok",TOK);}}}catch(e){}}
+function go(){document.getElementById("gate").style.display="none";loop();pollChat()}
+async function connect(){PIN=document.getElementById("pin").value.trim();let r=await fetch(screenUrl(),{cache:"no-store"});if(!r.ok){document.getElementById("err").textContent="Wrong PIN";return}SW=+r.headers.get("X-Screen-W");SH=+r.headers.get("X-Screen-H");localStorage.setItem("ember_pin",PIN);await pair();go()}
+async function tryAuto(){if(!TOK&&!PIN)return false;try{let r=await fetch(screenUrl(),{cache:"no-store"});if(r.ok){SW=+r.headers.get("X-Screen-W");SH=+r.headers.get("X-Screen-H");go();return true;}}catch(e){}return false;}
 async function loop(){if(MODE!=="full"||document.hidden){setTimeout(loop,450);return}if(fetching){setTimeout(loop,70);return}fetching=true;let start=performance.now();
  try{let r=await fetch(screenUrl(),{cache:"no-store"});if(r.ok){let b=await r.blob();let url=URL.createObjectURL(b);
   // Double-buffer: decode the new frame OFF-screen first, then swap. Without this the <img>
@@ -417,11 +525,13 @@ function toggleDragLock(){dragLock=!dragLock;["dragBtn","dragBtn2"].forEach(id=>
 let livekb=document.getElementById("livekb");livekb.addEventListener("keydown",e=>{let k=e.key;if(k.length===1){post({t:"type",text:k});e.preventDefault()}else if(k==="Backspace"){key("backspace");e.preventDefault()}else if(k==="Enter"){key("enter");e.preventDefault()}else if(k==="Tab"){key("tab");e.preventDefault()}else if(k.indexOf("Arrow")===0){key(k.slice(5).toLowerCase());e.preventDefault()}livekb.value=""});
 function esc(s){return String(s||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[m]))}
 function renderChat(items){let log=document.getElementById("chatLog");log.innerHTML=(items&&items.length?items:[{role:"system",text:"Remote chat is ready. Tell Ember what to do on the desktop."}]).map(m=>`<div class="msg ${esc(m.role)}">${esc(m.text)}</div>`).join("");log.scrollTop=log.scrollHeight}
-function pollChat(){if(chatLoop||!PIN)return;chatLoop=true;chatTick()}
-async function chatTick(){if(!PIN){chatLoop=false;return}try{let r=await fetch("/api/chat?pin="+encodeURIComponent(PIN),{cache:"no-store"});if(r.ok){let j=await r.json();renderChat(j.messages||[])}}catch(e){}setTimeout(chatTick,MODE==="chat"?750:1800)}
-async function sendChat(){let i=document.getElementById("chatInput"),text=i.value.trim();if(!text)return;i.value="";await fetch("/api/chat",{method:"POST",body:JSON.stringify({pin:PIN,text})});pollChat()}
+function pollChat(){if(chatLoop||(!PIN&&!TOK))return;chatLoop=true;chatTick()}
+async function chatTick(){if(!PIN&&!TOK){chatLoop=false;return}try{let r=await fetch("/api/chat?pin="+encodeURIComponent(PIN)+"&tok="+encodeURIComponent(TOK),{cache:"no-store"});if(r.ok){let j=await r.json();renderChat(j.messages||[])}}catch(e){}setTimeout(chatTick,MODE==="chat"?750:1800)}
+async function sendChat(){let i=document.getElementById("chatInput"),text=i.value.trim();if(!text)return;i.value="";await fetch("/api/chat",{method:"POST",body:JSON.stringify({pin:PIN,tok:TOK,text})});pollChat()}
 document.querySelectorAll("[data-chat]").forEach(b=>b.addEventListener("click",()=>{document.getElementById("chatInput").value=b.dataset.chat;sendChat()}));
 document.getElementById("chatInput").addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat()}});
+// Already paired on this device? Reconnect automatically (works from any network via the token).
+tryAuto();
 </script></body></html>"""
 
 
@@ -463,12 +573,17 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # silence console spam
         pass
 
-    def _auth(self, pin):
+    def _auth(self, pin, tok=None):
+        """Authorise a request by the short PIN (LAN-only) OR a long pairing token (anywhere).
+        The PIN is deliberately rejected for non-LAN-looking source addresses - see _is_lan_ip -
+        so a public tunnel can never be brute-forced with the 6-digit PIN, only a real token."""
         ip = self.client_address[0] if self.client_address else "?"
         if _auth_locked(ip):
             time.sleep(1.0)  # slow even the rejection while locked out
             return False
-        ok = bool(_STATE["pin"]) and secrets.compare_digest(str(pin or ""), str(_STATE["pin"]))
+        pin_ok = (bool(_STATE["pin"]) and _is_lan_ip(ip)
+                  and secrets.compare_digest(str(pin or ""), str(_STATE["pin"])))
+        ok = pin_ok or _token_valid(tok)
         if ok:
             _STATE["last_active"] = time.time()  # refresh the idle-timeout watchdog
         else:
@@ -507,7 +622,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/screen"):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
-            if not self._auth((q.get("pin") or [""])[0]):
+            if not self._auth((q.get("pin") or [""])[0], (q.get("tok") or [""])[0]):
                 self.send_response(403); self.end_headers(); return
             try:
                 hd = (q.get("hd") or ["1"])[0] != "0"
@@ -529,7 +644,7 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/api/chat"):
             from urllib.parse import urlparse, parse_qs
             q = parse_qs(urlparse(self.path).query)
-            if not self._auth((q.get("pin") or [""])[0]):
+            if not self._auth((q.get("pin") or [""])[0], (q.get("tok") or [""])[0]):
                 self.send_response(403); self.end_headers(); return
             body = json.dumps({"ok": True, "messages": _chat_snapshot()}).encode("utf-8")
             self.send_response(200)
@@ -542,13 +657,31 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(404); self.end_headers()
 
     def do_POST(self):
+        if self.path == "/api/pair":
+            # A device on the LAN proves it knows the PIN (or already holds a token) and gets a
+            # long pairing token, so it can reconnect from anywhere afterwards.
+            try:
+                n = int(self.headers.get("Content-Length", 0))
+                o = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                o = {}
+            if not self._auth(o.get("pin"), o.get("tok")):
+                self.send_response(403); self.end_headers(); return
+            body = json.dumps({"ok": True, "token": issue_pair_token()}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/api/chat":
             try:
                 n = int(self.headers.get("Content-Length", 0))
                 o = json.loads(self.rfile.read(n) or b"{}")
             except Exception:
                 o = {}
-            if not self._auth(o.get("pin")):
+            if not self._auth(o.get("pin"), o.get("tok")):
                 self.send_response(403); self.end_headers(); return
             text = str(o.get("text", "")).strip()
             if not text:
@@ -577,7 +710,7 @@ class _Handler(BaseHTTPRequestHandler):
             o = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             o = {}
-        if not self._auth(o.get("pin")):
+        if not self._auth(o.get("pin"), o.get("tok")):
             self.send_response(403); self.end_headers(); return
         try:
             _apply(o)
@@ -794,6 +927,7 @@ def start(port: int = 8765, pin: str | None = None, idle_timeout: float = 1800.0
     """Start Ember Link. Returns the phone URL + PIN to display in the UI.
     Uses a stable PIN by default so it's the same every session/boot.
     Auto-stops after `idle_timeout` seconds with no successful auth (0 disables)."""
+    _load_tokens()
     if _STATE["server"]:
         return {"ok": True, "url": _STATE["url"], "pin": _STATE["pin"], "already_running": True}
     pin = pin or stable_pin()
@@ -813,8 +947,49 @@ def start(port: int = 8765, pin: str | None = None, idle_timeout: float = 1800.0
             "hint": f"On your phone (same Wi-Fi) open {_STATE['url']} and enter PIN {pin}"}
 
 
+# Remote-access (beyond-Wi-Fi) tunnel — OFF by default; the user opts in via enable_remote().
+_REMOTE = {"tunnel": None}
+
+
+def enable_remote(port: int | None = None) -> dict:
+    """Open a public tunnel so Ember Link is reachable from outside the Wi-Fi. The server must be
+    running. Remote connections still require a pairing token (issued on the LAN), so the short
+    PIN is never exposed to the internet. Returns {ok, url} (the anywhere-URL) or an error+hint."""
+    if not _STATE.get("server"):
+        return {"ok": False, "error": "start Ember Link first"}
+    try:
+        import tunnel
+    except Exception as e:
+        return {"ok": False, "error": f"tunnel module unavailable: {e}"}
+    tm = _REMOTE.get("tunnel")
+    if tm is None:
+        tm = tunnel.TunnelManager()
+        _REMOTE["tunnel"] = tm
+    res = tm.start(int(port or _STATE.get("port") or 8765))
+    if res.get("ok"):
+        _STATE["last_active"] = time.time()
+        res["pin"] = _STATE.get("pin")
+        res["hint"] = ("On your phone (on the same Wi-Fi first) open the LOCAL link and enter the "
+                       "PIN once to pair, then this link works from anywhere: " + res["url"])
+    return res
+
+
+def disable_remote() -> dict:
+    tm = _REMOTE.get("tunnel")
+    if tm is None:
+        return {"ok": True, "stopped": False}
+    r = tm.stop()
+    return {"ok": True, "stopped": bool(r.get("stopped"))}
+
+
+def remote_url() -> str:
+    tm = _REMOTE.get("tunnel")
+    return (tm.status().get("url") if tm else "") or ""
+
+
 def stop() -> dict:
     srv = _STATE.get("server")
+    disable_remote()  # tear down any public tunnel too
     if not srv:
         return {"ok": True, "stopped": False}
     try:
@@ -831,4 +1006,5 @@ def stop() -> dict:
 
 def status() -> dict:
     return {"ok": True, "running": bool(_STATE.get("server")),
-            "url": _STATE.get("url"), "pin": _STATE.get("pin")}
+            "url": _STATE.get("url"), "pin": _STATE.get("pin"),
+            "remote_url": remote_url(), "paired": paired_count()}

@@ -37,7 +37,10 @@ Free, MIT-licensed, and private — your API key stays on your machine; there ar
   a Python session that persists between runs — no need to leave Ember.
 - **Parallel agent tasks** — kick off several Ember jobs at once and track each one's live status
   and output in a dashboard (`/agents`); stop any of them.
-- **Phone Link** — control your computer from your phone's browser on the same Wi-Fi.
+- **Phone Link** — control your computer from your phone's browser on the same Wi-Fi, with an
+  opt-in **connect from anywhere** mode: pair once on Wi-Fi, then reach your computer from any
+  network via a Cloudflare Tunnel — the short PIN never leaves your LAN (only a long pairing
+  token, minted after a Wi-Fi pairing, is accepted remotely).
 - **Quit-proof global hotkey** — summon Ember from anywhere, even when it's fully closed.
 
 ### 🌐 Browser & web
@@ -224,6 +227,15 @@ installs with its own icon and launches full-screen like a native app (it’s a 
 iPad-optimised layout. A native iPad app can’t control a computer (iOS sandboxing), so this
 client is the supported way to use an iPad with Ember.
 
+**Connect from anywhere (opt-in):** in the Ember Link panel, check **“Connect from anywhere.”**
+This starts an outbound [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+(`brew install cloudflared` on macOS) and shows a public link. The flow is *pair on Wi-Fi, then
+roam*: the first time a device connects on your Wi-Fi and enters the PIN, it silently exchanges
+that for a long-lived pairing token — after that, the same device can reconnect from any network
+using the public link, no PIN needed. The short PIN itself is **never** accepted over the public
+tunnel (only from a real LAN address), so there’s nothing for the internet to brute-force. Revoke
+every paired device any time from the same panel.
+
 ---
 
 ## 🛡️ Built-in malware defense
@@ -376,7 +388,8 @@ tunnel up — and it never claims to be connected when it isn't.
 | `integrations.py` | Slack / Telegram / Discord / webhook notifications |
 | `tool_args.py` | coerces tool arguments to their declared types |
 | `screen_vision.py` | exact clicking + on-screen OCR |
-| `remote_server.py` | Ember Link phone control |
+| `remote_server.py` | Ember Link phone control (LAN + pairing-token auth for remote access) |
+| `tunnel.py` | outbound public tunnel (Cloudflare Tunnel) for Ember Link's "connect from anywhere" |
 | `antivirus.py` | malware scan (entropy + IOC signatures), quarantine vault & sandbox |
 | `security_center.py` | unified always-on active scanning (processes/files/network/persistence) + watchdog |
 | `fileless_guard.py` | always-on fileless / behavioral process monitor |
