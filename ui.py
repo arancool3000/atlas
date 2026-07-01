@@ -4285,6 +4285,136 @@ class AgentsDialog(QDialog):
         super().closeEvent(e)
 
 
+class RemoteLinkDialog(QDialog):
+    """Ember Link: control this computer from a phone/tablet — on the same Wi-Fi, or (opt-in)
+    from anywhere via a public tunnel. Pairing works like this: a device on the Wi-Fi enters the
+    PIN once and the phone silently exchanges it for a long-lived token; that token (not the PIN)
+    is what remote connections use, so the short PIN never has to face the public internet.
+    Tunnel start/stop runs off the UI thread (opening a tunnel can take a few seconds)."""
+
+    _remote_result = pyqtSignal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Ember Link")
+        self.setMinimumSize(520, 420)
+        import remote_server
+        self._rs = remote_server
+        self._remote_result.connect(self._on_remote_result)
+        self._busy = False
+
+        v = QVBoxLayout(self)
+        head = QLabel("📱  Ember Link")
+        head.setObjectName("title")
+        v.addWidget(head)
+
+        self.local_info = QLabel("")
+        self.local_info.setWordWrap(True)
+        self.local_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(self.local_info)
+
+        v.addWidget(self._hint(
+            "1. Connect your phone to the SAME Wi-Fi as this computer.\n"
+            "2. Open the address above in the phone browser and enter the PIN.\n"
+            "That pairs the device — after this, 'Connect from anywhere' below will work on that "
+            "same phone even off this Wi-Fi, without re-entering the PIN."))
+
+        line = QFrame(); line.setFrameShape(QFrame.Shape.HLine); v.addWidget(line)
+
+        self.remote_check = QCheckBox("Connect from anywhere (beyond this Wi-Fi)")
+        self.remote_check.toggled.connect(self._toggle_remote)
+        v.addWidget(self.remote_check)
+
+        self.remote_info = QLabel("")
+        self.remote_info.setWordWrap(True)
+        self.remote_info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(self.remote_info)
+
+        v.addWidget(self._hint(
+            "Uses an outbound Cloudflare Tunnel (free, no account) — nothing is opened on your "
+            "router. Remote connections need a paired device's token, never the short PIN, so "
+            "pairing on Wi-Fi first is required and safe."))
+
+        self.paired_label = QLabel("")
+        self.paired_label.setStyleSheet("color:#565f89;font-size:11px;")
+        v.addWidget(self.paired_label)
+
+        btns = QHBoxLayout()
+        self.revoke_btn = QPushButton("Revoke all pairings")
+        self.revoke_btn.clicked.connect(self._revoke)
+        btns.addWidget(self.revoke_btn)
+        btns.addStretch()
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        btns.addWidget(close)
+        v.addLayout(btns)
+
+        self._refresh()
+
+    def _hint(self, text: str) -> QLabel:
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        lab.setStyleSheet("color:#565f89;font-size:11px;")
+        return lab
+
+    def _refresh(self):
+        st = self._rs.status()
+        if st.get("running"):
+            self.local_info.setText(
+                f"<b>{st.get('url','')}</b>  ·  PIN <b>{st.get('pin','')}</b>")
+        else:
+            self.local_info.setText("Ember Link is not running.")
+        remote_url = st.get("remote_url") or ""
+        self.remote_check.blockSignals(True)
+        self.remote_check.setChecked(bool(remote_url))
+        self.remote_check.blockSignals(False)
+        self.remote_info.setText(f"<b>{remote_url}</b>" if remote_url else "")
+        n = st.get("paired", 0)
+        self.paired_label.setText(f"{n} device(s) paired for remote access." if n
+                                  else "No devices paired yet.")
+
+    def _toggle_remote(self, on: bool):
+        if self._busy:
+            return
+        if not self._rs.status().get("running"):
+            QMessageBox.warning(self, "Ember Link", "Start Ember Link first (open it from the "
+                                "Command Center), then enable remote access.")
+            self.remote_check.blockSignals(True); self.remote_check.setChecked(False)
+            self.remote_check.blockSignals(False)
+            return
+        self._busy = True
+        self.remote_check.setEnabled(False)
+        self.remote_info.setText("Starting tunnel…" if on else "Stopping…")
+
+        def work():
+            res = self._rs.enable_remote() if on else self._rs.disable_remote()
+            res["_enabling"] = on
+            self._remote_result.emit(res)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_remote_result(self, res: dict):
+        self._busy = False
+        self.remote_check.setEnabled(True)
+        if res.get("_enabling") and not res.get("ok"):
+            self.remote_check.blockSignals(True); self.remote_check.setChecked(False)
+            self.remote_check.blockSignals(False)
+            hint = res.get("install") or ""
+            QMessageBox.warning(self, "Couldn't enable remote access",
+                                (res.get("error") or "Unknown error") + (f"\n\n{hint}" if hint else ""))
+        elif res.get("_enabling") and res.get("ok") and res.get("url"):
+            # Trust the just-returned URL for the immediate UI update rather than depending on a
+            # second status() round-trip landing before _refresh() below reads it.
+            self.remote_info.setText(f"<b>{res['url']}</b>")
+        self._refresh()
+
+    def _revoke(self):
+        r = self._rs.revoke_pairings()
+        QMessageBox.information(self, "Ember Link", f"Revoked {r.get('revoked', 0)} paired device(s). "
+                                "They'll need to re-pair on your Wi-Fi.")
+        self._refresh()
+
+
 class EmberWindow(QWidget):
     def __init__(self):
         super().__init__()
@@ -7003,7 +7133,8 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             self._add_bubble("error", f"Could not open Ember Browser: {e}")
 
     def _start_remote_control(self):
-        """Start Ember Link (phone control) and show the URL + PIN."""
+        """Start Ember Link (phone control) and open its panel (local URL/PIN + optional
+        connect-from-anywhere tunnel)."""
         try:
             import remote_server
             remote_server.set_chat_handler(lambda text: self._bridge.remote_chat.emit(text))
@@ -7015,18 +7146,8 @@ QLabel#bubbleBody {{ font-size: {fs}px; }}
             QMessageBox.warning(self, "Remote control", r.get("error", "Failed to start."))
             return
         url, pin = r.get("url", ""), r.get("pin", "")
-        box = QMessageBox(self)
-        box.setWindowTitle("Ember Link")
-        box.setText("Control this Mac from your phone:")
-        box.setInformativeText(
-            f"1.  Connect your phone to the SAME Wi-Fi as this Mac.\n"
-            f"2.  Open this address in the phone browser:\n\n        {url}\n\n"
-            f"3.  Enter PIN:  {pin}\n\n"
-            "You get a faster mirrored screen, reliable click-and-drag, a full-screen mirror, "
-            "trackpad, keyboard, and a Chat tab that can tell Ember what to do remotely."
-        )
-        box.exec()
-        self._add_bubble("system", f"Ember Link is live at **{url}** (PIN **{pin}**). Same Wi-Fi required.")
+        self._add_bubble("system", f"Ember Link is live at **{url}** (PIN **{pin}**).")
+        RemoteLinkDialog(self).exec()
 
     def _autostart_download_protection(self):
         """Start real-time download protection (Downloads folder malware watcher) in the

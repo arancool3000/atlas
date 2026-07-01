@@ -1,6 +1,6 @@
 {
-  "version": "1.8.1",
-  "pub_date": "2026-06-30",
+  "version": "1.9.0",
+  "pub_date": "2026-07-01",
   "min_macos": "12.0",
   "min_windows": "10",
   "downloads": {
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.8.1 — Ember Link as an installable iPad/tablet app (PWA)\n\n• Add to Home Screen: open Ember Link in Safari on your iPad (or iPhone/Android), Share → Add to Home Screen, and it installs with the Ember icon and launches full-screen like a native app — no App Store needed. (A native iPad app can't control a computer due to iOS sandboxing, so this client is the right way to use an iPad with Ember.)\n• iPad-optimised layout: roomier, centred design with a bigger mirror and larger touch targets on tablet-sized screens; iPadOS gives real fullscreen too.\n\nBuilds on 1.8.0's in-app Terminal + Parallel Agent Tasks, the 1.7.x voice/shortcut fixes, and 1.6.0's smarter local Ollama."
+  "notes": "Ember 1.9.0 — Ember Link: connect from anywhere\n\n• Ember Link can now be reached from OUTSIDE your Wi-Fi. Pair a device on your Wi-Fi once (enter the PIN as usual) and it's silently upgraded to a long-lived pairing token — after that, the same device reconnects from any network (cellular, another Wi-Fi, anywhere) via a public link.\n• Uses an outbound Cloudflare Tunnel (free, no account, nothing opened on your router). Enable it from the Ember Link panel's new 'Connect from anywhere' toggle.\n• Security: the short PIN is LAN-only by design — it is never accepted over the public tunnel, only from a real local-network address, so there is nothing for the internet to brute-force. Revoke every paired device any time from the same panel.\n\nBuilds on 1.8.x's in-app Terminal + Parallel Agent Tasks + iPad app, the 1.7.x voice/shortcut fixes, and 1.6.0's smarter local Ollama."
 }
