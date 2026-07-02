@@ -1,5 +1,5 @@
 {
-  "version": "1.9.3",
+  "version": "1.9.4",
   "pub_date": "2026-07-01",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.9.3 — Fixed Sandbox/Scan-folder buttons, Ember Link tablet mode, permission prompts\n\n• Fixed 'Sandbox' and 'Scan a folder' in the Command Center showing 'not available in this build' — they were wired to methods that lived on the wrong dialog class.\n• Ember Link's non-fullscreen mirror was rendering at a fraction of its intended size (a layout regression) — fixed.\n• Fullscreen mirror now reserves a small control bar at the bottom with a mouse pad, click buttons, and a keyboard toggle, so it works like a tablet instead of needing an exit-fullscreen round trip to click or type.\n• Ember Link now defaults to its lightest quality tier for a snappier first impression on weaker devices (you can still switch to Balanced/Sharp).\n• Ember now explicitly asks for Screen Recording and Microphone access shortly after launch instead of relying on an incidental first use to trigger the OS prompt, which wasn't reliably happening.\n• Fixed a silent-failure bug in the Features directory (a broken feature used to just close the dialog with no error shown).\n\nBuilds on 1.9.2's PIN-stability fix, two-finger scroll, and stronger ad blocking."
+  "notes": "Ember 1.9.4 — Real screen lock, Mic On button, ad-blocker caveat\n\n• 'Lock PC' (from Ember Link or the panic button) could silently fall back to just putting the display to sleep instead of actually locking the session if the old CGSession trick failed on newer macOS — it now uses the OS-native Control+Command+Q lock shortcut first, and honestly reports failure instead of claiming 'locked' when it only slept the display.\n• Added the missing 'Mic On' button next to 'Mic Off' on the phone remote — there was previously no way to undo a mic mute from the phone (this is likely why the mic seemed to stop working after tapping Mic Off: the system input volume stayed at 0 with no way to restore it).\n• The Ad Blocker now explains that some browsers' 'Secure DNS' setting bypasses a hosts-file-based blocker entirely (it never asks the OS to resolve the domain) — Ember Browser's own ad blocking isn't affected by that.\n\nBuilds on 1.9.3's Command Center fixes, Ember Link tablet mode, and explicit permission prompts."
 }

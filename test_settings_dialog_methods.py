@@ -76,6 +76,10 @@ def test_emberwindow_calls_are_defined():
     _assert_self_calls_defined("EmberWindow")
 
 
+def test_adblocker_dialog_calls_are_defined():
+    _assert_self_calls_defined("AdBlockerDialog")
+
+
 def test_run_slash_feature_methods_resolve_on_emberwindow():
     """Regression guard: _run_slash's feature_methods dict resolves handlers dynamically via
     getattr(self, name), so a plain self._name() scan (the checks above) can't catch a broken

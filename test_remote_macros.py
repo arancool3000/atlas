@@ -32,6 +32,60 @@ def test_macro_names_match_table():
     assert "lock" in rs.MACRO_NAMES and "mute_mic" in rs.MACRO_NAMES
 
 
+def test_mic_on_macro_exists_alongside_mic_off():
+    # regression: the phone page used to only have a "Mic Off" button with no "Mic On"
+    # counterpart, so there was no way to undo a mic mute from the phone.
+    assert "unmute_mic" in rs.MACRO_NAMES
+    labels = dict(rs.MACROS)
+    assert labels["mute_mic"] == "Mic Off" and labels["unmute_mic"] == "Mic On"
+
+
+def test_default_macro_unmute_mic_darwin():
+    import sys as real_sys
+    import subprocess as real_subprocess
+    orig_platform, orig_run = real_sys.platform, real_subprocess.run
+    captured = {}
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+    real_sys.platform, real_subprocess.run = "darwin", fake_run
+    try:
+        r = rs._default_macro("unmute_mic")
+        assert r["ok"] is True and "unmute" in r["detail"].lower()
+        assert captured["cmd"][-1] == "set volume input volume 100"
+        captured.clear()
+        r2 = rs._default_macro("mute_mic")
+        assert captured["cmd"][-1] == "set volume input volume 0"
+    finally:
+        real_sys.platform, real_subprocess.run = orig_platform, orig_run
+
+
+def test_default_macro_unmute_mic_linux_uses_pactl():
+    import sys as real_sys
+    import subprocess as real_subprocess
+    orig_platform, orig_run = real_sys.platform, real_subprocess.run
+    captured = {}
+    def fake_run(cmd, **kw):
+        captured["cmd"] = cmd
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+    real_sys.platform, real_subprocess.run = "linux", fake_run
+    try:
+        rs._default_macro("unmute_mic")
+        assert captured["cmd"] == ["pactl", "set-source-mute", "@DEFAULT_SOURCE@", "0"]
+        rs._default_macro("mute_mic")
+        assert captured["cmd"] == ["pactl", "set-source-mute", "@DEFAULT_SOURCE@", "1"]
+    finally:
+        real_sys.platform, real_subprocess.run = orig_platform, orig_run
+
+
 def test_unknown_macro_is_rejected():
     rs._MACRO_HOOKS.clear()
     r = rs._run_macro("self_destruct")
@@ -138,6 +192,11 @@ def test_phone_page_has_no_decorative_emoji_on_macro_buttons():
         assert bad not in page, f"unexpected decorative emoji {bad!r} still in the phone page"
     assert ">Lock PC<" in page and ">Mic Off<" in page and ">Sleep<" in page
     assert ">Mute<" in page and ">Unmute<" in page
+
+
+def test_phone_page_wires_mic_on_button():
+    page = rs.PAGE
+    assert "macro('unmute_mic')" in page and ">Mic On<" in page
 
 
 def test_phone_page_supports_two_finger_scroll_gesture():

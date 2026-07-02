@@ -419,12 +419,13 @@ body.fakefs #fsexit{display:block;position:fixed;z-index:70;left:8px;top:50%;tra
   <div class=lbl>Quick actions</div>
   <div class=grid3>
     <button onpointerdown="macro('lock')">Lock PC</button>
-    <button onpointerdown="macro('mute_mic')">Mic Off</button>
     <button onpointerdown="macro('sleep_display')">Sleep</button>
-  </div>
-  <div class=grid2>
     <button onpointerdown="macro('mute')">Mute</button>
+  </div>
+  <div class=grid3>
     <button onpointerdown="macro('unmute')">Unmute</button>
+    <button onpointerdown="macro('mute_mic')">Mic Off</button>
+    <button onpointerdown="macro('unmute_mic')">Mic On</button>
   </div>
   <div id=kb><input id=cmdx placeholder="run a command, e.g. open -a Safari"><button onclick="runcmd()" style="max-width:90px">Run</button></div>
 
@@ -834,6 +835,7 @@ MACROS = [
     ("mute", "Mute"),
     ("unmute", "Unmute"),
     ("mute_mic", "Mic Off"),
+    ("unmute_mic", "Mic On"),
     ("sleep_display", "Sleep Screen"),
 ]
 MACRO_NAMES = frozenset(n for n, _ in MACROS)
@@ -889,15 +891,17 @@ def _default_macro(name: str) -> dict:
         else:
             ok, d = _macro_cmd(["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1" if on else "0"])
         return {"ok": ok, "macro": name, "detail": d or ("muted" if on else "unmuted")}
-    if name == "mute_mic":
+    if name in ("mute_mic", "unmute_mic"):
+        on = (name == "mute_mic")
         if sys.platform == "darwin":
-            ok, d = _macro_cmd(["osascript", "-e", "set volume input volume 0"])
+            ok, d = _macro_cmd(["osascript", "-e",
+                                f"set volume input volume {0 if on else 100}"])
         elif sys.platform.startswith("win"):
             return {"ok": False, "macro": name,
-                    "detail": "mic mute needs nircmd on Windows"}
+                    "detail": f"mic {'mute' if on else 'unmute'} needs nircmd on Windows"}
         else:
-            ok, d = _macro_cmd(["pactl", "set-source-mute", "@DEFAULT_SOURCE@", "1"])
-        return {"ok": ok, "macro": name, "detail": d or "microphone muted"}
+            ok, d = _macro_cmd(["pactl", "set-source-mute", "@DEFAULT_SOURCE@", "1" if on else "0"])
+        return {"ok": ok, "macro": name, "detail": d or ("microphone muted" if on else "microphone unmuted")}
     return {"ok": False, "macro": name, "detail": "unhandled macro"}
 
 
