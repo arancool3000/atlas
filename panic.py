@@ -49,11 +49,25 @@ def _wifi_devices() -> list:
 
 def _default_lock_screen() -> dict:
     if sys.platform == "darwin":
+        # Control+Command+Q is the OS-native "Lock Screen" shortcut - reliable across modern
+        # macOS versions (needs Accessibility, which Ember already requests for automation).
+        # CGSession -suspend used to be the standard trick but its path has broken/gone missing
+        # on newer macOS releases, and used to silently fall through straight to
+        # `pmset displaysleepnow` - visually similar (screen goes black) but NOT a real lock (no
+        # guaranteed re-authentication), so "Lock PC" was quietly just sleeping the display.
+        ok, d = _run(["osascript", "-e",
+                      'tell application "System Events" to keystroke "q" using {control down, command down}'])
+        if ok:
+            return {"ok": True, "detail": d or "screen locked"}
         ok, d = _run(["/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession",
                       "-suspend"])
-        if not ok:
-            ok, d = _run(["pmset", "displaysleepnow"])
-        return {"ok": ok, "detail": d or "screen locked"}
+        if ok:
+            return {"ok": True, "detail": d or "screen locked"}
+        # Last resort: only puts the DISPLAY to sleep, not a real lock - report this honestly
+        # (ok=False) instead of claiming "locked" when the session wasn't actually secured.
+        _run(["pmset", "displaysleepnow"])
+        return {"ok": False, "detail": "could not lock the screen (grant Ember Accessibility "
+                                        "access) - put the display to sleep instead"}
     if sys.platform.startswith("win"):
         ok, d = _run(["rundll32.exe", "user32.dll,LockWorkStation"])
         return {"ok": ok, "detail": d or "workstation locked"}

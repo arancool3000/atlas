@@ -3703,6 +3703,17 @@ class AdBlockerDialog(QDialog):
         sub.setStyleSheet("color:#9aa0b5; font-size:12px;")
         sub.setWordWrap(True)
         v.addWidget(sub)
+        # Honest caveat: this is a DNS-level (hosts file) blocker, which browsers using "Secure
+        # DNS" / DNS-over-HTTPS (now the default in Chrome/Firefox for a lot of users) bypass
+        # entirely - the browser never asks the OS to resolve the domain, so a hosts-file
+        # sinkhole has nothing to intercept. Ember Browser's ad blocking (Chromium's own request
+        # interceptor) isn't affected by that and stays fully in effect either way.
+        doh_note = QLabel(
+            "Note: some browsers' \"Secure DNS\" setting bypasses this (it never asks the OS to "
+            "resolve a blocked domain). Ember Browser's own ad blocking always works regardless.")
+        doh_note.setStyleSheet("color:#e0af68; font-size:11px;")
+        doh_note.setWordWrap(True)
+        v.addWidget(doh_note)
 
         self._status = QLabel("")
         self._status.setStyleSheet("font-size:14px; font-weight:700; margin-top:4px;")

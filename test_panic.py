@@ -3,6 +3,9 @@ restore. All OS actions are replaced with recording hooks, so nothing real happe
 Run: python test_panic.py"""
 import panic
 
+_REAL_PLATFORM = panic.sys.platform
+_REAL_RUN = panic._run
+
 
 def _recorder():
     calls = []
@@ -79,6 +82,70 @@ def test_auto_panic_debounced():
     # after the window -> fires again
     assert panic.maybe_auto_panic("malicious", "c", _ts=100.0 + panic._AUTO_MIN_INTERVAL + 1) is not None
     _reset()
+
+
+def _fake_run_sequence(results):
+    """results: {cmd_prefix_tuple: (ok, detail)} - matched by the command's first 1-2 args."""
+    calls = []
+    def fake(cmd, timeout=8.0):
+        calls.append(cmd)
+        for prefix, res in results.items():
+            if tuple(cmd[:len(prefix)]) == prefix:
+                return res
+        return (False, "unexpected command")
+    return calls, fake
+
+
+def test_default_lock_screen_prefers_the_lock_shortcut_on_macos():
+    # Control+Command+Q (the OS-native Lock Screen shortcut) must be tried FIRST and, if it
+    # works, CGSession must never even be invoked.
+    panic.sys.platform = "darwin"
+    calls, panic._run = _fake_run_sequence({("osascript",): (True, "")})
+    try:
+        r = panic._default_lock_screen()
+        assert r == {"ok": True, "detail": "screen locked"}
+        assert len(calls) == 1 and calls[0][0] == "osascript"
+    finally:
+        panic.sys.platform, panic._run = _REAL_PLATFORM, _REAL_RUN
+
+
+def test_default_lock_screen_falls_back_to_cgsession():
+    panic.sys.platform = "darwin"
+    calls, panic._run = _fake_run_sequence({
+        ("osascript",): (False, "not authorized"),
+        ("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession",): (True, ""),
+    })
+    try:
+        r = panic._default_lock_screen()
+        assert r["ok"] is True
+        assert [c[0] for c in calls] == [
+            "osascript",
+            "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession"]
+    finally:
+        panic.sys.platform, panic._run = _REAL_PLATFORM, _REAL_RUN
+
+
+def test_default_lock_screen_honestly_reports_failure_instead_of_claiming_locked():
+    # Regression guard: this used to silently fall through to `pmset displaysleepnow` (puts the
+    # DISPLAY to sleep, not a real lock - no guaranteed re-authentication) and still report
+    # ok=True/"screen locked", so "Lock PC" was quietly just sleeping the display. Now it must
+    # report ok=False and must NOT claim the screen was locked.
+    panic.sys.platform = "darwin"
+    calls, panic._run = _fake_run_sequence({
+        ("osascript",): (False, "not authorized"),
+        ("/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession",): (False, "no such file"),
+        ("pmset",): (True, ""),
+    })
+    try:
+        r = panic._default_lock_screen()
+        assert r["ok"] is False
+        assert "locked" not in r["detail"].lower() or "could not lock" in r["detail"].lower()
+        assert [c[0] for c in calls] == [
+            "osascript",
+            "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession",
+            "pmset"]
+    finally:
+        panic.sys.platform, panic._run = _REAL_PLATFORM, _REAL_RUN
 
 
 def test_restore_and_status():
