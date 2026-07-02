@@ -1,5 +1,5 @@
 {
-  "version": "1.9.4",
+  "version": "1.9.5",
   "pub_date": "2026-07-01",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.9.4 — Real screen lock, Mic On button, ad-blocker caveat\n\n• 'Lock PC' (from Ember Link or the panic button) could silently fall back to just putting the display to sleep instead of actually locking the session if the old CGSession trick failed on newer macOS — it now uses the OS-native Control+Command+Q lock shortcut first, and honestly reports failure instead of claiming 'locked' when it only slept the display.\n• Added the missing 'Mic On' button next to 'Mic Off' on the phone remote — there was previously no way to undo a mic mute from the phone (this is likely why the mic seemed to stop working after tapping Mic Off: the system input volume stayed at 0 with no way to restore it).\n• The Ad Blocker now explains that some browsers' 'Secure DNS' setting bypasses a hosts-file-based blocker entirely (it never asks the OS to resolve the domain) — Ember Browser's own ad blocking isn't affected by that.\n\nBuilds on 1.9.3's Command Center fixes, Ember Link tablet mode, and explicit permission prompts."
+  "notes": "Ember 1.9.5 — Fixed Ember Browser packaging bug, guard against invented email addresses\n\n• Fixed the real cause of 'Ember Browser can't load its web engine — ModuleNotFoundError: PyQt6.QtWebChannel': that module was explicitly excluded from the packaged app to save space, without realizing QtWebEngine depends on it internally. It's bundled again now.\n• Ember will no longer guess a placeholder email address (like name@example.com) when it doesn't know a contact's real one — sending to a reserved/placeholder domain is now refused outright, and Ember is instructed to ask for the real address instead of assuming one.\n\nBuilds on 1.9.4's real screen lock fix, Mic On button, and ad-blocker caveat."
 }

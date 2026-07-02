@@ -42,6 +42,13 @@ hiddenimports += ["single_instance", "automation", "manual_mode", "more_tools",
                   "mac_permissions",
                   "PyQt6.QtCore", "PyQt6.QtGui", "PyQt6.QtWidgets",
                   "PyQt6.QtWebEngineWidgets", "PyQt6.QtWebEngineCore",
+                  # QtWebEngineCore depends on QtWebChannel internally (the JS<->Python bridge
+                  # Chromium's embedded renderer uses) even though no Ember source file imports
+                  # it directly - PyInstaller's static analysis can't see that C++-level
+                  # dependency, and it used to be in `excludes` below (trimmed as "unused"),
+                  # which broke Ember Browser entirely: "ModuleNotFoundError: No module named
+                  # 'PyQt6.QtWebChannel'" the first time QWebEngineView was imported.
+                  "PyQt6.QtWebChannel",
                   "PyPDF2", "openpyxl", "qrcode", "qrcode.image.pil"]
 
 if IS_WIN:
@@ -87,7 +94,7 @@ a = Analysis(
         "PyQt6.QtPositioning", "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtQuick3D",
         "PyQt6.QtQuickWidgets", "PyQt6.QtRemoteObjects", "PyQt6.QtSensors",
         "PyQt6.QtSerialPort", "PyQt6.QtSpatialAudio", "PyQt6.QtSql", "PyQt6.QtSvg",
-        "PyQt6.QtSvgWidgets", "PyQt6.QtTest", "PyQt6.QtTextToSpeech", "PyQt6.QtWebChannel",
+        "PyQt6.QtSvgWidgets", "PyQt6.QtTest", "PyQt6.QtTextToSpeech",
         "PyQt6.QtWebSockets", "PyQt6.QtXml",
     ],
     noarchive=False,
