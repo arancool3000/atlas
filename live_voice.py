@@ -27,10 +27,25 @@ AUDIO_OUT_RATE = 24000
 AUDIO_IN_MIME = f"audio/pcm;rate={AUDIO_IN_RATE}"
 CHUNK = 1024
 
-# A current native-audio dialog model (overridable from settings).
-DEFAULT_MODEL = "gemini-2.5-flash-preview-native-audio-dialog"
+# A current native-audio dialog model (overridable from settings). Google renames/retires these
+# dated preview IDs every few months (a stale one fails the WebSocket handshake with "received
+# 1008 (policy violation) ... not found ... or is not supported for bidiGenerateContent" - every
+# retry then fails identically since retrying doesn't change the model), so on that specific
+# failure _main() below advances through FALLBACK_MODELS instead of just retrying the same dead
+# model up to max_failures times.
+DEFAULT_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+FALLBACK_MODELS = ["gemini-live-2.5-flash-native-audio", "gemini-2.0-flash-live-001"]
 DEFAULT_VOICE = "Zephyr"
 DEFAULT_API_VERSION = "v1beta"
+
+
+def _looks_like_bad_model(e) -> bool:
+    """True if an exception looks like 'this model doesn't exist / isn't Live-capable' rather
+    than a transient network hiccup - the two need different responses (switch model vs. just
+    retry)."""
+    s = str(e).lower()
+    return ("1008" in s or "policy violation" in s or "not found" in s
+            or "not supported for bidigeneratecontent" in s)
 
 
 def _noop(*_a, **_k):
@@ -304,7 +319,13 @@ class LiveVoice:
         self._aioloop = asyncio.get_running_loop()
         backoff = 1.0
         failures = 0
+        # Try the configured model first, then fall back through candidates - Google retires
+        # dated Live preview model IDs on a schedule, and retrying the SAME dead model just
+        # fails identically every time instead of ever recovering.
+        candidates = [self.model] + [m for m in FALLBACK_MODELS if m and m != self.model]
+        model_idx = 0
         while not self._stop_requested.is_set() and failures < self.max_failures:
+            current_model = candidates[min(model_idx, len(candidates) - 1)]
             self._loop_stop = asyncio.Event()
             mic = player = None
             try:
@@ -313,14 +334,21 @@ class LiveVoice:
                 self._handlers["on_error"](f"microphone/speaker unavailable: {e}")
                 return
             try:
-                async with client.aio.live.connect(model=self.model, config=config) as session:
+                async with client.aio.live.connect(model=current_model, config=config) as session:
                     failures = 0
                     backoff = 1.0
+                    self.model = current_model
                     self._handlers["on_state"]("listening")
                     await _drive(session, mic, player, self._handlers, self._loop_stop)
             except Exception as e:
                 failures += 1
-                self._handlers["on_error"](f"connection issue ({failures}/{self.max_failures}): {e}")
+                if _looks_like_bad_model(e) and model_idx < len(candidates) - 1:
+                    model_idx += 1
+                    self._handlers["on_error"](
+                        f"model '{current_model}' unavailable — trying '{candidates[model_idx]}' "
+                        f"({failures}/{self.max_failures})")
+                else:
+                    self._handlers["on_error"](f"connection issue ({failures}/{self.max_failures}): {e}")
                 if not self._stop_requested.is_set():
                     await asyncio.sleep(min(backoff, 8.0))
                     backoff *= 2

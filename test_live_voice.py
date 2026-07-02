@@ -211,6 +211,35 @@ def test_audio_blob_fallback_without_genai():
     assert blob["mime_type"] == lv.AUDIO_IN_MIME and blob["data"] == b"abc"
 
 
+def test_looks_like_bad_model_detects_model_not_found_style_errors():
+    # These are the actual close-reason texts the Live API sends when a dated preview model ID
+    # has been retired (retrying the SAME model then just fails identically forever).
+    assert lv._looks_like_bad_model(
+        Exception("received 1008 (policy violation) models/gemini-2.5-flash-preview-native-audio-dialog "
+                  "is not found for API version v1beta, or is not supported for bidiGenerateContent"))
+    assert lv._looks_like_bad_model(Exception("Policy Violation"))
+    assert lv._looks_like_bad_model(Exception("model not found"))
+
+
+def test_looks_like_bad_model_ignores_transient_errors():
+    assert not lv._looks_like_bad_model(Exception("Connection reset by peer"))
+    assert not lv._looks_like_bad_model(Exception("timed out"))
+    assert not lv._looks_like_bad_model(TimeoutError())
+
+
+def test_default_model_is_not_the_retired_dialog_naming():
+    # Regression guard: the old "-preview-native-audio-dialog" suffix naming was retired by
+    # Google and every connection attempt failed with 1008 (policy violation) - the default
+    # must never regress back to that exact stale ID.
+    assert lv.DEFAULT_MODEL != "gemini-2.5-flash-preview-native-audio-dialog"
+    assert "native-audio" in lv.DEFAULT_MODEL
+
+
+def test_fallback_models_are_distinct_from_the_default():
+    assert lv.DEFAULT_MODEL not in lv.FALLBACK_MODELS
+    assert len(lv.FALLBACK_MODELS) == len(set(lv.FALLBACK_MODELS))
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0
