@@ -1,19 +1,17 @@
-"""Tests for workflow_recorder — must pass WITHOUT pynput installed.
+"""Hermetic tests for workflow_recorder.py — must pass WITHOUT pynput or pyautogui installed.
 
-These exercise the pure event-builder helpers, file persistence, and the
-list/delete tools, plus the friendly pynput-missing / not-found error paths.
-"""
+Exercises the pure event-builder helpers, file persistence, list/delete tools, the key-mapping
+helper used by replay, and the friendly missing-dependency / not-found error paths. No pytest
+(not installed in CI) - a fresh temp WORKFLOW_DIR is set per run, matching every other test file
+in this repo.
+Run: python test_workflow_recorder.py"""
 import json
-
-import pytest
+import tempfile
+from pathlib import Path
 
 import workflow_recorder as wr
 
-
-@pytest.fixture(autouse=True)
-def _tmp_workflow_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(wr, "WORKFLOW_DIR", tmp_path / "workflows")
-    yield
+wr.WORKFLOW_DIR = Path(tempfile.mkdtemp(prefix="ember_workflow_test_"))
 
 
 def _sample_events():
@@ -63,6 +61,31 @@ def test_event_builders_shape():
     assert ky["type"] == "key" and ky["key"] == "a"
 
 
+# ---- replay key-name mapping (pure, no pyautogui needed) ---------------------
+def test_pyautogui_key_passthrough_for_single_chars():
+    assert wr._pyautogui_key("a") == "a"
+    assert wr._pyautogui_key("Z") == "Z"
+
+
+def test_pyautogui_key_maps_pynput_modifier_aliases():
+    assert wr._pyautogui_key("cmd") == "command"
+    assert wr._pyautogui_key("cmd_l") == "command"
+    assert wr._pyautogui_key("alt_r") == "alt"
+    assert wr._pyautogui_key("ctrl_l") == "ctrl"
+    assert wr._pyautogui_key("shift_r") == "shift"
+
+
+def test_pyautogui_key_passes_through_already_compatible_names():
+    assert wr._pyautogui_key("space") == "space"
+    assert wr._pyautogui_key("enter") == "enter"
+    assert wr._pyautogui_key("backspace") == "backspace"
+
+
+def test_pyautogui_key_empty():
+    assert wr._pyautogui_key("") == ""
+    assert wr._pyautogui_key(None) == ""
+
+
 # ---- persistence + list + delete --------------------------------------------
 def test_save_list_delete_roundtrip():
     events = _sample_events()
@@ -71,7 +94,7 @@ def test_save_list_delete_roundtrip():
     assert saved["event_count"] == 5
     assert saved["name"] == "My Demo Flow"
 
-    # File written under the monkeypatched dir as a slug.
+    # File written under the temp dir as a slug.
     path = wr._path_for("My Demo Flow")
     assert path.exists()
     on_disk = json.loads(path.read_text("utf-8"))
@@ -95,6 +118,9 @@ def test_save_list_delete_roundtrip():
 
 
 def test_list_workflows_empty():
+    wr.delete_workflow("leftover")  # no-op if absent; just ensure a clean slate
+    for entry in wr.list_workflows()["workflows"]:
+        wr.delete_workflow(entry["name"])
     r = wr.list_workflows()
     assert r["ok"] is True and r["count"] == 0 and r["workflows"] == []
 
@@ -109,19 +135,23 @@ def test_delete_missing():
     assert "no workflow" in r["error"]
 
 
-# ---- pynput-missing friendly errors (pynput absent in this env) --------------
+# ---- missing-dependency friendly errors (pynput/pyautogui absent in this env) -
 def test_record_start_without_pynput():
     r = wr.record_workflow_start("anything")
     assert r["ok"] is False
-    assert "pynput" in r["error"].lower()
+    # macOS refuses before even reaching the pynput import (uses its own recorder backend);
+    # other platforms hit the pynput-missing message directly.
+    assert "pynput" in r["error"].lower() or "accessibility" in r["error"].lower() \
+        or "main thread" in r["error"].lower()
 
 
-def test_replay_without_pynput():
-    # Save a real workflow first so the failure is the pynput import, not not-found.
+def test_replay_without_pyautogui():
+    # Save a real workflow first so the failure is the pyautogui import, not not-found.
     wr._save_workflow("x", _sample_events(), 1.4)
     r = wr.replay_workflow("x")
     assert r["ok"] is False
-    assert "pynput" in r["error"].lower()
+    assert "pyautogui" in r["error"].lower()
+    wr.delete_workflow("x")
 
 
 def test_replay_not_found():
@@ -147,11 +177,18 @@ def test_exports_consistent():
 
 
 def _run():
-    import types
     fns = [v for k, v in sorted(globals().items())
-           if k.startswith("test_") and isinstance(v, types.FunctionType)]
-    print(f"discovered {len(fns)} tests (run via pytest)")
+           if k.startswith("test_") and callable(v)]
+    ok = 0
+    for fn in fns:
+        try:
+            fn(); print("PASS", fn.__name__); ok += 1
+        except Exception as e:
+            print("FAIL", fn.__name__, e)
+    print(f"{ok}/{len(fns)} passed")
+    return ok == len(fns)
 
 
 if __name__ == "__main__":
-    _run()
+    import sys
+    sys.exit(0 if _run() else 1)

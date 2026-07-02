@@ -700,7 +700,9 @@ class _MacInputRecorder(QObject):
     background Quartz event tap builds NSEvents off the main thread, and macOS then asserts and
     hard-crashes the process (SIGTRAP) — the same bug fixed for the global hotkey. NSEvent
     monitors run on the run loop and are safe. Mouse coordinates are converted from Cocoa
-    (bottom-left origin) to top-left so they line up with the pynput Controller used at replay."""
+    (bottom-left origin) to top-left so they line up with pyautogui, which replay now uses
+    instead of pynput's Controller for the same reason (avoids pynput's macOS event machinery
+    entirely, not just its Listener)."""
 
     _start_req = pyqtSignal(object)   # emitted from a worker thread -> installs on the main thread
     _stop_req = pyqtSignal()

@@ -1,5 +1,5 @@
 {
-  "version": "1.9.6",
+  "version": "1.9.7",
   "pub_date": "2026-07-01",
   "min_macos": "12.0",
   "min_windows": "10",
@@ -13,5 +13,5 @@
       "sha256": ""
     }
   },
-  "notes": "Ember 1.9.6 — Fixed natural voice connection failures\n\n• Natural voice (the Gemini Live API real-time voice mode) was failing every connection attempt with 'received 1008 (policy violation)' — the native-audio model ID it used had been retired by Google. Updated to the current model, and added a fallback chain so a future model retirement degrades gracefully instead of failing outright.\n\nBuilds on 1.9.5's Ember Browser packaging fix and the guard against invented email addresses."
+  "notes": "Ember 1.9.7 — Fixed a crash when replaying a recorded workflow\n\n• Playing back a recorded workflow could crash Ember entirely (\"Ember quit unexpectedly\") on macOS. Root cause: replay simulated input via pynput's Controller, which shares the same low-level macOS event machinery as pynput's Listener — already known to hard-crash the process when driven off the main thread. Replay now uses the same simulation mechanism (pyautogui) Ember's own AI mouse/keyboard control already relies on safely.\n\nBuilds on 1.9.6's natural voice connection fix."
 }

@@ -4,10 +4,14 @@ The heavier sibling of `macros.py`: where a macro stores a natural-language task
 description, a *workflow* records the actual stream of input events (mouse moves,
 clicks, scrolls, key presses) and can replay them later honoring their timing.
 
-Recording/replaying needs `pynput` (absent on the build machine, present on the
-user's Mac). It is imported LAZILY inside the record/replay functions so this
-module always imports with only the standard library; if pynput is missing the
-relevant tools return a friendly {"ok": False, ...} instead of raising.
+Recording needs `pynput` (for LISTENING to input on Windows/Linux - macOS uses its own
+_MacInputRecorder backend instead, see ui.py, because pynput's listener hard-crashes the
+process there). Replaying needs `pyautogui` (for SIMULATING input) - the same library Ember's
+own AI mouse/keyboard tools already use, not pynput's Controller, which shares enough of the
+same low-level macOS machinery as its crash-prone Listener to be worth avoiding here too. Both
+are imported LAZILY inside the record/replay functions so this module always imports with only
+the standard library; if a dependency is missing the relevant tools return a friendly
+{"ok": False, ...} instead of raising.
 
 Every tool returns {"ok": True, ...} or {"ok": False, "error": "..."} — never raises.
 Workflows are JSON files under WORKFLOW_DIR (a module-level Path tests monkeypatch).
@@ -335,9 +339,39 @@ def record_workflow_stop() -> dict:
             "path": res["path"], "duration": res["duration"]}
 
 
+# pynput's Controller class talks to the same low-level macOS event-tap machinery as its
+# Listener (the thing _MacInputRecorder above exists specifically to avoid, because it hard-
+# crashes the whole process) - simulating input from a background thread with it is a known
+# source of native crashes in a PyQt/Cocoa app ("Ember quit unexpectedly", no catchable Python
+# exception). pyautogui is the SAME mechanism Ember's own AI mouse/keyboard tools (tools.py)
+# already use routinely from a background thread without incident, so replay uses that instead.
+_PYAUTOGUI_HINT = "pyautogui not installed — pip install pyautogui"
+
+# pynput key-name tokens (as produced by _serialize_key) that don't match pyautogui's naming.
+_REPLAY_KEY_ALIASES = {
+    "cmd": "command", "cmd_l": "command", "cmd_r": "command",
+    "alt_l": "alt", "alt_r": "alt", "alt_gr": "altright",
+    "ctrl_l": "ctrl", "ctrl_r": "ctrl",
+    "shift_l": "shift", "shift_r": "shift",
+    "caps_lock": "capslock", "page_up": "pageup", "page_down": "pagedown",
+    "num_lock": "numlock", "print_screen": "printscreen", "scroll_lock": "scrolllock",
+    "media_play_pause": "playpause", "media_volume_up": "volumeup",
+    "media_volume_down": "volumedown", "media_volume_mute": "volumemute",
+}
+
+
+def _pyautogui_key(token: str) -> str:
+    """Map a recorded key token (pynput naming, via _serialize_key) to pyautogui's key name.
+    Pure/testable without pyautogui installed."""
+    token = (token or "").strip()
+    if len(token) == 1:
+        return token
+    return _REPLAY_KEY_ALIASES.get(token.lower(), token.lower())
+
+
 def replay_workflow(name: str, speed: float = 1.0) -> dict:
     """Replay a previously recorded workflow by name, honoring relative timing
-    divided by `speed` (clamped to 0.25-8). Requires pynput."""
+    divided by `speed` (clamped to 0.25-8). Requires pyautogui."""
     name = (name or "").strip()
     if not name:
         return {"ok": False, "error": "a workflow name is required"}
@@ -353,29 +387,11 @@ def replay_workflow(name: str, speed: float = 1.0) -> dict:
     speed = max(0.25, min(8.0, speed))
 
     try:
-        from pynput import keyboard as _kb
-        from pynput import mouse as _ms
+        import pyautogui
     except Exception:
-        return {"ok": False, "error": _PYNPUT_HINT}
+        return {"ok": False, "error": _PYAUTOGUI_HINT}
 
     events = wf.get("events") or []
-    mouse = _ms.Controller()
-    kb = _kb.Controller()
-
-    def _resolve_button(bname: str):
-        try:
-            return getattr(_ms.Button, bname or "left")
-        except Exception:
-            return _ms.Button.left
-
-    def _resolve_key(token: str):
-        if token and len(token) == 1:
-            return token
-        try:
-            return getattr(_kb.Key, token)
-        except Exception:
-            return token
-
     replayed = 0
     prev_t = 0.0
     try:
@@ -386,20 +402,25 @@ def replay_workflow(name: str, speed: float = 1.0) -> dict:
                 time.sleep(delay)
             prev_t = t
             etype = ev.get("type")
+            x, y = int(ev.get("x", 0)), int(ev.get("y", 0))
             if etype == "move":
-                mouse.position = (int(ev.get("x", 0)), int(ev.get("y", 0)))
+                pyautogui.moveTo(x, y, duration=0)
             elif etype == "click":
-                mouse.position = (int(ev.get("x", 0)), int(ev.get("y", 0)))
-                btn = _resolve_button(ev.get("button"))
-                mouse.click(btn, 1)
+                pyautogui.moveTo(x, y, duration=0)
+                pyautogui.click(button=ev.get("button") or "left")
             elif etype == "scroll":
-                mouse.position = (int(ev.get("x", 0)), int(ev.get("y", 0)))
-                mouse.scroll(int(ev.get("dx", 0)), int(ev.get("dy", 0)))
+                pyautogui.moveTo(x, y, duration=0)
+                dx, dy = int(ev.get("dx", 0)), int(ev.get("dy", 0))
+                if dy:
+                    pyautogui.scroll(dy)
+                if dx:
+                    try:
+                        pyautogui.hscroll(dx)
+                    except Exception:
+                        pass
             elif etype == "key":
-                key = _resolve_key(ev.get("key", ""))
                 try:
-                    kb.press(key)
-                    kb.release(key)
+                    pyautogui.press(_pyautogui_key(ev.get("key", "")))
                 except Exception:
                     pass
             else:
@@ -458,7 +479,7 @@ TOOL_DECLARATIONS = [
      "description": "Stop the active workflow recording and save the captured input events to disk.",
      "parameters": {"type": "OBJECT", "properties": {}, "required": []}},
     {"name": "replay_workflow",
-     "description": "Replay a previously recorded input workflow (mouse/keyboard) by name.",
+     "description": "Replay a previously recorded input workflow (mouse/keyboard) by name. Requires pyautogui.",
      "parameters": {"type": "OBJECT",
                     "properties": {"name": {"type": "STRING"},
                                    "speed": {"type": "NUMBER", "description": "playback speed multiplier 0.25-8 (default 1)"}},
