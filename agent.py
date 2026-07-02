@@ -1034,7 +1034,10 @@ TOOL_DECLARATIONS = [
         "required": ["text"]}},
     # ---- Email ----
     {"name": "send_email",
-     "description": "Send an email via SMTP. Credentials come from settings (email_smtp_*) if not passed. For Gmail use an App Password.",
+     "description": "Send an email via SMTP. Credentials come from settings (email_smtp_*) if not passed. For Gmail use an App Password. "
+                    "NEVER guess or invent the recipient's address (e.g. a placeholder like "
+                    "name@example.com) - if you don't already know it exactly, ASK THE USER "
+                    "for the real address first instead of assuming one.",
      "parameters": {"type": "OBJECT", "properties": {
         "to": {"type": "STRING"}, "subject": {"type": "STRING"}, "body": {"type": "STRING"},
         "html": {"type": "BOOLEAN"}}, "required": ["to", "subject", "body"]}},

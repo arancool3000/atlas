@@ -207,6 +207,25 @@ def translate_text(text: str, target_lang: str = "en", source_lang: str = "auto"
 # ---------------------------------------------------------------------------
 # Email
 # ---------------------------------------------------------------------------
+# RFC 2606 reserves these domains/TLDs for documentation - they can NEVER be real, deliverable
+# mailboxes. Asked to "email Bob" with no known address, an LLM sometimes fills in a
+# plausible-looking placeholder like bob@example.com instead of asking for the real one; a send
+# then silently succeeds (SMTP accepts it fine) into an address that will never receive it, and
+# the user only finds out when Bob never replies. Refusing this specific, unambiguous case is a
+# zero-false-positive check: nothing legitimate ever actually uses these domains for real mail.
+_RESERVED_EMAIL_DOMAINS = {"example.com", "example.net", "example.org", "example.edu"}
+_RESERVED_EMAIL_TLDS = {"example", "test", "invalid", "localhost"}
+
+
+def _is_reserved_placeholder_email(addr: str) -> bool:
+    domain = (addr or "").rsplit("@", 1)[-1].strip().lower().rstrip(".")
+    if not domain:
+        return False
+    if any(domain == d or domain.endswith("." + d) for d in _RESERVED_EMAIL_DOMAINS):
+        return True
+    return domain.rsplit(".", 1)[-1] in _RESERVED_EMAIL_TLDS
+
+
 def send_email(to: str, subject: str, body: str, smtp_host: str | None = None,
                smtp_port: int | None = None, smtp_user: str | None = None,
                smtp_password: str | None = None, html: bool = False) -> dict:
@@ -214,6 +233,13 @@ def send_email(to: str, subject: str, body: str, smtp_host: str | None = None,
     For Gmail: smtp.gmail.com:587, use an App Password (not your normal one). Port 465 uses
     implicit TLS (SMTP_SSL); 587/other use STARTTLS."""
     import smtplib
+
+    if _is_reserved_placeholder_email(to):
+        return {"ok": False, "error":
+                f"'{to}' is a reserved placeholder address (RFC 2606) that can never receive "
+                "real mail - it looks like a guessed/invented address rather than the "
+                "recipient's real one. Ask the user for the actual email address instead of "
+                "assuming one."}
 
     try:
         from ui import load_settings
